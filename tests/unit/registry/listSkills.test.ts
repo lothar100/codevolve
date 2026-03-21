@@ -155,6 +155,47 @@ describe("GET /skills", () => {
   it("should return 400 for invalid sort_by", async () => {
     const result = await handler(makeEvent({ sort_by: "invalid" }));
     expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("should return 400 UNSUPPORTED_SORT_KEY for created_at sort", async () => {
+    const result = await handler(makeEvent({ sort_by: "created_at" }));
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error.code).toBe("UNSUPPORTED_SORT_KEY");
+  });
+
+  it("should return 400 UNSUPPORTED_SORT_KEY for updated_at sort", async () => {
+    const result = await handler(makeEvent({ sort_by: "updated_at" }));
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error.code).toBe("UNSUPPORTED_SORT_KEY");
+  });
+
+  it("should return 400 UNSUPPORTED_SORT_KEY for name sort", async () => {
+    const result = await handler(makeEvent({ sort_by: "name" }));
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error.code).toBe("UNSUPPORTED_SORT_KEY");
+  });
+
+  it("should return 400 when sort_by=confidence without language filter", async () => {
+    const result = await handler(makeEvent({ sort_by: "confidence" }));
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error.code).toBe("VALIDATION_ERROR");
+    expect(JSON.parse(result.body).error.message).toContain("language");
+  });
+
+  it("should accept sort_by=confidence with language filter", async () => {
+    mockSend.mockResolvedValueOnce({
+      Items: [mockSkill1],
+      LastEvaluatedKey: undefined,
+    });
+
+    const result = await handler(
+      makeEvent({ sort_by: "confidence", language: "python" }),
+    );
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(body.skills).toHaveLength(1);
   });
 
   it("should handle pagination with next_token", async () => {

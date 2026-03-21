@@ -21,7 +21,6 @@ jest.mock("@aws-sdk/lib-dynamodb", () => ({
   },
   GetCommand: jest.fn().mockImplementation((input) => ({ _type: "GetCommand", input })),
   PutCommand: jest.fn().mockImplementation((input) => ({ _type: "PutCommand", input })),
-  QueryCommand: jest.fn().mockImplementation((input) => ({ _type: "QueryCommand", input })),
   UpdateCommand: jest.fn().mockImplementation((input) => ({ _type: "UpdateCommand", input })),
 }));
 
@@ -79,9 +78,7 @@ describe("POST /skills", () => {
   it("should create a skill and return 201", async () => {
     // GetCommand: problem exists
     mockSend.mockResolvedValueOnce({ Item: { problem_id: PROBLEM_ID } });
-    // QueryCommand: no duplicate
-    mockSend.mockResolvedValueOnce({ Items: [] });
-    // PutCommand: skill created
+    // PutCommand: skill created (no ConditionalCheckFailedException)
     mockSend.mockResolvedValueOnce({});
     // UpdateCommand: skill_count incremented
     mockSend.mockResolvedValueOnce({});
@@ -114,13 +111,13 @@ describe("POST /skills", () => {
     expect(JSON.parse(result.body).error.code).toBe("NOT_FOUND");
   });
 
-  it("should return 409 when duplicate skill exists", async () => {
+  it("should return 409 when PK uniqueness check fails (ConditionalCheckFailedException)", async () => {
     // Problem exists
     mockSend.mockResolvedValueOnce({ Item: { problem_id: PROBLEM_ID } });
-    // Duplicate found
-    mockSend.mockResolvedValueOnce({
-      Items: [{ skill_id: "existing", name: "Two Sum Hash Map" }],
-    });
+    // PutCommand: ConditionalCheckFailedException (PK already exists)
+    const conditionalErr = new Error("The conditional request failed");
+    conditionalErr.name = "ConditionalCheckFailedException";
+    mockSend.mockRejectedValueOnce(conditionalErr);
 
     const result = await handler(makeEvent(validBody));
     expect(result.statusCode).toBe(409);
@@ -129,7 +126,6 @@ describe("POST /skills", () => {
 
   it("should use default values for optional fields", async () => {
     mockSend.mockResolvedValueOnce({ Item: { problem_id: PROBLEM_ID } });
-    mockSend.mockResolvedValueOnce({ Items: [] });
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({});
 
@@ -146,7 +142,6 @@ describe("POST /skills", () => {
 
   it("should accept custom status and version_label", async () => {
     mockSend.mockResolvedValueOnce({ Item: { problem_id: PROBLEM_ID } });
-    mockSend.mockResolvedValueOnce({ Items: [] });
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({});
 

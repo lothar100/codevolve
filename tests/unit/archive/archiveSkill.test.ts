@@ -25,7 +25,7 @@ jest.mock("@aws-sdk/lib-dynamodb", () => ({
 }));
 
 const mockEmitEvent = jest.fn().mockResolvedValue(undefined);
-jest.mock("../../../src/shared/kinesis", () => ({
+jest.mock("../../../src/shared/emitEvent", () => ({
   emitEvent: mockEmitEvent,
   EVENTS_STREAM: "codevolve-events",
   kinesisClient: {},
@@ -246,6 +246,7 @@ describe("archiveSkill handler", () => {
 
     expect(mockEmitEvent).toHaveBeenCalledWith(
       expect.objectContaining({
+        event_type: "archive",
         skill_id: SKILL_ID,
         success: true,
       }),

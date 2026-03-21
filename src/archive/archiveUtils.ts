@@ -22,7 +22,7 @@ import {
   ARCHIVE_TABLE,
   PROBLEMS_TABLE,
 } from "../shared/dynamo.js";
-import { emitEvent } from "../shared/kinesis.js";
+import { emitEvent } from "../shared/emitEvent.js";
 
 // ---------------------------------------------------------------------------
 // Bedrock client
@@ -150,10 +150,9 @@ export async function archiveProblemIfAllSkillsArchived(
       previousStatus: "active",
     });
 
-    // Emit Kinesis event (fire-and-forget)
-    emitEvent({
-      event_type: "fail", // using "fail" as closest match for archive events
-      timestamp: now,
+    // Emit Kinesis event for problem archival
+    await emitEvent({
+      event_type: "archive",
       skill_id: null,
       intent: `problem_archived:${problemId}`,
       latency_ms: 0,
@@ -161,8 +160,6 @@ export async function archiveProblemIfAllSkillsArchived(
       cache_hit: false,
       input_hash: null,
       success: true,
-    }).catch(() => {
-      /* fire-and-forget */
     });
 
     return true;

@@ -55,6 +55,7 @@ export async function handler(
       domain: data.domain,
       tags: data.tags,
       ...(data.constraints !== undefined ? { constraints: data.constraints } : {}),
+      examples: [],
       canonical_skill_id: null,
       skill_count: 0,
       status: "active",

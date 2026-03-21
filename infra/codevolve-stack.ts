@@ -246,6 +246,25 @@ export class CodevolveStack extends cdk.Stack {
       ),
     } as lambda.FunctionProps);
 
+    const listSkillVersionsFn = new lambda.Function(
+      this,
+      "ListSkillVersionsFn",
+      {
+        ...defaultLambdaProps,
+        functionName: "codevolve-list-skill-versions",
+        handler: "listSkillVersions.handler",
+        code: lambda.Code.fromAsset(
+          path.join(__dirname, "../src/registry"),
+          {
+            bundling: {
+              image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+              command: registryBundlingCommand("listSkillVersions.ts"),
+            },
+          },
+        ),
+      } as lambda.FunctionProps,
+    );
+
     const promoteCanonicalFn = new lambda.Function(this, "PromoteCanonicalFn", {
       ...defaultLambdaProps,
       functionName: "codevolve-promote-canonical",
@@ -291,13 +310,30 @@ export class CodevolveStack extends cdk.Stack {
       ),
     } as lambda.FunctionProps);
 
+    const listProblemsFn = new lambda.Function(this, "ListProblemsFn", {
+      ...defaultLambdaProps,
+      functionName: "codevolve-list-problems",
+      handler: "listProblems.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "../src/registry"),
+        {
+          bundling: {
+            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+            command: registryBundlingCommand("listProblems.ts"),
+          },
+        },
+      ),
+    } as lambda.FunctionProps);
+
     const registryFunctions = [
       createSkillFn,
       getSkillFn,
       listSkillsFn,
+      listSkillVersionsFn,
       promoteCanonicalFn,
       createProblemFn,
       getProblemFn,
+      listProblemsFn,
     ];
 
     // Router: POST /resolve
@@ -467,6 +503,11 @@ export class CodevolveStack extends cdk.Stack {
       "GET",
       new apigateway.LambdaIntegration(getSkillFn),
     );
+    const versionsResource = skillByIdResource.addResource("versions");
+    versionsResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(listSkillVersionsFn),
+    );
     const promoteCanonicalResource =
       skillByIdResource.addResource("promote-canonical");
     promoteCanonicalResource.addMethod(
@@ -489,6 +530,10 @@ export class CodevolveStack extends cdk.Stack {
     problemsResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(createProblemFn),
+    );
+    problemsResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(listProblemsFn),
     );
     const problemByIdResource = problemsResource.addResource("{id}");
     problemByIdResource.addMethod(
@@ -532,11 +577,7 @@ export class CodevolveStack extends cdk.Stack {
     // Grant permissions
     // -----------------------------------------------------------------------
 
-    this.problemsTable.grantReadWriteData(healthFn);
-    this.skillsTable.grantReadWriteData(healthFn);
-    this.cacheTable.grantReadWriteData(healthFn);
-    this.archiveTable.grantReadWriteData(healthFn);
-    this.eventsStream.grantWrite(healthFn);
+    // healthFn needs no DynamoDB or Kinesis access — it returns a static response
     this.eventsStream.grantWrite(emitEventsFn);
 
     // Registry function permissions (IMPL-02)
@@ -567,15 +608,14 @@ export class CodevolveStack extends cdk.Stack {
     }
 
     // Bedrock invoke permission for unarchive (embedding regeneration)
-    // and archive handler (future-proofing, though it only nullifies)
-    const bedrockPolicy = new iam.PolicyStatement({
-      actions: ["bedrock:InvokeModel"],
-      resources: [
-        `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-      ],
-    });
-    unarchiveSkillFn.addToRolePolicy(bedrockPolicy);
-    archiveHandlerFn.addToRolePolicy(bedrockPolicy);
+    unarchiveSkillFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel"],
+        resources: [
+          `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+        ],
+      }),
+    );
 
     // SQS consume permission for archive handler
     archiveQueue.grantConsumeMessages(archiveHandlerFn);

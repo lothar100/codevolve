@@ -28,10 +28,337 @@
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| IMPL-01 | Ada | [ ] | Scaffold Lambda project: TypeScript strict mode, Jest, AWS CDK v2, folder structure (`src/registry/`, `src/router/`, `src/execution/`, `src/validation/`, `src/analytics/`, `src/evolve/`, `src/archive/`, `src/shared/`, `infra/`, `tests/`). Set up `package.json`, `tsconfig.json`, `jest.config.ts`, `cdk.json`. **Unblocked 2026-03-21** — REVIEW-02 approved ARCH-01/ARCH-02. Ada may begin. | ARCH-01 |
+| IMPL-01 | Ada | [✓] | Scaffold Lambda project: TypeScript strict mode, Jest, AWS CDK v2, folder structure (`src/registry/`, `src/router/`, `src/execution/`, `src/validation/`, `src/analytics/`, `src/evolve/`, `src/archive/`, `src/shared/`, `infra/`, `tests/`). Set up `package.json`, `tsconfig.json`, `jest.config.ts`, `cdk.json`. **Plan written 2026-03-21 by Jorven** — see IMPL-01 sub-tasks below. **Approved 2026-03-21 (REVIEW-03):** All completion gate checks pass (126 tests, tsc clean, NODEJS_22_X confirmed). Open before IMPL-04: fix archive module to import from `emitEvent.ts` not `kinesis.ts` (W-01). | ARCH-01 |
 | IMPL-02 | Ada | [ ] | Implement Skill + Problem CRUD API: `POST /skills`, `GET /skills/:id`, `GET /skills`, `POST /problems`, `GET /problems/:id`. DynamoDB DocumentClient, zod validation, Kinesis event emission on every write. Tests required. | ARCH-01, ARCH-02 |
 | IMPL-03 | Ada | [ ] | Implement Kinesis event emission utility (`src/shared/emitEvent.ts`): typed `AnalyticsEvent` interface, fire-and-forget (never crash handler on emission failure), unit tests with mocked Kinesis client. | ARCH-02 |
 | IMPL-04 | Ada | [ ] | Implement archive mechanism Lambda: reads Decision Engine output from SQS, sets `status: "archived"` in DynamoDB, removes from OpenSearch index, emits `event_type: "archive"` event. Handles skill + problem archival and reversal. Tests required. | ARCH-01, ARCH-03, DESIGN-03 |
+
+---
+
+### IMPL-01 Sub-Tasks — Scaffold Plan (Jorven, 2026-03-21)
+
+> All 5 sub-tasks are independent of each other and can be executed in parallel by separate Ada agents.
+> Each sub-task has a single owner, a precise file scope, and an unambiguous verification method.
+> No sub-task may be marked Verified until `npx tsc --noEmit` exits 0 and `npx jest` passes.
+
+---
+
+#### Pre-conditions
+
+Before Ada begins any sub-task, confirm:
+1. `node --version` reports v22.x or higher.
+2. `npm install` has been run (all packages in `node_modules/`).
+3. No sub-task modifies files owned by another sub-task.
+
+---
+
+#### IMPL-01-A: `package.json` — Add engines field and fix missing `@aws-sdk/client-opensearchserverless` note
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `package.json` |
+| Depends on | — |
+| Blocks | IMPL-01-B (tsconfig needs to know target), IMPL-01-D (cdk.json references app entry) |
+| Verification | `node -e "require('./package.json')" && node -e "const p=require('./package.json'); if(!p.engines) throw new Error('missing engines')"` exits 0 |
+
+**Gap found:** `package.json` is missing the `"engines"` field. All other content (dependencies, devDependencies, scripts) is correct for IMPL-01 scope.
+
+**Exact change — add one field to `package.json`:**
+
+Add immediately after `"private": true`:
+
+```json
+"engines": {
+  "node": ">=22"
+},
+```
+
+**Nothing else changes in `package.json`.** Do not add, remove, or update any dependency. Do not change scripts.
+
+**Note for Ada:** `@aws-sdk/client-opensearchserverless` is intentionally absent — it is not needed until IMPL-05 (Phase 2). Do not add it now.
+
+---
+
+#### IMPL-01-B: `tsconfig.json` — Add ts-node CommonJS override block
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `tsconfig.json` |
+| Depends on | — |
+| Blocks | IMPL-01-D (CDK synthesis uses ts-node with this tsconfig) |
+| Verification | `npx ts-node --version` exits 0; `npx cdk synth --app "npx ts-node infra/app.ts" 2>&1 \| grep -v error` produces no TypeScript errors |
+
+**Gap found:** `tsconfig.json` sets `"module": "NodeNext"`. When CDK invokes `npx ts-node infra/app.ts`, ts-node attempts to load the file as ESM. ts-node v10 does not fully support `NodeNext` module resolution without the `--esm` flag, causing `ERR_REQUIRE_ESM` at synthesis time. The fix is a `ts-node` compiler override section in `tsconfig.json` that forces CommonJS only for ts-node execution, leaving the main `compilerOptions` intact for esbuild-bundled Lambdas.
+
+**Exact change — add one top-level key to `tsconfig.json`:**
+
+Add after the closing brace of `"compilerOptions"` and before `"include"`:
+
+```json
+"ts-node": {
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "node"
+  }
+},
+```
+
+The complete file after the change:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "incremental": true,
+    "isolatedModules": true
+  },
+  "ts-node": {
+    "compilerOptions": {
+      "module": "CommonJS",
+      "moduleResolution": "node"
+    }
+  },
+  "include": ["src/**/*", "infra/**/*", "tests/**/*"],
+  "exclude": ["node_modules", "dist", "cdk.out"]
+}
+```
+
+**Nothing else changes in `tsconfig.json`.**
+
+---
+
+#### IMPL-01-C: `tsconfig.test.json` + `jest.config.ts` — Fix Jest/ts-jest CommonJS resolution
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `tsconfig.test.json` (create new), `jest.config.ts` (edit) |
+| Depends on | IMPL-01-B (tsconfig.json must exist before tsconfig.test.json extends it) |
+| Blocks | IMPL-01-E (stubs must pass `jest --listTests`) |
+| Verification | `npx jest --listTests` lists all test files; `npx jest` exits 0 with all existing tests passing |
+
+**Gap found:** Both Jest project configurations in `jest.config.ts` pass `{ tsconfig: "tsconfig.json" }` to ts-jest. The main `tsconfig.json` uses `"module": "NodeNext"`, which is incompatible with Jest's CommonJS module system. Jest does not support ESM natively without `--experimental-vm-modules`. The fix is a separate `tsconfig.test.json` that inherits from `tsconfig.json` and overrides `module` and `moduleResolution` to `CommonJS`, then reference it in both jest projects.
+
+**Step 1 — Create `tsconfig.test.json` (new file at repo root):**
+
+```json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "isolatedModules": false
+  }
+}
+```
+
+Rationale for `"isolatedModules": false`: ts-jest with CommonJS does not require isolated modules and some test patterns (e.g., `const enum`) break under `isolatedModules: true`.
+
+**Step 2 — Edit `jest.config.ts`:** change both `ts-jest` transform configs to reference `tsconfig.test.json` instead of `tsconfig.json`.
+
+The complete file after the change:
+
+```typescript
+import type { Config } from "jest";
+
+const config: Config = {
+  projects: [
+    {
+      displayName: "unit",
+      preset: "ts-jest",
+      testEnvironment: "node",
+      testMatch: ["<rootDir>/tests/unit/**/*.test.ts"],
+      moduleFileExtensions: ["ts", "js", "json"],
+      moduleNameMapper: {
+        "^(\\.{1,2}/.*)\\.js$": "$1",
+      },
+      transform: {
+        "^.+\\.ts$": ["ts-jest", { tsconfig: "tsconfig.test.json" }],
+      },
+    },
+    {
+      displayName: "integration",
+      preset: "ts-jest",
+      testEnvironment: "node",
+      testMatch: ["<rootDir>/tests/integration/**/*.test.ts"],
+      moduleFileExtensions: ["ts", "js", "json"],
+      moduleNameMapper: {
+        "^(\\.{1,2}/.*)\\.js$": "$1",
+      },
+      transform: {
+        "^.+\\.ts$": ["ts-jest", { tsconfig: "tsconfig.test.json" }],
+      },
+    },
+  ],
+};
+
+export default config;
+```
+
+The `moduleNameMapper` pattern `"^(\\.{1,2}/.*)\\.js$": "$1"` remains — it rewrites `.js` imports to extensionless so ts-jest resolves `.ts` source files correctly even when source uses `NodeNext`-style `.js` explicit extensions.
+
+---
+
+#### IMPL-01-D: `cdk.json` — Add standard CDK v2 feature flags and fix Lambda runtime to Node 22
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `cdk.json`, `infra/codevolve-stack.ts` |
+| Depends on | IMPL-01-B (tsconfig.json must be stable before CDK can synthesize) |
+| Blocks | — |
+| Verification | `npx cdk synth` exits 0; synthesized CloudFormation template contains `nodejs22.x` for all Lambda functions |
+
+**Gap 1 — Lambda runtime is Node 20, must be Node 22.**
+
+The CDK stack at `infra/codevolve-stack.ts` hardcodes `lambda.Runtime.NODEJS_20_X` and all esbuild bundling commands use `--target=node20`. The architecture constraint requires Node 22. This is a non-trivial but mechanical change.
+
+**Change to `infra/codevolve-stack.ts`:**
+- Replace every occurrence of `lambda.Runtime.NODEJS_20_X` with `lambda.Runtime.NODEJS_22_X`.
+- Replace every occurrence of `target=node20` in esbuild bundling command strings with `target=node22`.
+- Replace every occurrence of `bundlingImage: lambda.Runtime.NODEJS_20_X.bundlingImage` with `bundlingImage: lambda.Runtime.NODEJS_22_X.bundlingImage`.
+
+There are exactly 3 patterns to replace, occurring multiple times. Use find-replace-all. Do not change any logic, permissions, table names, function names, or route definitions.
+
+**Gap 2 — `cdk.json` is missing standard CDK v2 feature flags.**
+
+The current `cdk.json` context block has only 2 flags. CDK v2 `cdk init` generates ~15 flags. Missing flags cause CDK to emit deprecation warnings and may affect synthesized resource behavior in future CDK upgrades. Add all standard CDK v2 flags now to prevent drift.
+
+**Complete replacement content for `cdk.json`:**
+
+```json
+{
+  "app": "npx ts-node infra/app.ts",
+  "watch": {
+    "include": ["src/**", "infra/**"],
+    "exclude": ["node_modules", "dist", "cdk.out", "tests"]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": ["aws", "aws-cn"],
+    "@aws-cdk-containers/ecs-service-extensions:enableDefaultLogDriver": true,
+    "@aws-cdk/aws-ec2:uniqueImdsv2TemplateName": true,
+    "@aws-cdk/aws-ecs:arnFormatIncludesClusterName": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:validateSnapshotRemovalPolicy": true,
+    "@aws-cdk/aws-codepipeline:crossAccountKeyAliasStackSafeResourceName": true,
+    "@aws-cdk/aws-s3:createDefaultLoggingPolicy": true,
+    "@aws-cdk/aws-sns-subscriptions:restrictSqsDescryption": true,
+    "@aws-cdk/aws-apigateway:disableCloudWatchRole": true,
+    "@aws-cdk/core:enablePartitionLiterals": true,
+    "@aws-cdk/aws-events:eventsTargetQueueSameAccount": true,
+    "@aws-cdk/aws-iam:standardizedServicePrincipals": true,
+    "@aws-cdk/aws-ecs:disableExplicitDeploymentControllerForCircuitBreaker": true,
+    "@aws-cdk/aws-iam:importedRoleStackSafeDefaultPolicyName": true,
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
+    "@aws-cdk/aws-route53-patters:useCertificate": true,
+    "@aws-cdk/customresources:installLatestAwsSdkDefault": false,
+    "@aws-cdk/aws-rds:databaseProxyUniqueResourceName": true,
+    "@aws-cdk/aws-codedeploy:removeAlarmsFromDeploymentGroup": true,
+    "@aws-cdk/aws-apigateway:authorizerChangeDeploymentLogicalId": true,
+    "@aws-cdk/aws-ec2:launchTemplateDefaultUserData": true,
+    "@aws-cdk/aws-secretsmanager:useAttachedSecretResourcePolicyForSecretTargetAttachments": true,
+    "@aws-cdk/aws-redshift:columnId": true,
+    "@aws-cdk/aws-cloudfront:defaultSecurityPolicyTLSv1.2_2021": true,
+    "@aws-cdk/core:newStyleStackSynthesis": true
+  }
+}
+```
+
+---
+
+#### IMPL-01-E: Folder structure — Create stub `index.ts` files for empty module folders
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `src/router/index.ts` (create), `src/execution/index.ts` (create), `src/validation/index.ts` (create), `src/evolve/index.ts` (create) |
+| Depends on | IMPL-01-B (tsconfig.json must be valid before tsc can check these stubs), IMPL-01-C (tsconfig.test.json needed before jest runs) |
+| Blocks | — |
+| Verification | `npx tsc --noEmit` exits 0; no TypeScript errors for any stub file |
+
+**Gap found:** `src/router/`, `src/execution/`, `src/validation/`, `src/evolve/` contain only `.gitkeep` files. They have no TypeScript entry point. Future IMPL tasks will add handlers to these folders. Creating a stub `index.ts` in each folder ensures the folder is included in TypeScript compilation and avoids "no files found" warnings from tsc when the `include` glob matches an otherwise-empty folder.
+
+**Exact content for each stub file:**
+
+`src/router/index.ts`:
+```typescript
+/**
+ * Skill Router module.
+ * Implements POST /resolve.
+ * Populated in IMPL-05.
+ */
+export {};
+```
+
+`src/execution/index.ts`:
+```typescript
+/**
+ * Execution Layer module.
+ * Implements POST /execute and POST /execute/chain.
+ * Populated in IMPL-06.
+ */
+export {};
+```
+
+`src/validation/index.ts`:
+```typescript
+/**
+ * Validation Layer module.
+ * Implements POST /validate/:skill_id.
+ * Populated in IMPL-11.
+ */
+export {};
+```
+
+`src/evolve/index.ts`:
+```typescript
+/**
+ * Evolution Layer module.
+ * Implements POST /evolve (async, Claude API).
+ * Populated in IMPL-12.
+ */
+export {};
+```
+
+The `export {}` makes each file a TypeScript module (not a script), which is required when `"isolatedModules": true` is in effect for non-test compilation.
+
+**Existing folders do not need stubs:** `src/registry/`, `src/analytics/`, `src/archive/`, `src/shared/` already have real TypeScript files.
+
+---
+
+#### IMPL-01 Completion Gate
+
+All 5 sub-tasks are complete when ALL of the following pass:
+
+1. `npx tsc --noEmit` — exits 0, no errors across all `src/**/*`, `infra/**/*`, `tests/**/*`.
+2. `npx jest` — exits 0, all existing unit tests pass (12 test files currently present).
+3. `npx cdk synth` — exits 0, CloudFormation template generated in `cdk.out/`. Template must contain `nodejs22.x` for all Lambda runtime fields.
+4. `node -e "const p=require('./package.json');if(!p.engines)throw new Error('missing engines field')"` — exits 0.
+5. `grep -r "NODEJS_20" infra/codevolve-stack.ts` — returns no matches (confirms Node 22 migration is complete).
+
+After all 5 checks pass, Quimby updates IMPL-01 status to `[✓]` Verified and records it in `tasks/todo.md`. IMPL-02 is then unblocked.
 
 ---
 
@@ -50,8 +377,9 @@
 |----|-------|--------|------|-----------|
 | REVIEW-01 | Iris | [x] | Review ARCH-01 (DynamoDB schemas) and ARCH-02 (API contracts). Verdict: **Request Changes** — 6 critical, 10 non-critical. See `docs/reviews/REVIEW-01.md`. All issues resolved per REVIEW-02. | ARCH-01, ARCH-02 |
 | REVIEW-02 | Iris | [✓] | Re-review ARCH-01/ARCH-02 after REVIEW-01 fixes. Verdict: **Approved** — all 6 criticals resolved, all 10 non-criticals resolved, 2 new minor issues found (N-NEW-01, N-NEW-02, neither blocking IMPL-01). See `docs/reviews/REVIEW-02.md`. Ada may proceed with IMPL-01. | ARCH-01, ARCH-02 |
-| REVIEW-03 | Iris | [ ] | Review IMPL-02 (CRUD API) + IMPL-03 (event emission) together. | IMPL-02, IMPL-03 |
-| REVIEW-04 | Iris | [ ] | Review IMPL-04 (archive mechanism) — pay special attention to: no hard deletions, OpenSearch removal correctness, event emission on archive/unarchive. | IMPL-04 |
+| REVIEW-03 | Iris | [✓] | Review IMPL-01 (project scaffold). Verdict: **Approved with notes** — all completion gate checks pass, 3 warnings (W-01: archive Kinesis import, W-02: healthFn over-permissioned, W-03: archiveHandlerFn unnecessary Bedrock grant). W-01 must be resolved before IMPL-04 ships. See `docs/reviews/REVIEW-03-IMPL-01.md`. | IMPL-01 |
+| REVIEW-04 | Iris | [ ] | Review IMPL-02 (CRUD API) + IMPL-03 (event emission) together. | IMPL-02, IMPL-03 |
+| REVIEW-05 | Iris | [ ] | Review IMPL-04 (archive mechanism) — pay special attention to: no hard deletions, OpenSearch removal correctness, event emission on archive/unarchive. | IMPL-04 |
 
 ---
 

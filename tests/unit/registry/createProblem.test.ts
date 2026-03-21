@@ -128,6 +128,17 @@ describe("POST /problems", () => {
     expect(JSON.parse(result.body).error.code).toBe("INTERNAL_ERROR");
   });
 
+  it("should include examples field defaulting to empty array", async () => {
+    mockSend.mockResolvedValueOnce({ Items: [] });
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await handler(makeEvent(validBody));
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(201);
+    expect(body.problem.examples).toEqual([]);
+  });
+
   it("should set default tags to empty array when not provided", async () => {
     const bodyNoTags = { ...validBody };
     delete (bodyNoTags as Record<string, unknown>).tags;

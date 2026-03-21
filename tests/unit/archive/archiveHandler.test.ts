@@ -25,7 +25,7 @@ jest.mock("@aws-sdk/lib-dynamodb", () => ({
 }));
 
 const mockEmitEvent = jest.fn().mockResolvedValue(undefined);
-jest.mock("../../../src/shared/kinesis", () => ({
+jest.mock("../../../src/shared/emitEvent", () => ({
   emitEvent: mockEmitEvent,
   EVENTS_STREAM: "codevolve-events",
   kinesisClient: {},
@@ -171,9 +171,10 @@ describe("archiveHandler (SQS)", () => {
     const result = await handler(event);
     expect(result.batchItemFailures).toHaveLength(0);
 
-    // Emits an archive_blocked event
+    // Emits an archive_blocked event using "fail" event_type (this is a rejection, not an archive)
     expect(mockEmitEvent).toHaveBeenCalledWith(
       expect.objectContaining({
+        event_type: "fail",
         intent: "archive_blocked:canonical_skill",
         success: false,
       }),
@@ -207,12 +208,16 @@ describe("archiveHandler (SQS)", () => {
   it("retries when active execution lock blocks archival", async () => {
     const skill = makeSkill({ active_execution_lock: "lock-123" });
 
-    // Query skill - has lock
+    // 1. Query skill - has lock
     mockSend.mockResolvedValueOnce({ Items: [skill] });
-    // Update fails with ConditionalCheckFailedException
+    // 2. Update fails with ConditionalCheckFailedException
     const condErr = new Error("Condition not met");
     (condErr as unknown as Record<string, string>).name = "ConditionalCheckFailedException";
     mockSend.mockRejectedValueOnce(condErr);
+    // 3. Re-query to check current state — still has lock, not archived
+    mockSend.mockResolvedValueOnce({
+      Items: [{ status: "verified", active_execution_lock: "lock-123" }],
+    });
 
     const event = makeSQSEvent([
       makeSQSRecord("msg-1", makeMessage()),
@@ -222,6 +227,29 @@ describe("archiveHandler (SQS)", () => {
     // Should report as failure so SQS retries
     expect(result.batchItemFailures).toHaveLength(1);
     expect(result.batchItemFailures[0].itemIdentifier).toBe("msg-1");
+  });
+
+  it("treats concurrent archival as idempotent no-op", async () => {
+    const skill = makeSkill();
+
+    // 1. Query skill — appears not yet archived
+    mockSend.mockResolvedValueOnce({ Items: [skill] });
+    // 2. Update fails — another process archived it concurrently
+    const condErr = new Error("Condition not met");
+    (condErr as unknown as Record<string, string>).name = "ConditionalCheckFailedException";
+    mockSend.mockRejectedValueOnce(condErr);
+    // 3. Re-query reveals it is now archived
+    mockSend.mockResolvedValueOnce({
+      Items: [{ status: "archived" }],
+    });
+
+    const event = makeSQSEvent([
+      makeSQSRecord("msg-1", makeMessage()),
+    ]);
+
+    const result = await handler(event);
+    // Idempotent no-op — no failure reported
+    expect(result.batchItemFailures).toHaveLength(0);
   });
 
   it("handles malformed message body gracefully", async () => {
@@ -244,6 +272,31 @@ describe("archiveHandler (SQS)", () => {
     const result = await handler(event);
     expect(result.batchItemFailures).toHaveLength(1);
     expect(result.batchItemFailures[0].itemIdentifier).toBe("msg-bad");
+  });
+
+  it("emits archive event_type on successful archive", async () => {
+    const skill = makeSkill();
+
+    mockSend.mockResolvedValueOnce({ Items: [skill] });
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({ Items: [] });
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({ Items: [{ status: "partial" }] });
+
+    const event = makeSQSEvent([
+      makeSQSRecord("msg-1", makeMessage()),
+    ]);
+
+    await handler(event);
+
+    expect(mockEmitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: "archive",
+        skill_id: SKILL_ID,
+        success: true,
+      }),
+    );
   });
 
   it("includes metrics_snapshot in audit record metadata", async () => {

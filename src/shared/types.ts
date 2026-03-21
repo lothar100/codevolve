@@ -18,7 +18,14 @@ export const SKILL_STATUSES = [
 ] as const;
 export type SkillStatus = (typeof SKILL_STATUSES)[number];
 
-export const EVENT_TYPES = ["resolve", "execute", "validate", "fail"] as const;
+export const EVENT_TYPES = [
+  "resolve",
+  "execute",
+  "validate",
+  "fail",
+  "archive",
+  "unarchive",
+] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
 export const DASHBOARD_TYPES = [

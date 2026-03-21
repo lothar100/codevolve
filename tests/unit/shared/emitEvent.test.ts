@@ -122,14 +122,36 @@ describe("emitEvent", () => {
     expect(console.error).toHaveBeenCalled();
   });
 
-  it("drops invalid events with a warning and does NOT call Kinesis", async () => {
+  it("drops invalid events with a warning and does NOT throw or call Kinesis", async () => {
     const invalidEvent = {
       ...validEventWithoutTimestamp,
       event_type: "bogus" as any,
     };
 
-    await emitEvent(invalidEvent);
+    // Must not throw — fire-and-forget even for invalid shapes
+    await expect(emitEvent(invalidEvent)).resolves.toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalled();
+  });
 
+  it("drops events with negative latency_ms and does NOT throw", async () => {
+    const invalidEvent = {
+      ...validEventWithoutTimestamp,
+      latency_ms: -1,
+    };
+
+    await expect(emitEvent(invalidEvent)).resolves.toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("drops events with invalid skill_id format and does NOT throw", async () => {
+    const invalidEvent = {
+      ...validEventWithoutTimestamp,
+      skill_id: "not-a-uuid",
+    };
+
+    await expect(emitEvent(invalidEvent)).resolves.toBeUndefined();
     expect(mockSend).not.toHaveBeenCalled();
     expect(console.warn).toHaveBeenCalled();
   });

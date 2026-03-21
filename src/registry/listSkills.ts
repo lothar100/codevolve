@@ -29,7 +29,7 @@ const ListSkillsParamsSchema = z.object({
     .enum(["true", "false"])
     .transform((v) => v === "true")
     .default("false"),
-  sort_by: z.enum(["created_at", "updated_at", "confidence", "name"]).default("created_at"),
+  sort_by: z.string().optional(),
   sort_order: z.enum(["asc", "desc"]).default("desc"),
   q: z.string().optional(),
 });
@@ -60,6 +60,30 @@ export async function handler(
     }
 
     const params = parseResult.data;
+
+    // Phase 1: only "confidence" is supported for sort_by.
+    // created_at, updated_at, name are not backed by GSIs.
+    const UNSUPPORTED_SORT_KEYS = ["created_at", "updated_at", "name"];
+    if (params.sort_by !== undefined) {
+      if (UNSUPPORTED_SORT_KEYS.includes(params.sort_by)) {
+        return error(
+          400,
+          "UNSUPPORTED_SORT_KEY",
+          `sort_by "${params.sort_by}" is not supported in Phase 1. Only "confidence" is supported.`,
+        );
+      }
+      if (params.sort_by !== "confidence") {
+        return error(400, "VALIDATION_ERROR", `Invalid sort_by value: "${params.sort_by}"`);
+      }
+      // sort_by=confidence requires a language filter (maps to GSI-language-confidence)
+      if (!params.language) {
+        return error(
+          400,
+          "VALIDATION_ERROR",
+          `sort_by "confidence" requires a language filter`,
+        );
+      }
+    }
 
     // Decode next_token (base64 encoded ExclusiveStartKey)
     let exclusiveStartKey: Record<string, unknown> | undefined;
@@ -239,16 +263,17 @@ export async function handler(
     }
     let dedupedItems = Array.from(latestBySkillId.values());
 
-    // Client-side sort
-    const sortBy = params.sort_by;
-    const sortOrder = params.sort_order;
-    dedupedItems.sort((a, b) => {
-      const aVal = a[sortBy === "name" ? "name" : sortBy] as string | number;
-      const bVal = b[sortBy === "name" ? "name" : sortBy] as string | number;
-      if (aVal < bVal) return sortOrder === "asc" ? -1 : 1;
-      if (aVal > bVal) return sortOrder === "asc" ? 1 : -1;
-      return 0;
-    });
+    // Client-side sort (only confidence is supported in Phase 1)
+    if (params.sort_by === "confidence") {
+      const sortOrder = params.sort_order;
+      dedupedItems.sort((a, b) => {
+        const aVal = (a.confidence as number) ?? 0;
+        const bVal = (b.confidence as number) ?? 0;
+        if (aVal < bVal) return sortOrder === "asc" ? -1 : 1;
+        if (aVal > bVal) return sortOrder === "asc" ? 1 : -1;
+        return 0;
+      });
+    }
 
     // Map to API response shape
     const skills = dedupedItems.map(mapSkillFromDynamo);

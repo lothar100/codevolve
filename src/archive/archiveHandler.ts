@@ -9,7 +9,7 @@
 import type { SQSEvent, SQSBatchResponse, SQSBatchItemFailure } from "aws-lambda";
 import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { docClient, SKILLS_TABLE, PROBLEMS_TABLE } from "../shared/dynamo.js";
-import { emitEvent } from "../shared/kinesis.js";
+import { emitEvent } from "../shared/emitEvent.js";
 import {
   invalidateCacheForSkill,
   archiveProblemIfAllSkillsArchived,
@@ -83,9 +83,10 @@ async function processArchiveMessage(message: ArchiveMessage): Promise<void> {
   // Canonical skill — block archival
   if (skill.is_canonical === true) {
     console.warn(`Skill ${skillId} is canonical, emitting archive_blocked event`);
-    emitEvent({
+    // Use "fail" event_type for blocked archive — this is a genuine failure/rejection,
+    // not a successful archive operation.
+    await emitEvent({
       event_type: "fail",
-      timestamp: now,
       skill_id: skillId,
       intent: "archive_blocked:canonical_skill",
       latency_ms: 0,
@@ -93,7 +94,7 @@ async function processArchiveMessage(message: ArchiveMessage): Promise<void> {
       cache_hit: false,
       input_hash: null,
       success: false,
-    }).catch(() => { /* fire-and-forget */ });
+    });
     return; // Don't retry — canonical status must be changed first
   }
 
@@ -138,13 +139,28 @@ async function processArchiveMessage(message: ArchiveMessage): Promise<void> {
       "name" in err &&
       (err as { name: string }).name === "ConditionalCheckFailedException"
     ) {
-      // Either already archived (idempotent) or active execution lock (retry later)
-      if (skill.active_execution_lock) {
-        console.log(`Skill ${skillId} has active execution lock, will retry`);
-        throw err; // Re-throw to trigger SQS retry
+      // ConditionExpression failed — either already archived (idempotent no-op)
+      // or active_execution_lock was set between our read and write attempt.
+      // Re-query the skill to determine the correct action.
+      const recheck = await docClient.send(
+        new QueryCommand({
+          TableName: SKILLS_TABLE,
+          KeyConditionExpression: "skill_id = :sid",
+          ExpressionAttributeValues: { ":sid": skillId },
+          ScanIndexForward: false,
+          Limit: 1,
+          ProjectionExpression: "#s, active_execution_lock",
+          ExpressionAttributeNames: { "#s": "status" },
+        }),
+      );
+      const current = recheck.Items?.[0];
+      if (current?.status === "archived") {
+        console.log(`Skill ${skillId} is now archived (concurrent archival), skipping`);
+        return; // Idempotent no-op
       }
-      console.log(`Skill ${skillId} condition check failed (likely already archived), skipping`);
-      return;
+      // Not yet archived — likely blocked by active_execution_lock. Re-throw to trigger SQS retry.
+      console.log(`Skill ${skillId} condition check failed (active execution lock or race), will retry`);
+      throw err;
     }
     throw err;
   }
@@ -200,9 +216,8 @@ async function processArchiveMessage(message: ArchiveMessage): Promise<void> {
   // -------------------------------------------------------------------------
   // 6. Emit Kinesis archive event (fire-and-forget)
   // -------------------------------------------------------------------------
-  emitEvent({
-    event_type: "fail",
-    timestamp: now,
+  await emitEvent({
+    event_type: "archive",
     skill_id: skillId,
     intent: `archive:${reason}`,
     latency_ms: 0,
@@ -210,7 +225,7 @@ async function processArchiveMessage(message: ArchiveMessage): Promise<void> {
     cache_hit: false,
     input_hash: null,
     success: true,
-  }).catch(() => { /* fire-and-forget */ });
+  });
 
   // -------------------------------------------------------------------------
   // 7. Check if all skills for parent problem are now archived

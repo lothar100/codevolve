@@ -12,7 +12,7 @@ import { z } from "zod";
 import { docClient, SKILLS_TABLE, PROBLEMS_TABLE } from "../shared/dynamo.js";
 import { success, error } from "../shared/response.js";
 import { validate } from "../shared/validation.js";
-import { emitEvent } from "../shared/kinesis.js";
+import { emitEvent } from "../shared/emitEvent.js";
 import {
   generateEmbedding,
   writeArchiveAuditRecord,
@@ -155,9 +155,8 @@ export async function handler(
   // -------------------------------------------------------------------------
   // 8. Emit Kinesis unarchive event (fire-and-forget)
   // -------------------------------------------------------------------------
-  emitEvent({
-    event_type: "fail", // closest available event type for unarchive events
-    timestamp: now,
+  await emitEvent({
+    event_type: "unarchive",
     skill_id: skillId,
     intent: `unarchive:${previousStatus}`,
     latency_ms: 0,
@@ -165,8 +164,6 @@ export async function handler(
     cache_hit: false,
     input_hash: null,
     success: true,
-  }).catch(() => {
-    /* fire-and-forget */
   });
 
   // -------------------------------------------------------------------------

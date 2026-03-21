@@ -12,7 +12,7 @@ import { z } from "zod";
 import { docClient, SKILLS_TABLE, PROBLEMS_TABLE } from "../shared/dynamo.js";
 import { success, error } from "../shared/response.js";
 import { validate } from "../shared/validation.js";
-import { emitEvent } from "../shared/kinesis.js";
+import { emitEvent } from "../shared/emitEvent.js";
 import {
   invalidateCacheForSkill,
   archiveProblemIfAllSkillsArchived,
@@ -170,18 +170,15 @@ export async function handler(
   // -------------------------------------------------------------------------
   // 8. Emit Kinesis archive event (fire-and-forget)
   // -------------------------------------------------------------------------
-  emitEvent({
-    event_type: "fail", // closest available event type for archive events
-    timestamp: now,
+  await emitEvent({
+    event_type: "archive",
     skill_id: skillId,
-    intent: `archive:manual`,
+    intent: "archive:manual",
     latency_ms: 0,
     confidence: null,
     cache_hit: false,
     input_hash: null,
     success: true,
-  }).catch(() => {
-    /* fire-and-forget */
   });
 
   // -------------------------------------------------------------------------

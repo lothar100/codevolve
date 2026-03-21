@@ -39,7 +39,7 @@ Base URL: `https://api.codevolve.dev/v1`
 
 const SkillStatus = z.enum(["unsolved", "partial", "verified", "optimized", "archived"]);
 
-const EventType = z.enum(["resolve", "execute", "validate", "fail"]);
+const EventType = z.enum(["resolve", "execute", "validate", "fail", "archive", "unarchive"]);
 
 const DashboardType = z.enum([
   "resolve-performance",

@@ -11,7 +11,6 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import {
   GetCommand,
   PutCommand,
-  QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { v4 as uuidv4 } from "uuid";
@@ -57,36 +56,6 @@ export async function handler(
         404,
         "NOT_FOUND",
         `Problem ${data.problem_id} not found`,
-      );
-    }
-
-    // Check uniqueness: problem_id + name + language + version_label
-    // Query GSI-problem-status to find skills with same problem_id, then filter
-    const existingSkills = await docClient.send(
-      new QueryCommand({
-        TableName: SKILLS_TABLE,
-        IndexName: "GSI-problem-status",
-        KeyConditionExpression: "problem_id = :pid",
-        FilterExpression:
-          "#n = :name AND #lang = :language AND version_label = :vl",
-        ExpressionAttributeNames: {
-          "#n": "name",
-          "#lang": "language",
-        },
-        ExpressionAttributeValues: {
-          ":pid": data.problem_id,
-          ":name": data.name,
-          ":language": data.language,
-          ":vl": data.version_label ?? "0.1.0",
-        },
-      }),
-    );
-
-    if (existingSkills.Items && existingSkills.Items.length > 0) {
-      return error(
-        409,
-        "CONFLICT",
-        `Skill with same problem_id, name, language, and version already exists`,
       );
     }
 
@@ -141,13 +110,29 @@ export async function handler(
       skillItem.embedding = embedding;
     }
 
-    // Write to Skills table
-    await docClient.send(
-      new PutCommand({
-        TableName: SKILLS_TABLE,
-        Item: skillItem,
-      }),
-    );
+    // Write to Skills table with PK uniqueness check (skill_id + version_number)
+    try {
+      await docClient.send(
+        new PutCommand({
+          TableName: SKILLS_TABLE,
+          Item: skillItem,
+          ConditionExpression:
+            "attribute_not_exists(skill_id) AND attribute_not_exists(version_number)",
+        }),
+      );
+    } catch (putErr: unknown) {
+      if (
+        putErr instanceof Error &&
+        putErr.name === "ConditionalCheckFailedException"
+      ) {
+        return error(
+          409,
+          "CONFLICT",
+          `Skill with same skill_id and version already exists`,
+        );
+      }
+      throw putErr;
+    }
 
     // Increment skill_count on Problems table
     await docClient.send(

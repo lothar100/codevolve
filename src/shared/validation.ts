@@ -25,6 +25,8 @@ export const EventTypeSchema = z.enum([
   "execute",
   "validate",
   "fail",
+  "archive",
+  "unarchive",
 ]);
 
 export const DashboardTypeSchema = z.enum([
