@@ -12,8 +12,8 @@
 
 | ID | Owner | Status | Task | Blocks |
 |----|-------|--------|------|--------|
-| ARCH-01 | Jorven | [~] | Design complete DynamoDB schemas for all tables: `codevolve-problems`, `codevolve-skills`, `codevolve-cache`, `codevolve-archive`. Include GSIs, partition keys, sort keys, and access patterns for every API endpoint. Output: `docs/dynamo-schemas.md`. **Revised 2026-03-21:** All 6 critical issues from REVIEW-01 addressed. Added `GET /skills/:id/versions` access pattern to skills table and cross-table summary. C-04 (semver sort key) resolved by `version_number` (N) as SK. Pending second Iris review before [✓]. | IMPL-01, IMPL-02, IMPL-04 |
-| ARCH-02 | Jorven | [~] | Write full API contract specs for all 15 endpoints: request shape (zod schema), response shape, error codes, HTTP status codes. Output: `docs/api.md`. **Revised 2026-03-21:** All 6 critical issues from REVIEW-01 addressed: C-01 (unified archival via `status: "archived"`), C-02 (cursor-based pagination with `next_token`), C-03 (version param on GET/execute/validate + new `GET /skills/:id/versions` endpoint), C-04 (resolved via `version_number` integer in Skill schema), C-05 (`canonical_skill_id` + `skill_count` in Problem schema), C-06 (`skill_count` increment documented in POST /skills side effects). Pending second Iris review before [✓]. | IMPL-02, IMPL-03, IMPL-05, IMPL-06 |
+| ARCH-01 | Jorven | [✓] | Design complete DynamoDB schemas for all tables: `codevolve-problems`, `codevolve-skills`, `codevolve-cache`, `codevolve-archive`. Include GSIs, partition keys, sort keys, and access patterns for every API endpoint. Output: `docs/dynamo-schemas.md`. **Verified 2026-03-21 (REVIEW-02):** All 6 REVIEW-01 criticals resolved. Open item before IMPL-02: fix `skill_version` field in cache table from semver string to integer `version_number` (N-NEW-01). | IMPL-01, IMPL-02, IMPL-04 |
+| ARCH-02 | Jorven | [✓] | Write full API contract specs for all 15 endpoints: request shape (zod schema), response shape, error codes, HTTP status codes. Output: `docs/api.md`. **Verified 2026-03-21 (REVIEW-02):** All 6 REVIEW-01 criticals resolved. Open items before IMPL-02: fix `skill_version` type in cache schema (N-NEW-01); add `archived` to `status_distribution` in skill-quality dashboard (N-NEW-02); document Streams vs direct Kinesis event emit policy (O-02). | IMPL-02, IMPL-03, IMPL-05, IMPL-06 |
 | ARCH-03 | Jorven | [✓] | Design archive mechanism data flow: what triggers archival, what Lambda runs it, what DynamoDB and OpenSearch operations it performs, how it emits events. Must handle: skill archive, problem archive, reversal (un-archive). Output: `docs/archive-design.md`. | IMPL-07 |
 | ARCH-04 | Jorven | [✓] | Write ADR-001 (tech stack) and ADR-002 (analytics separation) to `docs/decisions.md`. | — |
 | DESIGN-01 | Amber | [✓] | Define skill contract UX: required vs optional vs inferred fields, contributor-facing validation messages, contributor submission flow (what an agent or human POSTs to create a skill). Output: `docs/platform-design.md`. | ARCH-01 |
@@ -28,7 +28,7 @@
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| IMPL-01 | Ada | [ ] | Scaffold Lambda project: TypeScript strict mode, Jest, AWS CDK v2, folder structure (`src/registry/`, `src/router/`, `src/execution/`, `src/validation/`, `src/analytics/`, `src/evolve/`, `src/archive/`, `src/shared/`, `infra/`, `tests/`). Set up `package.json`, `tsconfig.json`, `jest.config.ts`, `cdk.json`. | ARCH-01 |
+| IMPL-01 | Ada | [ ] | Scaffold Lambda project: TypeScript strict mode, Jest, AWS CDK v2, folder structure (`src/registry/`, `src/router/`, `src/execution/`, `src/validation/`, `src/analytics/`, `src/evolve/`, `src/archive/`, `src/shared/`, `infra/`, `tests/`). Set up `package.json`, `tsconfig.json`, `jest.config.ts`, `cdk.json`. **Unblocked 2026-03-21** — REVIEW-02 approved ARCH-01/ARCH-02. Ada may begin. | ARCH-01 |
 | IMPL-02 | Ada | [ ] | Implement Skill + Problem CRUD API: `POST /skills`, `GET /skills/:id`, `GET /skills`, `POST /problems`, `GET /problems/:id`. DynamoDB DocumentClient, zod validation, Kinesis event emission on every write. Tests required. | ARCH-01, ARCH-02 |
 | IMPL-03 | Ada | [ ] | Implement Kinesis event emission utility (`src/shared/emitEvent.ts`): typed `AnalyticsEvent` interface, fire-and-forget (never crash handler on emission failure), unit tests with mocked Kinesis client. | ARCH-02 |
 | IMPL-04 | Ada | [ ] | Implement archive mechanism Lambda: reads Decision Engine output from SQS, sets `status: "archived"` in DynamoDB, removes from OpenSearch index, emits `event_type: "archive"` event. Handles skill + problem archival and reversal. Tests required. | ARCH-01, ARCH-03, DESIGN-03 |
@@ -48,8 +48,8 @@
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| REVIEW-01 | Iris | [✓] | Review ARCH-01 (DynamoDB schemas) and ARCH-02 (API contracts). Verdict: **Request Changes** — 6 critical, 10 non-critical. See `docs/reviews/REVIEW-01.md`. | ARCH-01, ARCH-02 |
-| REVIEW-02 | Iris | [ ] | Review IMPL-01 (project scaffold) — verify folder structure, tsconfig, jest config, CDK setup. | IMPL-01 |
+| REVIEW-01 | Iris | [x] | Review ARCH-01 (DynamoDB schemas) and ARCH-02 (API contracts). Verdict: **Request Changes** — 6 critical, 10 non-critical. See `docs/reviews/REVIEW-01.md`. All issues resolved per REVIEW-02. | ARCH-01, ARCH-02 |
+| REVIEW-02 | Iris | [✓] | Re-review ARCH-01/ARCH-02 after REVIEW-01 fixes. Verdict: **Approved** — all 6 criticals resolved, all 10 non-criticals resolved, 2 new minor issues found (N-NEW-01, N-NEW-02, neither blocking IMPL-01). See `docs/reviews/REVIEW-02.md`. Ada may proceed with IMPL-01. | ARCH-01, ARCH-02 |
 | REVIEW-03 | Iris | [ ] | Review IMPL-02 (CRUD API) + IMPL-03 (event emission) together. | IMPL-02, IMPL-03 |
 | REVIEW-04 | Iris | [ ] | Review IMPL-04 (archive mechanism) — pay special attention to: no hard deletions, OpenSearch removal correctness, event emission on archive/unarchive. | IMPL-04 |
 
