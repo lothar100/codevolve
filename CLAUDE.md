@@ -17,8 +17,8 @@ A global, AI-native registry of programming problems and solutions. Problems are
 ```
 Client / Agent
     │
-    ├── POST /resolve    → Skill Router     (Lambda + vector search + tag filter)
-    ├── POST /execute    → Execution Layer  (Lambda + cache check + skill runner)
+    ├── POST /resolve    → Skill Router     (Lambda + DynamoDB embeddings + cosine similarity)
+    ├── POST /execute    → Execution Layer  (Lambda + DynamoDB cache + skill runner)
     ├── POST /validate   → Validation Layer (Lambda + test runner)
     └── events emitted  → Kinesis → Analytics Store (ClickHouse / BigQuery)
                                          └── Decision Engine (scheduled Lambda)
@@ -27,7 +27,7 @@ Client / Agent
                                                └── gap → /evolve pipeline (Claude Code agent)
 ```
 
-**Infrastructure:** AWS (Lambda, API Gateway, DynamoDB, Kinesis, OpenSearch Serverless, ElastiCache). Analytics store separate from primary DB.
+**Infrastructure:** AWS (Lambda, API Gateway, DynamoDB, Kinesis). Embeddings stored in DynamoDB with client-side similarity (ADR-004). Cache via DynamoDB TTL (ADR-003). Analytics store (ClickHouse) separate from primary DB.
 
 ---
 
@@ -125,10 +125,10 @@ IF resolve_confidence < 0.7 OR no skill found                    → send intent
 
 ### Phase 2 — Routing + Execution
 - Embedding generation on skill create (AWS Bedrock or OpenAI)
-- Vector search (OpenSearch Serverless)
+- DynamoDB embedding storage + client-side cosine similarity (migrate to OpenSearch at >5K skills)
 - `/resolve` endpoint
 - `/execute` with per-language runners (start with Python + JS)
-- Cache layer (DynamoDB TTL or ElastiCache)
+- Cache layer (DynamoDB TTL)
 
 ### Phase 3 — Analytics + Feedback Loop
 - 5 dashboards (Grafana or custom React)
