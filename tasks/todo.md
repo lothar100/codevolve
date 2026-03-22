@@ -426,12 +426,115 @@ After all 5 checks pass, Quimby updates IMPL-01 status to `[✓]` Verified and r
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
 | ARCH-07 | Jorven | [✓] | Design Decision Engine: scheduling (EventBridge), rules logic (auto-cache, optimization flag, gap detection), SQS queue for /evolve pipeline. Output: `docs/decision-engine.md`, ADR-007 in `docs/decisions.md`. **Verified 2026-03-21 by Jorven.** | Phase 2 complete |
-| IMPL-08 | Ada | [ ] | Implement analytics event consumer: Kinesis → Lambda → ClickHouse/BigQuery. Batch writes, dead-letter queue, idempotent processing. | ARCH-07, DESIGN-02 |
+| IMPL-08 | Ada | [~] | Implement analytics event consumer: Kinesis → Lambda → ClickHouse. Batch writes, dead-letter queue, idempotent processing. **Plan written 2026-03-22 by Jorven** — see `docs/analytics-consumer.md` and IMPL-08 sub-tasks below. | ARCH-07, DESIGN-02 |
 | IMPL-09 | Ada | [ ] | Implement 5 dashboard API endpoints (read from ClickHouse/BigQuery). | IMPL-08, DESIGN-02 |
-| IMPL-10 | Ada | [ ] | Implement Decision Engine Lambda (scheduled): auto-cache trigger, optimization flag, gap detection → SQS GapQueue, archive evaluation → SQS ArchiveQueue. | ARCH-07, DESIGN-03 |
+| IMPL-10 | Ada | [~] | Implement Decision Engine Lambda (scheduled): auto-cache trigger, optimization flag, gap detection → SQS GapQueue, archive evaluation → SQS ArchiveQueue. | ARCH-07, DESIGN-03 |
 | DESIGN-04 | Amber | [✓] | Design mountain visualization data shape: what JSON does the frontend need, how to aggregate skill data for rendering. Output to `docs/platform-design.md`. Completed 2026-03-21. Full spec in docs/platform-design.md §DESIGN-04. IMPL-09 unblocked (pending Phase 2 completion). | Phase 2 complete |
-| REVIEW-07 | Iris | [ ] | Review IMPL-08 + IMPL-09 — verify analytics separation, no primary DB writes, query correctness. | IMPL-08, IMPL-09 |
-| REVIEW-08 | Iris | [ ] | Review IMPL-10 (Decision Engine) — verify rule logic, archive trigger safety (no premature archival), gap detection accuracy. | IMPL-10 |
+| REVIEW-08-IMPL08 | Iris | [ ] | Review IMPL-08 + IMPL-09 — verify analytics separation, no primary DB writes, query correctness, idempotency logic, DLQ configuration, schema correctness against all 5 DESIGN-02 dashboard queries. | IMPL-08, IMPL-09 |
+| REVIEW-08 | Iris | [✓] | Review IMPL-10 (Decision Engine) — verify rule logic, archive trigger safety (no premature archival), gap detection accuracy. **Approved with notes 2026-03-22 (REVIEW-08):** 54 tests pass, tsc clean, cdk synth confirmed. No critical issues. W-01: `optimizationFlag.ts` uses ScanCommand instead of QueryCommand on GSI-status-updated (must fix as FIX-12 before production data volume). W-02: placeholder account ID in ARCHIVE_QUEUE_URL fallback. W-03: staleness thresholds not runtime-configurable (deferred Phase 3). See docs/reviews/REVIEW-08.md. | IMPL-10 |
+
+---
+
+### IMPL-08 Sub-Tasks — Analytics Consumer Plan (Jorven, 2026-03-22)
+
+> Full specification in `docs/analytics-consumer.md`. Sub-tasks A and B are independent and can run in parallel. C, D, E are sequential.
+
+#### Pre-conditions
+
+Before Ada begins any sub-task, confirm:
+
+1. A ClickHouse Cloud instance is provisioned and accessible from the internet via HTTPS.
+2. `node --version` reports v22.x.
+3. `npm install` has been run after adding `@clickhouse/client` (done in IMPL-08-A).
+4. The `codevolve/clickhouse-credentials` Secrets Manager secret exists in `us-east-2`.
+
+---
+
+#### IMPL-08-A: ClickHouse Cloud Setup and Migration Script
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `scripts/clickhouse-init.sql`, `scripts/clickhouse-seed-verify.sql`, `package.json` (add `@clickhouse/client`) |
+| Depends on | ClickHouse Cloud instance provisioned (manual) |
+| Blocks | IMPL-08-C, IMPL-08-D |
+| Verification | `clickhouse-client ... --query "SHOW TABLES FROM codevolve"` returns `analytics_events`; `aws secretsmanager describe-secret --secret-id codevolve/clickhouse-credentials` returns metadata; `npx tsc --noEmit` exits 0 |
+
+**What to build:** `scripts/clickhouse-init.sql` with the exact DDL from `docs/analytics-consumer.md` §2.2 (`ReplacingMergeTree`, ORDER BY, PARTITION BY, TTL 90 days). `scripts/clickhouse-seed-verify.sql` with verification query. Create `codevolve/clickhouse-credentials` secret in Secrets Manager. Add `@clickhouse/client` to `package.json` dependencies and run `npm install`.
+
+---
+
+#### IMPL-08-B: CDK Resources
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `infra/codevolve-stack.ts` |
+| Depends on | IMPL-08-A (secret must exist) |
+| Blocks | IMPL-08-E (deploy needed for E2E test) |
+| Verification | `npx cdk synth` exits 0; template contains `AnalyticsConsumerFn`, `AnalyticsConsumerDlq`, `AnalyticsConsumerDlqAlarm`, Kinesis event source mapping with `BisectBatchOnFunctionError: true` |
+
+**What to build:** `AnalyticsConsumerFn` Lambda (512 MB, 60s timeout, Node 22, entry `src/analytics/consumer.ts`). `AnalyticsConsumerDlq` SQS Standard queue (14-day retention). `KinesisEventSource` on existing `codevolve-events` stream (batchSize 100, maxBatchingWindow 5s, reportBatchItemFailures true, retryAttempts 3, onFailure SqsDlq). Secret grants for both `AnalyticsConsumerFn` and `DecisionEngineFn`. CloudWatch alarm on DLQ depth > 0. Write stub handler that logs event and returns `{ batchItemFailures: [] }`.
+
+---
+
+#### IMPL-08-C: Event Parsing and event_id Derivation
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `src/analytics/eventId.ts`, `src/analytics/toClickHouseRow.ts`, `src/analytics/consumer.ts` (Phase 1 parsing), `tests/unit/analytics/eventId.test.ts`, `tests/unit/analytics/consumer.test.ts` |
+| Depends on | IMPL-08-A (package installed), IMPL-08-B (stub handler exists) |
+| Blocks | IMPL-08-D |
+| Verification | `npx jest tests/unit/analytics/` passes; `npx tsc --noEmit` exits 0 |
+
+**What to build:** `deriveEventId(event)` using SHA-256 of `skill_id|event_type|timestamp|input_hash` (nulls mapped to `""`). `toClickHouseRow(event)` mapping `AnalyticsEvent` to `ClickHouseRow` (booleans to 0/1, nulls to empty string except `confidence` which stays null). Phase 1 parsing loop in handler: base64-decode, JSON.parse, Zod validate, accumulate rows or batchItemFailures. Unit tests per `docs/analytics-consumer.md` §8 IMPL-08-C scope.
+
+---
+
+#### IMPL-08-D: ClickHouse Client and Batch Insert
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `src/analytics/clickhouseClient.ts`, `src/analytics/consumer.ts` (Phase 2 insert), `tests/unit/analytics/consumer.test.ts` (updated) |
+| Depends on | IMPL-08-C (row shape defined), IMPL-08-B (secret ARN available in env) |
+| Blocks | IMPL-08-E |
+| Verification | `npx jest tests/unit/analytics/` passes; `npx tsc --noEmit` exits 0 |
+
+**What to build:** `getClickHouseClient()` lazy singleton in `src/analytics/clickhouseClient.ts` — reads `CLICKHOUSE_SECRET_ARN`, fetches from Secrets Manager, creates `@clickhouse/client` instance (30s request timeout, gzip compression). Export `_setClickHouseClientForTesting(client)` for test injection. Phase 2 insert in handler: guard on empty rows, call `client.insert()`, handle transient vs permanent errors per `docs/analytics-consumer.md` §4.3. Unit tests per §8 IMPL-08-D scope.
+
+---
+
+#### IMPL-08-E: End-to-End Verification and Operational Readiness
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `scripts/clickhouse-seed-verify.sql` (confirmed, no changes) |
+| Depends on | IMPL-08-D, IMPL-08-B (CDK deployed) |
+| Blocks | IMPL-09, IMPL-10 Phase 3 ClickHouse mode |
+| Verification | `npx cdk deploy` exits 0; at least 1 event visible in ClickHouse via seed-verify script; DLQ depth = 0 after smoke test; `codevolve-config` `decision_engine.use_clickhouse` set to `true` in DynamoDB |
+
+**What to do:** Deploy to dev (`npx cdk deploy`). Confirm Kinesis event source mapping is `State: Enabled`. Trigger a test event via `POST /skills`. Wait 30s. Run `clickhouse-seed-verify.sql` and confirm rows are present. Trigger a deliberate parse failure via malformed Kinesis record and confirm handler logs the error without crashing. Set `decision_engine.use_clickhouse = true` in `codevolve-config` DynamoDB table.
+
+---
+
+#### IMPL-08 Completion Gate
+
+All 5 sub-tasks are complete when ALL of the following pass:
+
+1. `npx tsc --noEmit` — exits 0, no errors.
+2. `npx jest tests/unit/analytics/` — all analytics consumer unit tests pass.
+3. `npx cdk synth` — exits 0. Template contains `AnalyticsConsumerFn`, `AnalyticsConsumerDlq`, `AnalyticsConsumerDlqAlarm`, Kinesis event source mapping with `BisectBatchOnFunctionError: true`.
+4. `npx cdk deploy` to dev — exits 0.
+5. End-to-end smoke test: at least 1 event flows from Kinesis → ClickHouse and appears in `scripts/clickhouse-seed-verify.sql` output.
+6. REVIEW-08-IMPL08 (Iris): analytics separation verified, no primary DB writes, idempotency logic correct, schema matches all 5 DESIGN-02 dashboard queries.
 
 ---
 
@@ -439,10 +542,10 @@ After all 5 checks pass, Quimby updates IMPL-01 status to `[✓]` Verified and r
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| ARCH-08 | Jorven | [ ] | Design /validate endpoint and test runner: Lambda container approach, test execution format, confidence score formula, canonical promotion gate logic. | Phase 3 complete |
-| IMPL-11 | Ada | [ ] | Implement /validate: sandboxed test runner, confidence score update in DynamoDB, emit validation event. | ARCH-08 |
-| IMPL-12 | Ada | [ ] | Implement /evolve: consume GapQueue, construct skill-generation prompt, call Claude API (claude-sonnet-4-6), parse output into skill contract, auto-trigger /validate. | ARCH-08 |
-| IMPL-13 | Ada | [ ] | Implement canonical promotion: `POST /skills/:id/promote-canonical` — verify confidence >= 0.85, all tests passing, demote previous canonical for same problem. | ARCH-08 |
+| ARCH-08 | Jorven | [~] | Design /validate endpoint and test runner: Lambda container approach, test execution format, confidence score formula, canonical promotion gate logic. | Phase 3 complete |
+| IMPL-11 | Ada | [~] | Implement /validate: sandboxed test runner, confidence score update in DynamoDB, emit validation event. | ARCH-08 |
+| IMPL-12 | Ada | [~] | Implement /evolve: consume GapQueue, construct skill-generation prompt, call Claude API (claude-sonnet-4-6), parse output into skill contract, auto-trigger /validate. | ARCH-08 |
+| IMPL-13 | Ada | [~] | Implement canonical promotion: `POST /skills/:id/promote-canonical` — verify confidence >= 0.85, all tests passing, demote previous canonical for same problem. | ARCH-08 |
 
 ---
 

@@ -57,6 +57,32 @@ The codeVolve project was bootstrapped on 2026-03-20. Several foundational decis
 
 ---
 
+---
+
+### L-001: Worktree agents do not auto-commit — files must be manually copied to main repo
+
+**Observation:** Worktree agents (dispatched for Phase 3 parallel implementation) write files into their worktree directory but do not automatically commit or push. Files existed in the worktree but were absent from the main branch until manually copied.
+**Rule:** After every worktree agent completes, always manually copy output files from the worktree directory to the main repo before committing. Never assume worktree writes are visible in the main branch.
+**Action:** Procedure documented here. Worktree dispatch instructions updated to include an explicit copy-and-commit step.
+
+---
+
+### L-002: Keep handler.ts as a stub when splitting implementation across worktree agents
+
+**Observation:** When Phase 3 implementation was split across multiple worktree agents (one per rule file), each agent attempted to wire up `handler.ts` independently. This produced conflicting versions of the handler that could not be merged cleanly.
+**Rule:** When splitting implementation across worktree agents, designate `handler.ts` (or any top-level orchestrator file) as a stub owned by the main repo. Wire it up in the main repo only after all rule files from all worktrees have been copied over.
+**Action:** Phase 3 worktree dispatch revised to keep `handler.ts` as a stub. Final wiring performed in the main repo after merge.
+
+---
+
+### L-003: DynamoDB GSI queries do not support IN (...) conditions — issue one query per status value
+
+**Observation:** An attempt to filter a DynamoDB GSI query using an `IN (...)` condition (e.g., `status IN ("partial", "verified")`) failed at runtime. DynamoDB condition expressions do not support the `IN` operator on key attributes in GSI queries.
+**Rule:** Never use `IN (...)` in DynamoDB GSI key conditions. When filtering on multiple discrete values of a GSI key, issue one query per value and merge the results in Lambda.
+**Action:** Decision Engine implementation revised to issue one DynamoDB query per status value. Recorded as a hard constraint for all future GSI usage.
+
+---
+
 ## Session: 2026-03-21 Phase 2 Kick-off
 
 - Phase 1 complete: IMPL-01 through IMPL-04 all [✓] Verified, all FIX tasks done

@@ -2236,3 +2236,71 @@ Ada implements this endpoint in IMPL-09 (Phase 3, after analytics infrastructure
 3. **Archived problem toggle:** The design currently excludes archived problems entirely. Should the endpoint support `?include_archived=true` so operators can see the full mountain history? Deferred to DESIGN-05 (full visualization spec) to decide in context of the visualization interaction model.
 
 *Last updated: 2026-03-21 — DESIGN-04 by Amber*
+
+---
+
+## DESIGN-05: Execution Tiers & Cost Model
+
+### Overview
+
+`/execute` runs skill implementations on Lambda — the platform pays compute costs. Without controls, open access creates unbounded cost exposure. This design defines two execution modes and a subscription boundary that aligns cost with revenue.
+
+---
+
+### Execution Modes
+
+#### Local Execution (free)
+1. Client calls `POST /resolve` → receives best `skill_id` + metadata
+2. Client calls `GET /skills/:id` → receives implementation (inline string or S3 presigned URL)
+3. Client runs the implementation in their own environment
+
+**Platform cost:** one DynamoDB read (resolve) + one DynamoDB read (skill fetch). Effectively free at any scale.
+
+**Use cases:** Claude Code agents, CI pipelines, developers who can run JS/Python locally.
+
+#### Cloud Execution (paid)
+1. Client calls `POST /execute` with inputs
+2. Lambda fetches skill (DynamoDB or S3), runs it in a sandbox, returns output
+3. Result is cached in DynamoDB by `input_hash` — subsequent callers with identical inputs pay only a cache read
+
+**Platform cost:** Lambda compute + DynamoDB write (first execution), DynamoDB read only (cache hits). Popular skills become progressively cheaper to serve.
+
+---
+
+### Subscription Tiers (proposed)
+
+| Tier | Access | Limits |
+|------|--------|--------|
+| Free | `/resolve`, `GET /skills/:id` (local execution) | Rate-limited at API Gateway |
+| Pro | All of the above + `POST /execute`, `POST /validate` | Monthly execution quota |
+| Enterprise | Full access + SLA, dedicated concurrency | Custom |
+
+---
+
+### Cost Protection Mechanisms
+
+- **API Gateway rate limiting** — caps requests per second per API key, free to configure
+- **Lambda concurrency limit** — hard ceiling on parallel executions regardless of tier
+- **Result cache** — `input_hash` → cached output in DynamoDB (TTL-based); cache hits skip Lambda entirely
+- **Implementation cache** — Lambda in-process cache of loaded skill code; S3 download only on first call per warm container
+- **Quota enforcement** — Pro tier tracked via usage counter in DynamoDB; execution rejected (402) when quota exceeded
+- **Canonical promotion gate** — only skills with confidence ≥ 0.85 and zero test failures can be promoted canonical. This prevents low-quality skills from being the first result returned by /resolve for high-traffic problems, which would drive execution costs up.
+
+---
+
+### Implementation Storage
+
+Skills use `"implementation": "string | s3_ref"` (already in schema):
+
+- **Inline string:** small algorithmic implementations stored directly in DynamoDB. Fast, no extra hop.
+- **s3_ref:** large, multi-file, or binary implementations. Lambda downloads on first execution and caches in-process. Adds ~10–50ms on cold fetch; negligible on warm Lambda.
+
+The execution Lambda should maintain an in-process LRU cache keyed by `skill_id + version` to avoid repeated S3 fetches within a warm container lifetime.
+
+---
+
+### Relationship to Agent SDK (Phase 5)
+
+The MCP server / agent SDK wraps local execution by default — agents resolve and download skills, then run them locally. This is the zero-cost path and the primary driver of analytics telemetry. Cloud execution is the premium path for environments where running code locally is not possible or not desired.
+
+*Last updated: 2026-03-22 — DESIGN-05*

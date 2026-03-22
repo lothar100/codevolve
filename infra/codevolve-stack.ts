@@ -14,6 +14,8 @@ import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
+import * as events from "aws-cdk-lib/aws-events";
+import * as eventsTargets from "aws-cdk-lib/aws-events-targets";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -22,6 +24,9 @@ export class CodevolveStack extends cdk.Stack {
   public readonly skillsTable: dynamodb.Table;
   public readonly cacheTable: dynamodb.Table;
   public readonly archiveTable: dynamodb.Table;
+  public readonly configTable: dynamodb.Table;
+  public readonly gapLogTable: dynamodb.Table;
+  public readonly archiveDryRunTable: dynamodb.Table;
   public readonly eventsStream: kinesis.Stream;
   public readonly api: apigateway.RestApi;
 
@@ -141,6 +146,34 @@ export class CodevolveStack extends cdk.Stack {
       },
       projectionType: dynamodb.ProjectionType.INCLUDE,
       nonKeyAttributes: ["entity_id", "entity_type", "reason"],
+    });
+
+    // 5. codevolve-config (Decision Engine runtime configuration — IMPL-10)
+    this.configTable = new dynamodb.Table(this, "ConfigTable", {
+      tableName: "codevolve-config",
+      partitionKey: { name: "config_key", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // 6. codevolve-gap-log (unresolved resolve intent tracking — IMPL-10)
+    this.gapLogTable = new dynamodb.Table(this, "GapLogTable", {
+      tableName: "codevolve-gap-log",
+      partitionKey: {
+        name: "intent_hash",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: "ttl",
+    });
+
+    // 7. codevolve-archive-dry-run (dry-run evaluation results — IMPL-10)
+    this.archiveDryRunTable = new dynamodb.Table(this, "ArchiveDryRunTable", {
+      tableName: "codevolve-archive-dry-run",
+      partitionKey: { name: "eval_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // -----------------------------------------------------------------------
@@ -320,21 +353,40 @@ export class CodevolveStack extends cdk.Stack {
     // TODO: IMPL-07 — implement evolve handler
 
     // -----------------------------------------------------------------------
-    // SQS Queues (IMPL-04 — Archive Mechanism)
+    // SQS Queues (IMPL-04 — Archive Mechanism, updated in IMPL-10)
     // -----------------------------------------------------------------------
 
-    const archiveDlq = new sqs.Queue(this, "ArchiveDLQ", {
-      queueName: "codevolve-archive-dlq",
+    // GapQueue — FIFO queue for unresolved intents → /evolve pipeline (IMPL-10)
+    const gapQueueDlq = new sqs.Queue(this, "GapQueueDlq", {
+      queueName: "codevolve-gap-queue-dlq.fifo",
+      fifo: true,
       retentionPeriod: cdk.Duration.days(14),
+    });
+
+    const gapQueue = new sqs.Queue(this, "GapQueue", {
+      queueName: "codevolve-gap-queue.fifo",
+      fifo: true,
+      contentBasedDeduplication: true,
+      visibilityTimeout: cdk.Duration.seconds(300),
+      retentionPeriod: cdk.Duration.days(4),
+      deadLetterQueue: {
+        queue: gapQueueDlq,
+        maxReceiveCount: 3,
+      },
+    });
+
+    // ArchiveQueue — Standard queue for archive candidates → Archive Handler (IMPL-10)
+    const archiveQueueDlq = new sqs.Queue(this, "ArchiveQueueDlq", {
+      queueName: "codevolve-archive-queue-dlq",
+      retentionPeriod: cdk.Duration.days(7),
     });
 
     const archiveQueue = new sqs.Queue(this, "ArchiveQueue", {
       queueName: "codevolve-archive-queue",
-      visibilityTimeout: cdk.Duration.seconds(300),
-      retentionPeriod: cdk.Duration.days(4),
-      receiveMessageWaitTime: cdk.Duration.seconds(20),
+      visibilityTimeout: cdk.Duration.seconds(60),
+      retentionPeriod: cdk.Duration.hours(24),
       deadLetterQueue: {
-        queue: archiveDlq,
+        queue: archiveQueueDlq,
         maxReceiveCount: 3,
       },
     });
@@ -363,13 +415,56 @@ export class CodevolveStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(300), // matches SQS visibility timeout
     });
 
-    // Wire SQS archive queue to archive handler Lambda
+    // Wire SQS archive queue to archive handler Lambda (IMPL-10: batchSize 1)
     archiveHandlerFn.addEventSource(
       new lambdaEventSources.SqsEventSource(archiveQueue, {
-        batchSize: 10,
-        reportBatchItemFailures: true,
+        batchSize: 1,
       }),
     );
+
+    // -----------------------------------------------------------------------
+    // Decision Engine Lambda + EventBridge Schedule (IMPL-10)
+    // -----------------------------------------------------------------------
+
+    const decisionEngineFn = new NodejsFunction(this, "DecisionEngineFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-decision-engine",
+      entry: path.join(__dirname, "../src/decision-engine/handler.ts"),
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(240),
+      reservedConcurrentExecutions: 1,
+      environment: {
+        ...lambdaEnvironment,
+        GAP_LOG_TABLE: this.gapLogTable.tableName,
+        CONFIG_TABLE: this.configTable.tableName,
+        ARCHIVE_DRY_RUN_TABLE: this.archiveDryRunTable.tableName,
+        GAP_QUEUE_URL: gapQueue.queueUrl,
+        ARCHIVE_QUEUE_URL: archiveQueue.queueUrl,
+      },
+    });
+
+    // EventBridge rule: fire every 5 minutes
+    const decisionEngineSchedule = new events.Rule(
+      this,
+      "DecisionEngineSchedule",
+      {
+        ruleName: "codevolve-decision-engine-schedule",
+        schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      },
+    );
+    decisionEngineSchedule.addTarget(
+      new eventsTargets.LambdaFunction(decisionEngineFn),
+    );
+
+    // IAM grants for Decision Engine
+    this.skillsTable.grantReadWriteData(decisionEngineFn);
+    this.problemsTable.grantReadWriteData(decisionEngineFn);
+    this.gapLogTable.grantReadWriteData(decisionEngineFn);
+    this.configTable.grantReadWriteData(decisionEngineFn);
+    gapQueue.grantSendMessages(decisionEngineFn);
+    archiveQueue.grantSendMessages(decisionEngineFn);
+    this.eventsStream.grantWrite(decisionEngineFn);
+    this.archiveDryRunTable.grantWriteData(decisionEngineFn);
 
     // -----------------------------------------------------------------------
     // API Gateway

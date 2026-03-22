@@ -413,3 +413,63 @@ Option A: single rate-based EventBridge schedule at `rate(5 minutes)`. The archi
 - **Negative:** Lambda is invoked 288 times per day (every 5 minutes). On 287 of those invocations, Rules 1-3 run and Rule 4 is skipped. This generates 287 Lambda invocations per day with sub-second execution time (~10ms to check the 24h gate and then run Rules 1-3). At Lambda pricing, 287 invocations × ~10ms × 512MB = negligible cost (under $0.01/month).
 - **Negative:** Double-execution window exists when the Lambda is redeployed (EventBridge fires the new version before the old version's invocation has completed). Mitigated by `reservedConcurrentExecutions: 1` on the Lambda, which causes Lambda to throttle the second invocation rather than running two copies. EventBridge retries the throttled invocation with its own retry logic.
 - **Accepted trade-off:** Archive evaluation may drift up to 5 minutes from the 04:00 UTC target each day. Over a month, drift could accumulate to ~2.5 hours. The gate uses a fixed 23-hour window (not clock-aligned), so the maximum daily drift is bounded by the schedule interval (5 minutes), not by accumulated drift. In practice, drift is near zero because each gate check snaps to the 5-minute tick closest to 04:00 UTC.
+
+---
+
+## ADR-008: Analytics Consumer — ClickHouse Cloud, ReplacingMergeTree, and SQS DLQ
+Date: 2026-03-22
+Status: Accepted
+Decided by: Jorven (IMPL-08 planning)
+
+### Context
+
+IMPL-08 implements the Kinesis → ClickHouse analytics event consumer. Three concrete design decisions required documentation beyond the general ADR-002 (analytics separation) rationale: (1) whether to use ClickHouse Cloud or self-hosted EC2, (2) which ClickHouse table engine to use for idempotent writes, and (3) how to handle DLQ for a Kinesis event source mapping.
+
+### Options Considered
+
+**ClickHouse deployment:**
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| A — ClickHouse Cloud (chosen) | Managed hosted service | No EC2 to manage, automated backups, HA out of the box, free tier adequate for Phase 3 | Additional cost at scale, vendor dependency |
+| B — Self-hosted EC2 | Single EC2 instance (t3.medium) | Full control, lower cost at high volume | EC2 management, OS patching, manual backups, single point of failure |
+| C — BigQuery | GCP managed OLAP | Fully managed, no servers | Cross-cloud (GCP vs AWS), query latency (seconds not ms), per-query cost model |
+
+**ClickHouse table engine for idempotency:**
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| A — ReplacingMergeTree with event_id (chosen) | Deduplicates rows sharing the same `event_id` during background merge | Idempotent without application-layer checks, no separate DynamoDB dedup table | Deduplication is eventual (not immediate); requires `FINAL` for strict queries |
+| B — Application-layer dedup (DynamoDB set of event_ids) | Check DynamoDB before each insert | Immediate consistency | 100 DynamoDB reads per batch, adds 5-20ms latency, DynamoDB cost |
+| C — MergeTree (no dedup) | Standard append-only engine | Fastest insert | Kinesis at-least-once delivery causes duplicate rows in dashboards |
+
+**DLQ for Kinesis event source mapping:**
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| A — SQS Standard Queue DLQ (chosen) | Kinesis routes failed batches to SQS after retry exhaustion | Native Lambda event source mapping support, 14-day retention for investigation | DLQ messages do not contain original Kinesis data (only metadata) |
+| B — Kinesis stream as DLQ | Re-route failed records to a second Kinesis stream | Full record data preserved | Manual re-routing logic required; Kinesis does not natively support Kinesis-to-Kinesis DLQ on event source mappings |
+| C — No DLQ | Silent drop after retry exhaustion | Simplest setup | Undetectable permanent failures; analytics gaps not alertable |
+
+### Decision
+
+1. **ClickHouse Cloud** for managed operation. The free tier is sufficient for Phase 3 (~10K events/day). When volume exceeds the free tier, evaluate cost against a t3.medium EC2 instance.
+2. **ReplacingMergeTree with SHA-256 `event_id`** for idempotency. The `event_id` is derived deterministically from `skill_id + event_type + timestamp + input_hash`. Eventual deduplication is acceptable for analytics use cases.
+3. **SQS Standard Queue DLQ** with a CloudWatch alarm (depth > 0). The DLQ is an alert mechanism, not a replay mechanism — failed records within Kinesis retention can be replayed by resetting the consumer's shard iterator.
+
+### Reasons
+
+ClickHouse Cloud eliminates the operational overhead that self-hosted EC2 would impose on a small team. The free tier cost is zero. BigQuery's cross-cloud network adds latency and complexity.
+
+ReplacingMergeTree is the idiomatic ClickHouse solution for at-least-once ingestion pipelines. Avoiding a DynamoDB dedup check keeps the consumer stateless and removes a dependency on the primary datastore (ADR-002 mandates the analytics pipeline be independent of DynamoDB at runtime).
+
+SQS DLQ is the only Lambda-native option for Kinesis event source mapping failure destinations. The alternative (no DLQ) creates undetectable analytics gaps.
+
+### Consequences
+
+- **Positive:** Consumer Lambda has zero runtime dependency on DynamoDB or primary tables. Full analytics isolation.
+- **Positive:** `ReplacingMergeTree` deduplication requires no application code — the database engine handles it.
+- **Positive:** DLQ alarm provides immediate operational visibility on consumer failures.
+- **Negative:** Duplicate rows may be visible in ClickHouse between insert and background merge. Mitigated by `FINAL` keyword on time-sensitive queries.
+- **Negative:** DLQ messages do not contain the original Kinesis record data. Replaying events after retry exhaustion requires resetting the Kinesis shard iterator (only possible within retention window).
+- **Accepted trade-off:** 90-day TTL on `analytics_events` means events older than 90 days are permanently deleted from ClickHouse. Decision Engine historical analysis is limited to a 90-day window. This is acceptable — the Decision Engine's longest lookback window is 30 days (Query A in `docs/decision-engine.md` §3.3).
