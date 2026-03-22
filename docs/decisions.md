@@ -473,3 +473,58 @@ SQS DLQ is the only Lambda-native option for Kinesis event source mapping failur
 - **Negative:** Duplicate rows may be visible in ClickHouse between insert and background merge. Mitigated by `FINAL` keyword on time-sensitive queries.
 - **Negative:** DLQ messages do not contain the original Kinesis record data. Replaying events after retry exhaustion requires resetting the Kinesis shard iterator (only possible within retention window).
 - **Accepted trade-off:** 90-day TTL on `analytics_events` means events older than 90 days are permanently deleted from ClickHouse. Decision Engine historical analysis is limited to a 90-day window. This is acceptable — the Decision Engine's longest lookback window is 30 days (Query A in `docs/decision-engine.md` §3.3).
+
+---
+
+## ADR-009: Test Runner Reuse and Confidence Score Formula
+Date: 2026-03-22
+Status: Accepted
+Decided by: Jorven (ARCH-08)
+
+### Context
+
+ARCH-08 designs the `/validate` endpoint, the `/evolve` SQS consumer, and the canonical promotion gate. Two decisions require explicit documentation: (1) whether `/validate` should introduce new test execution infrastructure or reuse the existing runner Lambdas from IMPL-06, and (2) what formula to use for computing a skill's `confidence` score from test results.
+
+### Options Considered
+
+**Test execution infrastructure:**
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| A — Reuse runner Lambdas (chosen) | `/validate` invokes `codevolve-runner-python312` / `codevolve-runner-node22` with the same `InvokeCommand` pattern as `/execute` | Zero new Lambda functions, zero new container images, execution semantics guaranteed identical between execute and validate, sandbox isolation already in place | Runner Lambdas are invoked once per test case (N invocations for N tests), not in batch — cold start overhead applies if runner is cold |
+| B — New dedicated test-runner Lambda per language | Separate Lambda that accepts a batch of test cases and runs all of them in a single invocation | Single cold start per validation run, batch execution | Duplicates the runner Lambda pattern, creates two code paths for the same execution logic, drift risk between execute and validate semantics |
+| C — Docker-based test runner (ECS/Fargate) | Container that runs all tests for a skill in one job | Full OS-level isolation, arbitrary language support | ECS cold start is 30-60s (incompatible with 5-min Lambda validation timeout at scale), Fargate pricing, significant new infrastructure |
+
+**Confidence score formula:**
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| A — Simple pass rate: `pass_count / total_tests` (chosen) | Raw ratio of passing tests | Transparent, maps directly to canonical gate threshold (0.85 = 85% pass rate), easy to reason about, no calibration required | Does not account for test complexity, test coverage quality, or historical failure patterns |
+| B — Weighted pass rate (weight by test complexity or latency) | Assign weights to tests by difficulty tier | Rewards skills that pass harder tests | Requires a complexity scoring system that does not exist yet; arbitrary weights introduce bias without data to calibrate them |
+| C — Historical confidence decay | Blend test pass rate with real-world execution failure rate from analytics | More accurate reflection of real-world reliability | Requires ClickHouse query at validation time (violates analytics separation from primary path); Decision Engine already handles real-world confidence decay separately |
+| D — Bayesian update from prior confidence | Blend previous confidence with new pass rate | Smooth updates, avoids wild swings | Obscures the relationship between current tests and current confidence; a skill with 10 passing tests should be at 1.0 regardless of prior history |
+
+### Decision
+
+1. **Reuse existing runner Lambdas** (`codevolve-runner-python312`, `codevolve-runner-node22`) for test execution in `/validate`. The handler invokes the appropriate runner once per test case, using the same `InvokeCommand` pattern specified in `docs/execution-sandbox.md` §8.3.
+
+2. **Confidence formula: `pass_count / total_tests`** (simple pass rate). This is the authoritative confidence value written to DynamoDB after each validation run. Zero tests yields confidence 0.0, all passing yields 1.0.
+
+### Reasons
+
+**Runner reuse:** The core architectural constraint is that no skill implementation can access the network or filesystem, and that execution semantics must be identical between `/execute` (production path) and `/validate` (test path). Reusing the same runner Lambdas guarantees this. A test that passes validation will pass execution, because the same runtime environment is used. Introducing a separate test runner would create a divergence risk where validation and production execution differ in language version, sandbox policy, or timeout behavior — the kind of divergence that makes high confidence scores misleading.
+
+The N-invocation-per-test-case overhead is acceptable. The default validation timeout is 120 seconds. With 128 tests (the maximum per skill) and a 10s runner timeout per test, the worst-case wall-clock time is 128 × 10s = 1,280s — well above the timeout budget. In practice, the 120s total timeout budget gates this: a skill with 128 slow tests will hit the timeout and fail remaining tests, which appropriately reduces its confidence score. Fast tests (< 100ms) complete 128 test cases in well under 120s.
+
+**Simple pass rate:** The canonical gate threshold (`confidence >= 0.85`) needs to have a clear, auditable meaning. With a simple pass rate, `0.85` means "at least 85% of the skill's defined tests pass." This is easy to explain to contributors, easy to verify in logs, and easy to reason about when debugging a promotion failure. Weighted or blended formulas would require contributors to understand a calibration model before they could predict whether their skill will be promotable. This complexity is premature at Phase 4 — we have no execution history data against which to calibrate weights.
+
+The Decision Engine already handles the real-world confidence decay use case (Phase 3, IMPL-10): it reads ClickHouse execution failure events and may write back a lowered confidence score to DynamoDB. This separation is intentional — `/validate` reflects test-time quality (deterministic, controlled), while the Decision Engine reflects runtime quality (probabilistic, observed). Merging these two signals into a single formula at validation time would couple the analytics pipeline into the synchronous API path, violating ADR-002.
+
+### Consequences
+
+- **Positive:** Validation and execution use identical sandbox environments. A passing validation test is a reliable signal that the skill will execute correctly in production.
+- **Positive:** Confidence score has an unambiguous, auditable meaning for contributors and operators.
+- **Positive:** No new Lambda functions, container images, or execution infrastructure introduced in Phase 4.
+- **Negative:** N runner Lambda invocations per validation run (one per test case). For skills with many slow tests, this multiplies cold start overhead. Mitigated by the 120s total timeout budget.
+- **Negative:** Simple pass rate is a blunt instrument — a skill that passes 9 of 10 trivial tests and fails 1 edge case gets the same score as a skill that passes 9 of 10 hard tests. Accepted for Phase 4; Phase 5 may introduce test weighting if contributor feedback identifies this as a problem.
+- **Accepted trade-off:** `additional_tests` (supplied in the `/validate` request body) count toward confidence but are not persisted to the skill record. A skill that passes all its built-in tests plus 64 additional tests gets a high confidence score, but that score reflects the full combined test set. If the additional tests are not re-supplied on the next validation run, the confidence score will recalculate based only on built-in tests. This is intentional — confidence should always reflect the skill's own test suite, not a one-time augmented run.

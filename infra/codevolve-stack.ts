@@ -336,8 +336,27 @@ export class CodevolveStack extends cdk.Stack {
       ),
     });
 
-    // Validation: POST /validate/:skill_id
-    // TODO: IMPL-05 — implement validation handler
+    // Validation: POST /validate/:skill_id (IMPL-11)
+    const validateFn = new NodejsFunction(this, "ValidateFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-validate",
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(60),
+      entry: path.join(__dirname, "../src/validation/validateSkill.ts"),
+    });
+
+    // Evolve: SQS consumer for codevolve-gap-queue.fifo (IMPL-12)
+    const evolveFn = new NodejsFunction(this, "EvolveFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-evolve",
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(300),
+      entry: path.join(__dirname, "../src/evolve/handler.ts"),
+      environment: {
+        ...lambdaEnvironment,
+        VALIDATE_FUNCTION_NAME: "codevolve-validate",
+      },
+    });
 
     // Analytics: POST /events
     const emitEventsFn = new NodejsFunction(this, "EmitEventsFn", {
@@ -348,9 +367,6 @@ export class CodevolveStack extends cdk.Stack {
 
     // GET /analytics/dashboards/:type
     // TODO: IMPL-06 — implement dashboard handler
-
-    // Evolve: POST /evolve
-    // TODO: IMPL-07 — implement evolve handler
 
     // -----------------------------------------------------------------------
     // SQS Queues (IMPL-04 — Archive Mechanism, updated in IMPL-10)
@@ -572,8 +588,11 @@ export class CodevolveStack extends cdk.Stack {
 
     // /validate
     const validateResource = this.api.root.addResource("validate");
-    validateResource.addResource("{skill_id}");
-    // POST /validate/:skill_id
+    const validateByIdResource = validateResource.addResource("{skill_id}");
+    validateByIdResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(validateFn),
+    );
 
     // /events
     const eventsResource = this.api.root.addResource("events");
@@ -662,6 +681,39 @@ export class CodevolveStack extends cdk.Stack {
           runnerPython312Fn.functionArn,
           runnerNode22Fn.functionArn,
         ],
+      }),
+    );
+
+    // Validate function permissions (IMPL-11)
+    this.skillsTable.grantReadWriteData(validateFn);
+    this.eventsStream.grantWrite(validateFn);
+    validateFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["lambda:InvokeFunction"],
+        resources: [runnerPython312Fn.functionArn, runnerNode22Fn.functionArn],
+      }),
+    );
+
+    // Evolve function permissions (IMPL-12)
+    this.skillsTable.grantWriteData(evolveFn);
+    this.eventsStream.grantWrite(evolveFn);
+    gapQueue.grantConsumeMessages(evolveFn);
+    evolveFn.addEventSource(
+      new lambdaEventSources.SqsEventSource(gapQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      }),
+    );
+    evolveFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["lambda:InvokeFunction"],
+        resources: [validateFn.functionArn],
+      }),
+    );
+    evolveFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: ["arn:aws:secretsmanager:*:*:secret:codevolve/anthropic-api-key*"],
       }),
     );
 

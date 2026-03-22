@@ -27,6 +27,10 @@ export const EventTypeSchema = z.enum([
   "fail",
   "archive",
   "unarchive",
+  "evolve",
+  "evolve_failed",
+  "promote_canonical",
+  "archive_warning",
 ]);
 
 export const DashboardTypeSchema = z.enum([

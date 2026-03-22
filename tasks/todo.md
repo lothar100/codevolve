@@ -542,10 +542,253 @@ All 5 sub-tasks are complete when ALL of the following pass:
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| ARCH-08 | Jorven | [~] | Design /validate endpoint and test runner: Lambda container approach, test execution format, confidence score formula, canonical promotion gate logic. | Phase 3 complete |
-| IMPL-11 | Ada | [~] | Implement /validate: sandboxed test runner, confidence score update in DynamoDB, emit validation event. | ARCH-08 |
-| IMPL-12 | Ada | [~] | Implement /evolve: consume GapQueue, construct skill-generation prompt, call Claude API (claude-sonnet-4-6), parse output into skill contract, auto-trigger /validate. | ARCH-08 |
-| IMPL-13 | Ada | [~] | Implement canonical promotion: `POST /skills/:id/promote-canonical` — verify confidence >= 0.85, all tests passing, demote previous canonical for same problem. | ARCH-08 |
+| ARCH-08 | Jorven | [✓] | Design /validate endpoint and test runner: reuse runner Lambdas from IMPL-06, confidence score formula (pass_count/total_tests), canonical promotion gate (confidence >= 0.85, zero test failures, TransactWriteItems), /evolve SQS consumer (Claude API, skill parser, auto-trigger /validate). Output: `docs/validation-evolve.md`, ADR-009 in `docs/decisions.md`. **Completed 2026-03-22 by Jorven.** | Phase 3 complete |
+| IMPL-11 | Ada | [ ] | Implement /validate: reuse sandboxed runner Lambdas, deep equality test comparison, confidence score update in DynamoDB, status transition logic, cache invalidation, emit validation event, evolve trigger on confidence < 0.7. Full spec: `docs/validation-evolve.md` §2 and §9. | ARCH-08 |
+| IMPL-12 | Ada | [ ] | Implement /evolve SQS consumer: GapQueue FIFO consumer Lambda, similar skills DynamoDB lookup, Claude API call (claude-sonnet-4-6), skill JSON parsing + Zod validation, createSkill write, async /validate trigger, evolve-jobs DynamoDB tracking. Full spec: `docs/validation-evolve.md` §3 and §10. | ARCH-08, IMPL-11 |
+| IMPL-13 | Ada | [ ] | Implement canonical promotion: `POST /skills/:id/promote-canonical` — gate (confidence >= 0.85, test_fail_count === 0, status verified/optimized), DynamoDB TransactWriteItems (promote new + demote old + update problems table), cache invalidation. Full spec: `docs/validation-evolve.md` §4 and §11. | ARCH-08, IMPL-11 |
+
+---
+
+### IMPL-11 Sub-Tasks — /validate (Jorven, 2026-03-22)
+
+> Full specification in `docs/validation-evolve.md` §2 and §9. Sub-tasks A and B can run in parallel. C depends on A. D depends on C and B (CDK deployed).
+
+#### Pre-conditions
+
+1. IMPL-06 (runner Lambdas `codevolve-runner-python312`, `codevolve-runner-node22`) is complete and deployed.
+2. `npx tsc --noEmit` exits 0 before starting.
+3. `src/shared/deepEqual.ts` does not yet exist.
+
+---
+
+#### IMPL-11-A: Schema and deepEqual Utility
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `src/shared/deepEqual.ts` (new), `tests/unit/shared/deepEqual.test.ts` (new), `docs/dynamo-schemas.md` (add 3 attributes to codevolve-skills) |
+| Depends on | — |
+| Blocks | IMPL-11-C |
+| Verification | `npx jest tests/unit/shared/deepEqual.test.ts` passes; `npx tsc --noEmit` exits 0; `docs/dynamo-schemas.md` contains `last_validated_at`, `test_pass_count`, `test_fail_count` |
+
+**What to build:** `deepEqual(a: unknown, b: unknown): boolean` (recursive, key-order-independent, no JSON.stringify). Unit tests covering primitives, arrays, nested objects, null, unequal cases. Add `last_validated_at` (S), `test_pass_count` (N), `test_fail_count` (N) to `docs/dynamo-schemas.md` skills attributes table.
+
+---
+
+#### IMPL-11-B: CDK Resources
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `infra/codevolve-stack.ts` |
+| Depends on | — |
+| Blocks | IMPL-11-D |
+| Verification | `npx cdk synth` exits 0; template contains `ValidateFn` (NODEJS_22_X, 5 min timeout) with IAM grants for runner Lambda invocation, DynamoDB, Kinesis, SQS GapQueue |
+
+**What to build:** `ValidateFn` Lambda per `docs/validation-evolve.md` §8.1. Env vars: `RUNNER_LAMBDA_PYTHON`, `RUNNER_LAMBDA_NODE`, `SKILLS_TABLE`, `CACHE_TABLE`, `KINESIS_STREAM_NAME`, `GAP_QUEUE_URL`. API Gateway route `POST /validate/{skill_id}`.
+
+---
+
+#### IMPL-11-C: /validate Handler
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `src/validation/handler.ts` (new), `src/validation/index.ts` (replace stub), `tests/unit/validation/handler.test.ts` (new) |
+| Depends on | IMPL-11-A |
+| Blocks | IMPL-11-D |
+| Verification | `npx jest tests/unit/validation/handler.test.ts` passes; `npx tsc --noEmit` exits 0 |
+
+**What to build:** Full handler per `docs/validation-evolve.md` §2.2 — fetch skill, build test list, run tests via runner Lambdas, deepEqual comparison, confidence = pass_count/total_tests, status transitions (§6), DynamoDB UpdateItem (§2.4 — including conditional REMOVE optimization_flagged when p95 <= 5000), cache invalidation, Kinesis event (§2.5), evolve trigger if confidence < 0.7. Unit tests covering all error paths and status transitions.
+
+---
+
+#### IMPL-11-D: Integration Tests
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `tests/integration/validation/validate.test.ts` (new) |
+| Depends on | IMPL-11-C, IMPL-11-B (CDK deployed to dev) |
+| Blocks | — |
+| Verification | `npx jest tests/integration/validation/` passes against dev environment |
+
+**What to build:** Integration tests per `docs/validation-evolve.md` §9 IMPL-11-D — all-passing, mixed, no-tests, archived, additional_tests cases.
+
+---
+
+#### IMPL-11 Completion Gate
+
+1. `npx tsc --noEmit` — exits 0.
+2. `npx jest tests/unit/validation/ tests/unit/shared/deepEqual.test.ts` — all pass.
+3. `npx cdk synth` — exits 0, template contains `ValidateFn`.
+4. Integration tests pass against dev environment.
+5. `docs/dynamo-schemas.md` updated with `last_validated_at`, `test_pass_count`, `test_fail_count`.
+
+---
+
+### IMPL-12 Sub-Tasks — /evolve SQS Consumer (Jorven, 2026-03-22)
+
+> Full specification in `docs/validation-evolve.md` §3 and §10. Sub-tasks A and B can run in parallel. C depends on A. D depends on B and C.
+
+#### Pre-conditions
+
+1. IMPL-11 is complete and `ValidateFn` is deployed.
+2. `codevolve/anthropic-api-key` secret exists in Secrets Manager (`us-east-2`).
+3. Check `package.json` for `@anthropic-ai/sdk` — add if absent.
+
+---
+
+#### IMPL-12-A: evolve-jobs Table Schema and Package Setup
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `docs/dynamo-schemas.md` (add codevolve-evolve-jobs table), `package.json` (add `@anthropic-ai/sdk` if absent) |
+| Depends on | — |
+| Blocks | IMPL-12-C |
+| Verification | `npm ls @anthropic-ai/sdk` returns a version; `npx tsc --noEmit` exits 0; `docs/dynamo-schemas.md` contains `codevolve-evolve-jobs` spec |
+
+**What to build:** Add `codevolve-evolve-jobs` table to `docs/dynamo-schemas.md` per `docs/validation-evolve.md` §7. Confirm/add `@anthropic-ai/sdk` to `package.json`.
+
+---
+
+#### IMPL-12-B: CDK Resources
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `infra/codevolve-stack.ts` |
+| Depends on | — |
+| Blocks | IMPL-12-E |
+| Verification | `npx cdk synth` exits 0; template contains `EvolveFn`, `EvolveGapQueue` (FIFO), `EvolveDlq` (FIFO), `EvolveJobsTable`, SQS event source on `EvolveFn` (batchSize: 1) |
+
+**What to build:** All CDK constructs per `docs/validation-evolve.md` §8.2. Stub handler that returns `{ batchItemFailures: [] }`.
+
+---
+
+#### IMPL-12-C: Claude Client and Skill Parser
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `src/evolve/claudeClient.ts` (new), `src/evolve/skillParser.ts` (new), `tests/unit/evolve/skillParser.test.ts` (new) |
+| Depends on | IMPL-12-A |
+| Blocks | IMPL-12-D |
+| Verification | `npx jest tests/unit/evolve/skillParser.test.ts` passes; `npx tsc --noEmit` exits 0 |
+
+**What to build:** Lazy Anthropic client singleton (Secrets Manager read on first call). `parseClaudeSkillResponse` (JSON extraction, markdown fence stripping). `repairTestCases` (swap `output` -> `expected`). Unit tests per `docs/validation-evolve.md` §10 IMPL-12-C scope.
+
+---
+
+#### IMPL-12-D: /evolve SQS Handler
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `src/evolve/handler.ts` (replace stub), `src/evolve/index.ts` (update), `tests/unit/evolve/handler.test.ts` (new) |
+| Depends on | IMPL-12-C, IMPL-12-B |
+| Blocks | IMPL-12-E |
+| Verification | `npx jest tests/unit/evolve/handler.test.ts` passes; `npx tsc --noEmit` exits 0 |
+
+**What to build:** Full SQS handler per `docs/validation-evolve.md` §3 — GapQueueMessage Zod parse, similar skills query, prompt build, Claude API call, response parse + Zod validate, createSkill write, async ValidateFn invocation, evolve-jobs status writes, correct batchItemFailures behavior for transient vs permanent errors. Unit tests covering all paths per §10 IMPL-12-D scope.
+
+---
+
+#### IMPL-12-E: End-to-End Smoke Test
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `scripts/evolve-smoke-test.ts` (new, dev-only test script) |
+| Depends on | IMPL-12-D, IMPL-12-B (CDK deployed) |
+| Blocks | — |
+| Verification | Manual: SQS test message -> Lambda logs -> new skill in `codevolve-skills` -> validation event in ClickHouse within 60s |
+
+---
+
+#### IMPL-12 Completion Gate
+
+1. `npx tsc --noEmit` — exits 0.
+2. `npx jest tests/unit/evolve/` — all pass.
+3. `npx cdk synth` — exits 0, template contains `EvolveFn`, `EvolveGapQueue`, `EvolveDlq`, `EvolveJobsTable`.
+4. `docs/dynamo-schemas.md` includes `codevolve-evolve-jobs` table spec.
+5. E2E smoke test: one valid SQS message -> new skill in DynamoDB -> validation event in ClickHouse.
+
+---
+
+### IMPL-13 Sub-Tasks — Canonical Promotion (Jorven, 2026-03-22)
+
+> Full specification in `docs/validation-evolve.md` §4 and §11. Sub-tasks A and B can run in parallel. C depends on both.
+
+#### Pre-conditions
+
+1. IMPL-11 is complete (skill records have `test_pass_count` and `test_fail_count` attributes from at least one /validate run).
+2. `npx tsc --noEmit` exits 0 before starting.
+
+---
+
+#### IMPL-13-A: CDK Resources
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `infra/codevolve-stack.ts` |
+| Depends on | — |
+| Blocks | IMPL-13-C |
+| Verification | `npx cdk synth` exits 0; template contains `PromoteCanonicalFn` (NODEJS_22_X, 30s timeout) with `dynamodb:TransactWriteItems` IAM grant |
+
+**What to build:** `PromoteCanonicalFn` Lambda per `docs/validation-evolve.md` §8.3. Env vars: `SKILLS_TABLE`, `PROBLEMS_TABLE`, `CACHE_TABLE`. API Gateway route `POST /skills/{id}/promote-canonical`.
+
+---
+
+#### IMPL-13-B: Promotion Gate Logic
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `src/registry/promoteCanonicalGate.ts` (new), `tests/unit/registry/promoteCanonicalGate.test.ts` (new) |
+| Depends on | — |
+| Blocks | IMPL-13-C |
+| Verification | `npx jest tests/unit/registry/promoteCanonicalGate.test.ts` passes; `npx tsc --noEmit` exits 0 |
+
+**What to build:** Pure function `validatePromotionGate(skill)` returning `{ valid: true }` or `{ valid: false; status; code; message }`. Unit tests for every gate condition per `docs/validation-evolve.md` §11 IMPL-13-B scope.
+
+---
+
+#### IMPL-13-C: promote-canonical Handler
+
+| Field | Value |
+|-------|-------|
+| Owner | Ada |
+| Status | [ ] Planned |
+| Files | `src/registry/promoteCanonical.ts` (new), `tests/unit/registry/promoteCanonical.test.ts` (new) |
+| Depends on | IMPL-13-A, IMPL-13-B |
+| Blocks | — |
+| Verification | `npx jest tests/unit/registry/promoteCanonical.test.ts` passes; `npx tsc --noEmit` exits 0 |
+
+**What to build:** Full handler per `docs/validation-evolve.md` §4 — GetItem, gate check, previous canonical query (GSI-canonical), TransactWriteItems (promote + demote + update problems), cache invalidation for demoted skill, re-fetch and return PromoteCanonicalResponse. Unit tests per §11 IMPL-13-C scope including TransactionCanceledException ConditionalCheckFailed -> 422.
+
+---
+
+#### IMPL-13 Completion Gate
+
+1. `npx tsc --noEmit` — exits 0.
+2. `npx jest tests/unit/registry/` (promoteCanonicalGate + promoteCanonical) — all pass.
+3. `npx cdk synth` — exits 0, template contains `PromoteCanonicalFn`.
+4. Manual smoke test: create skill -> validate (all pass) -> promote-canonical -> 200, `is_canonical: true`.
+5. Demote test: create second skill for same problem -> validate -> promote -> first skill has `is_canonical: false`.
 
 ---
 

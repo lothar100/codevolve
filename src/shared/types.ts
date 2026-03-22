@@ -25,6 +25,10 @@ export const EVENT_TYPES = [
   "fail",
   "archive",
   "unarchive",
+  "evolve",
+  "evolve_failed",
+  "promote_canonical",
+  "archive_warning",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
