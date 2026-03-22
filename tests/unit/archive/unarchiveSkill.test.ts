@@ -175,6 +175,24 @@ describe("unarchiveSkill handler", () => {
     expect(mockBedrockSend).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back to 'verified' when previous_status is absent on the archived record", async () => {
+    // Simulate a skill archived before the previous_status field was introduced
+    const skill = makeArchivedSkill({ previous_status: undefined });
+
+    mockSend.mockResolvedValueOnce({ Items: [skill] });
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({});
+    const condErr = new Error("Condition not met");
+    (condErr as unknown as Record<string, string>).name = "ConditionalCheckFailedException";
+    mockSend.mockRejectedValueOnce(condErr);
+
+    const result = await handler(makeEvent(SKILL_ID));
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.skill.status).toBe("verified");
+  });
+
   it("restores to previous_status stored on the skill", async () => {
     const skill = makeArchivedSkill({ previous_status: "partial" });
 

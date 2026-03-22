@@ -9,6 +9,7 @@ import * as cdk from "aws-cdk-lib";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as kinesis from "aws-cdk-lib/aws-kinesis";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as sqs from "aws-cdk-lib/aws-sqs";
@@ -103,7 +104,7 @@ export class CodevolveStack extends cdk.Stack {
       partitionKey: { name: "skill_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "hit_count", type: dynamodb.AttributeType.NUMBER },
       projectionType: dynamodb.ProjectionType.INCLUDE,
-      nonKeyAttributes: ["input_hash", "skill_version", "last_hit_at"],
+      nonKeyAttributes: ["input_hash", "version_number", "last_hit_at"],
     });
 
     // 4. codevolve-archive (audit log)
@@ -169,161 +170,72 @@ export class CodevolveStack extends cdk.Stack {
     // Lambda Functions
     // -----------------------------------------------------------------------
 
-    const defaultLambdaProps: Partial<lambda.FunctionProps> = {
+    // Shared props for all Node.js Lambda functions (uses local esbuild, no Docker)
+    const commonNodejsProps = {
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
       environment: lambdaEnvironment,
+      handler: "handler",
+      bundling: { externalModules: ["@aws-sdk/*"] },
     };
 
     // Health check
-    const healthFn = new lambda.Function(this, "HealthFn", {
-      ...defaultLambdaProps,
+    const healthFn = new NodejsFunction(this, "HealthFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-health",
-      handler: "health.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "../src/shared"), {
-        bundling: {
-          image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-          command: [
-            "bash",
-            "-c",
-            "npx esbuild health.ts --bundle --platform=node --target=node22 --outfile=/asset-output/health.js",
-          ],
-        },
-      }),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/shared/health.ts"),
+    });
 
     // --- Registry Lambda functions (IMPL-02) ---
 
-    const registryBundlingCommand = (entrypoint: string) => [
-      "bash",
-      "-c",
-      `npx esbuild ${entrypoint} --bundle --platform=node --target=node22 --outfile=/asset-output/${entrypoint.replace(".ts", ".js")} --external:@aws-sdk/*`,
-    ];
-
-    const createSkillFn = new lambda.Function(this, "CreateSkillFn", {
-      ...defaultLambdaProps,
+    const createSkillFn = new NodejsFunction(this, "CreateSkillFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-create-skill",
-      handler: "createSkill.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/registry"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: registryBundlingCommand("createSkill.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/registry/createSkill.ts"),
+    });
 
-    const getSkillFn = new lambda.Function(this, "GetSkillFn", {
-      ...defaultLambdaProps,
+    const getSkillFn = new NodejsFunction(this, "GetSkillFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-get-skill",
-      handler: "getSkill.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/registry"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: registryBundlingCommand("getSkill.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/registry/getSkill.ts"),
+    });
 
-    const listSkillsFn = new lambda.Function(this, "ListSkillsFn", {
-      ...defaultLambdaProps,
+    const listSkillsFn = new NodejsFunction(this, "ListSkillsFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-list-skills",
-      handler: "listSkills.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/registry"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: registryBundlingCommand("listSkills.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/registry/listSkills.ts"),
+    });
 
-    const listSkillVersionsFn = new lambda.Function(
-      this,
-      "ListSkillVersionsFn",
-      {
-        ...defaultLambdaProps,
-        functionName: "codevolve-list-skill-versions",
-        handler: "listSkillVersions.handler",
-        code: lambda.Code.fromAsset(
-          path.join(__dirname, "../src/registry"),
-          {
-            bundling: {
-              image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-              command: registryBundlingCommand("listSkillVersions.ts"),
-            },
-          },
-        ),
-      } as lambda.FunctionProps,
-    );
+    const listSkillVersionsFn = new NodejsFunction(this, "ListSkillVersionsFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-list-skill-versions",
+      entry: path.join(__dirname, "../src/registry/listSkillVersions.ts"),
+    });
 
-    const promoteCanonicalFn = new lambda.Function(this, "PromoteCanonicalFn", {
-      ...defaultLambdaProps,
+    const promoteCanonicalFn = new NodejsFunction(this, "PromoteCanonicalFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-promote-canonical",
-      handler: "promoteCanonical.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/registry"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: registryBundlingCommand("promoteCanonical.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/registry/promoteCanonical.ts"),
+    });
 
-    const createProblemFn = new lambda.Function(this, "CreateProblemFn", {
-      ...defaultLambdaProps,
+    const createProblemFn = new NodejsFunction(this, "CreateProblemFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-create-problem",
-      handler: "createProblem.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/registry"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: registryBundlingCommand("createProblem.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/registry/createProblem.ts"),
+    });
 
-    const getProblemFn = new lambda.Function(this, "GetProblemFn", {
-      ...defaultLambdaProps,
+    const getProblemFn = new NodejsFunction(this, "GetProblemFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-get-problem",
-      handler: "getProblem.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/registry"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: registryBundlingCommand("getProblem.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/registry/getProblem.ts"),
+    });
 
-    const listProblemsFn = new lambda.Function(this, "ListProblemsFn", {
-      ...defaultLambdaProps,
+    const listProblemsFn = new NodejsFunction(this, "ListProblemsFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-list-problems",
-      handler: "listProblems.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/registry"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: registryBundlingCommand("listProblems.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/registry/listProblems.ts"),
+    });
 
     const registryFunctions = [
       createSkillFn,
@@ -336,34 +248,70 @@ export class CodevolveStack extends cdk.Stack {
       listProblemsFn,
     ];
 
-    // Router: POST /resolve
-    // TODO: IMPL-03 — implement resolve handler
+    // Router: POST /resolve (IMPL-05)
+    const resolveFn = new NodejsFunction(this, "ResolveFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-resolve",
+      entry: path.join(__dirname, "../src/router/resolve.ts"),
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(10),
+    });
 
-    // Execution: POST /execute, POST /execute/chain
-    // TODO: IMPL-04 — implement execution handlers
+    // Execution: POST /execute, POST /execute/chain (IMPL-06)
+    const executeFn = new NodejsFunction(this, "ExecuteFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-execute",
+      entry: path.join(__dirname, "../src/execution/execute.ts"),
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        ...lambdaEnvironment,
+        RUNNER_LAMBDA_PYTHON: "codevolve-runner-python312",
+        RUNNER_LAMBDA_NODE: "codevolve-runner-node22",
+        SKILLS_TABLE_NAME: this.skillsTable.tableName,
+        CACHE_TABLE_NAME: this.cacheTable.tableName,
+        KINESIS_STREAM_NAME: this.eventsStream.streamName,
+      },
+    });
+
+    const executeChainFn = new NodejsFunction(this, "ExecuteChainFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-execute-chain",
+      entry: path.join(__dirname, "../src/execution/executeChain.ts"),
+    });
+
+    // Runner Lambdas — CloudWatch Logs only (no AWS service access)
+    const runnerPython312Fn = new lambda.Function(this, "RunnerPython312Fn", {
+      functionName: "codevolve-runner-python312",
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "handler.handler",
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(10),
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "../src/runners/python312"),
+      ),
+    });
+
+    const runnerNode22Fn = new lambda.Function(this, "RunnerNode22Fn", {
+      functionName: "codevolve-runner-node22",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handler.handler",
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(10),
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "../src/runners/node22"),
+      ),
+    });
 
     // Validation: POST /validate/:skill_id
     // TODO: IMPL-05 — implement validation handler
 
     // Analytics: POST /events
-    const emitEventsFn = new lambda.Function(this, "EmitEventsFn", {
-      ...defaultLambdaProps,
+    const emitEventsFn = new NodejsFunction(this, "EmitEventsFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-emit-events",
-      handler: "emitEvents.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/analytics"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: [
-              "bash",
-              "-c",
-              "npx esbuild emitEvents.ts --bundle --platform=node --target=node22 --outfile=/asset-output/emitEvents.js",
-            ],
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/analytics/emitEvents.ts"),
+    });
 
     // GET /analytics/dashboards/:type
     // TODO: IMPL-06 — implement dashboard handler
@@ -395,58 +343,25 @@ export class CodevolveStack extends cdk.Stack {
     // Archive Lambda Functions (IMPL-04)
     // -----------------------------------------------------------------------
 
-    const archiveBundlingCommand = (entrypoint: string) => [
-      "bash",
-      "-c",
-      `npx esbuild ${entrypoint} --bundle --platform=node --target=node22 --outfile=/asset-output/${entrypoint.replace(".ts", ".js")} --external:@aws-sdk/*`,
-    ];
-
-    const archiveSkillFn = new lambda.Function(this, "ArchiveSkillFn", {
-      ...defaultLambdaProps,
+    const archiveSkillFn = new NodejsFunction(this, "ArchiveSkillFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-archive-skill",
-      handler: "archiveSkill.handler",
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/archive"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: archiveBundlingCommand("archiveSkill.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+      entry: path.join(__dirname, "../src/archive/archiveSkill.ts"),
+    });
 
-    const unarchiveSkillFn = new lambda.Function(this, "UnarchiveSkillFn", {
-      ...defaultLambdaProps,
+    const unarchiveSkillFn = new NodejsFunction(this, "UnarchiveSkillFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-unarchive-skill",
-      handler: "unarchiveSkill.handler",
+      entry: path.join(__dirname, "../src/archive/unarchiveSkill.ts"),
       timeout: cdk.Duration.seconds(60), // longer timeout for Bedrock embedding regeneration
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/archive"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: archiveBundlingCommand("unarchiveSkill.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+    });
 
-    const archiveHandlerFn = new lambda.Function(this, "ArchiveHandlerFn", {
-      ...defaultLambdaProps,
+    const archiveHandlerFn = new NodejsFunction(this, "ArchiveHandlerFn", {
+      ...commonNodejsProps,
       functionName: "codevolve-archive-handler",
-      handler: "archiveHandler.handler",
+      entry: path.join(__dirname, "../src/archive/archiveHandler.ts"),
       timeout: cdk.Duration.seconds(300), // matches SQS visibility timeout
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/archive"),
-        {
-          bundling: {
-            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-            command: archiveBundlingCommand("archiveHandler.ts"),
-          },
-        },
-      ),
-    } as lambda.FunctionProps);
+    });
 
     // Wire SQS archive queue to archive handler Lambda
     archiveHandlerFn.addEventSource(
@@ -541,15 +456,24 @@ export class CodevolveStack extends cdk.Stack {
       new apigateway.LambdaIntegration(getProblemFn),
     );
 
-    // /resolve
-    this.api.root.addResource("resolve");
-    // POST /resolve
+    // /resolve (IMPL-05)
+    const resolveResource = this.api.root.addResource("resolve");
+    resolveResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(resolveFn),
+    );
 
-    // /execute
+    // /execute (IMPL-06)
     const executeResource = this.api.root.addResource("execute");
-    // POST /execute
-    executeResource.addResource("chain");
-    // POST /execute/chain
+    executeResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(executeFn),
+    );
+    const executeChainResource = executeResource.addResource("chain");
+    executeChainResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(executeChainFn),
+    );
 
     // /validate
     const validateResource = this.api.root.addResource("validate");
@@ -619,6 +543,32 @@ export class CodevolveStack extends cdk.Stack {
 
     // SQS consume permission for archive handler
     archiveQueue.grantConsumeMessages(archiveHandlerFn);
+
+    // Resolve function permissions (IMPL-05)
+    this.skillsTable.grantReadData(resolveFn);
+    this.eventsStream.grantWrite(resolveFn);
+    resolveFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel"],
+        resources: [
+          `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+        ],
+      }),
+    );
+
+    // Execution function permissions (IMPL-06)
+    this.skillsTable.grantReadWriteData(executeFn);
+    this.cacheTable.grantReadWriteData(executeFn);
+    this.eventsStream.grantWrite(executeFn);
+    executeFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["lambda:InvokeFunction"],
+        resources: [
+          runnerPython312Fn.functionArn,
+          runnerNode22Fn.functionArn,
+        ],
+      }),
+    );
 
     // -----------------------------------------------------------------------
     // Outputs

@@ -20,7 +20,6 @@ jest.mock("@aws-sdk/lib-dynamodb", () => ({
     from: jest.fn().mockReturnValue({ send: (...args: unknown[]) => mockSend(...args) }),
   },
   PutCommand: jest.fn().mockImplementation((input) => ({ _type: "PutCommand", input })),
-  ScanCommand: jest.fn().mockImplementation((input) => ({ _type: "ScanCommand", input })),
 }));
 
 jest.mock("uuid", () => ({
@@ -66,9 +65,7 @@ describe("POST /problems", () => {
   });
 
   it("should create a problem and return 201", async () => {
-    // ScanCommand returns empty (no duplicate)
-    mockSend.mockResolvedValueOnce({ Items: [] });
-    // PutCommand succeeds
+    // PutCommand succeeds (conditional expression passes)
     mockSend.mockResolvedValueOnce({});
 
     const result = await handler(makeEvent(validBody));
@@ -99,10 +96,12 @@ describe("POST /problems", () => {
     expect(result.statusCode).toBe(400);
   });
 
-  it("should return 409 when problem name already exists", async () => {
-    mockSend.mockResolvedValueOnce({
-      Items: [{ problem_id: "existing-id", name: "Two Sum" }],
-    });
+  it("should return 409 when ConditionalCheckFailedException is thrown", async () => {
+    // DynamoDB throws ConditionalCheckFailedException when the condition
+    // expression (attribute_not_exists(problem_id)) fails.
+    const conditionalError = new Error("The conditional request failed");
+    conditionalError.name = "ConditionalCheckFailedException";
+    mockSend.mockRejectedValueOnce(conditionalError);
 
     const result = await handler(makeEvent(validBody));
     const body = JSON.parse(result.body);
@@ -129,7 +128,6 @@ describe("POST /problems", () => {
   });
 
   it("should include examples field defaulting to empty array", async () => {
-    mockSend.mockResolvedValueOnce({ Items: [] });
     mockSend.mockResolvedValueOnce({});
 
     const result = await handler(makeEvent(validBody));
@@ -143,7 +141,6 @@ describe("POST /problems", () => {
     const bodyNoTags = { ...validBody };
     delete (bodyNoTags as Record<string, unknown>).tags;
 
-    mockSend.mockResolvedValueOnce({ Items: [] });
     mockSend.mockResolvedValueOnce({});
 
     const result = await handler(makeEvent(bodyNoTags));

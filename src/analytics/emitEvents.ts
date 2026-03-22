@@ -17,6 +17,17 @@ import { EventTypeSchema } from "../shared/validation.js";
 import { success, error } from "../shared/response.js";
 import { validate } from "../shared/validation.js";
 
+// This handler constructs its own KinesisClient rather than importing the
+// singleton from `src/shared/emitEvent.ts`. This is intentional:
+//
+// - The fire-and-forget wrappers in `emitEvent.ts` / `emitEvents.ts` swallow
+//   Kinesis errors so that a Kinesis outage never crashes other handlers (e.g.
+//   /resolve, /execute). That behavior is wrong here — the *sole purpose* of
+//   the POST /events endpoint is to write events to Kinesis, so a Kinesis
+//   failure must surface as a 500 to the caller rather than be silently dropped.
+//
+// - Using a dedicated client (with the same configuration) keeps this file
+//   self-contained and avoids importing the shared wrapper just to bypass it.
 const kinesisClient = new KinesisClient({
   region: process.env.AWS_REGION ?? "us-east-2",
 });

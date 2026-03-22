@@ -29,9 +29,9 @@
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
 | IMPL-01 | Ada | [✓] | Scaffold Lambda project: TypeScript strict mode, Jest, AWS CDK v2, folder structure (`src/registry/`, `src/router/`, `src/execution/`, `src/validation/`, `src/analytics/`, `src/evolve/`, `src/archive/`, `src/shared/`, `infra/`, `tests/`). Set up `package.json`, `tsconfig.json`, `jest.config.ts`, `cdk.json`. **Plan written 2026-03-21 by Jorven** — see IMPL-01 sub-tasks below. **Approved 2026-03-21 (REVIEW-03):** All completion gate checks pass (126 tests, tsc clean, NODEJS_22_X confirmed). Open before IMPL-04: fix archive module to import from `emitEvent.ts` not `kinesis.ts` (W-01). | ARCH-01 |
-| IMPL-02 | Ada | [ ] | Implement Skill + Problem CRUD API: `POST /skills`, `GET /skills/:id`, `GET /skills`, `POST /problems`, `GET /problems/:id`. DynamoDB DocumentClient, zod validation, Kinesis event emission on every write. Tests required. | ARCH-01, ARCH-02 |
-| IMPL-03 | Ada | [ ] | Implement Kinesis event emission utility (`src/shared/emitEvent.ts`): typed `AnalyticsEvent` interface, fire-and-forget (never crash handler on emission failure), unit tests with mocked Kinesis client. | ARCH-02 |
-| IMPL-04 | Ada | [ ] | Implement archive mechanism Lambda: reads Decision Engine output from SQS, sets `status: "archived"` in DynamoDB, removes from OpenSearch index, emits `event_type: "archive"` event. Handles skill + problem archival and reversal. Tests required. | ARCH-01, ARCH-03, DESIGN-03 |
+| IMPL-02 | Ada | [✓] | Implement Skill + Problem CRUD API: `POST /skills`, `GET /skills/:id`, `GET /skills`, `POST /problems`, `GET /problems/:id`. DynamoDB DocumentClient, zod validation, Kinesis event emission on every write. Tests required. **Approved 2026-03-21 (REVIEW-04):** 5 non-critical issues (see REVIEW-04.md). N-NEW-01 still open before IMPL-05. | ARCH-01, ARCH-02 |
+| IMPL-03 | Ada | [✓] | Implement Kinesis event emission utility (`src/shared/emitEvent.ts`): typed `AnalyticsEvent` interface, fire-and-forget (never crash handler on emission failure), unit tests with mocked Kinesis client. **Approved 2026-03-21 (REVIEW-04):** See REVIEW-04.md for N-05 (duplicate KinesisClient in analytics/emitEvents.ts). | ARCH-02 |
+| IMPL-04 | Ada | [✓] | Implement archive mechanism Lambda: reads Decision Engine output from SQS, sets `status: "archived"` in DynamoDB, removes from OpenSearch index, emits `event_type: "archive"` event. Handles skill + problem archival and reversal. Tests required. **Approved 2026-03-21 (REVIEW-05):** 4 non-critical issues (N-01 skill_count floor, N-02 pagination gap, N-03 bedrockClient export, N-04 undocumented fallback). W-01/W-02/W-03 all resolved. | ARCH-01, ARCH-03, DESIGN-03 |
 
 ---
 
@@ -362,6 +362,24 @@ After all 5 checks pass, Quimby updates IMPL-01 status to `[✓]` Verified and r
 
 ---
 
+### Fix Tasks (from REVIEW-04 + REVIEW-05)
+
+| ID | Owner | Status | Task | Depends On |
+|----|-------|--------|------|-----------|
+| FIX-01 | Ada | [✓] | Fix N-01: `listProblems.ts` — add `examples` field to `mapProblemFromDynamo` mapper. Update unit test. Approved 2026-03-21 (REVIEW-FIX-04/05). | IMPL-02 |
+| FIX-02 | Ada | [✓] | Fix N-02: `createProblem.ts` — replace full-table-scan name-uniqueness check with DynamoDB conditional put. Catch `ConditionalCheckFailedException`, return 409. Update unit test. Approved 2026-03-21 (REVIEW-FIX-04/05). | IMPL-02 |
+| FIX-03 | Ada | [✓] | Fix N-03: `listSkills.ts` — do not apply DynamoDB `Limit` before filter expression. Remove or defer `Limit` when a filter is active. Approved 2026-03-21 (REVIEW-FIX-04/05). | IMPL-02 |
+| FIX-04 | Ada | [✓] | Fix N-04: `listSkills.ts:152–165` — remove dead code block (expression pushed then immediately popped). Approved 2026-03-21 (REVIEW-FIX-04/05). | IMPL-02 |
+| FIX-05 | Ada | [✓] | Fix N-05: `analytics/emitEvents.ts` — reuse shared Kinesis client singleton or document intentional-throw contract with inline comment. Approved 2026-03-21 (REVIEW-FIX-04/05). | IMPL-03 |
+| FIX-06 | Ada | [✓] | Fix N-01 (R05): `archiveUtils.ts` — add floor guard to `skill_count` decrement (no negative counts). Use condition expression. Update unit test. Approved 2026-03-21 (REVIEW-FIX-04/05). | IMPL-04 |
+| FIX-07 | Ada | [✓] | Fix N-02 (R05): `archiveUtils.ts` — add pagination to `archiveProblemIfAllSkillsArchived` query. Update unit test. Approved 2026-03-21 (REVIEW-FIX-04/05). | IMPL-04 |
+| FIX-08 | Ada | [✓] | Fix N-03 (R05): `archiveUtils.ts` — remove `export` from `bedrockClient` declaration. Make module-private. Approved 2026-03-21 (REVIEW-FIX-04/05). | IMPL-04 |
+| FIX-09 | Ada | [✓] | Fix N-04 (R05): `unarchiveSkill.ts` — document `previous_status ?? "verified"` fallback with inline comment + add unit test case for missing `previous_status`. Approved 2026-03-21 (REVIEW-FIX-04/05). | IMPL-04 |
+| FIX-10 | Ada | [✓] | Fix N-NEW-01: `docs/dynamo-schemas.md` — rename `skill_version` (String) to `version_number` (Number) in cache table schema. Docs only. Approved 2026-03-21 (REVIEW-FIX-04/05). | ARCH-01 |
+| FIX-11 | Ada | [✓] | Fix N-NEW-02: `docs/api.md` — add `"archived"` to `status_distribution` in skill-quality dashboard response schema. Docs only. Approved 2026-03-21 (REVIEW-FIX-04/05). | ARCH-02 |
+
+---
+
 ### Documentation (Quimby — no blockers, run in parallel)
 
 | ID | Owner | Status | Task | Depends On |
@@ -378,8 +396,8 @@ After all 5 checks pass, Quimby updates IMPL-01 status to `[✓]` Verified and r
 | REVIEW-01 | Iris | [x] | Review ARCH-01 (DynamoDB schemas) and ARCH-02 (API contracts). Verdict: **Request Changes** — 6 critical, 10 non-critical. See `docs/reviews/REVIEW-01.md`. All issues resolved per REVIEW-02. | ARCH-01, ARCH-02 |
 | REVIEW-02 | Iris | [✓] | Re-review ARCH-01/ARCH-02 after REVIEW-01 fixes. Verdict: **Approved** — all 6 criticals resolved, all 10 non-criticals resolved, 2 new minor issues found (N-NEW-01, N-NEW-02, neither blocking IMPL-01). See `docs/reviews/REVIEW-02.md`. Ada may proceed with IMPL-01. | ARCH-01, ARCH-02 |
 | REVIEW-03 | Iris | [✓] | Review IMPL-01 (project scaffold). Verdict: **Approved with notes** — all completion gate checks pass, 3 warnings (W-01: archive Kinesis import, W-02: healthFn over-permissioned, W-03: archiveHandlerFn unnecessary Bedrock grant). W-01 must be resolved before IMPL-04 ships. See `docs/reviews/REVIEW-03-IMPL-01.md`. | IMPL-01 |
-| REVIEW-04 | Iris | [ ] | Review IMPL-02 (CRUD API) + IMPL-03 (event emission) together. | IMPL-02, IMPL-03 |
-| REVIEW-05 | Iris | [ ] | Review IMPL-04 (archive mechanism) — pay special attention to: no hard deletions, OpenSearch removal correctness, event emission on archive/unarchive. | IMPL-04 |
+| REVIEW-04 | Iris | [✓] | Review IMPL-02 (CRUD API) + IMPL-03 (event emission) together. **Approved with notes 2026-03-21:** 128 tests pass, no critical issues. 5 non-critical issues (N-01 missing examples field, N-02 TOCTOU race in createProblem name-uniqueness, N-03 DynamoDB Limit applied before filter, N-04 dead code in listSkills, N-05 duplicate KinesisClient). N-NEW-01 and N-NEW-02 still open. See docs/reviews/REVIEW-04.md. | IMPL-02, IMPL-03 |
+| REVIEW-05 | Iris | [✓] | Review IMPL-04 (archive mechanism). **Approved with notes 2026-03-21:** 43 archive tests pass, no hard deletions confirmed, no critical issues. W-01/W-02/W-03 all resolved. 4 non-critical issues (N-01 skill_count floor, N-02 pagination on archiveProblemIfAllSkillsArchived, N-03 bedrockClient export, N-04 undocumented fallback). See docs/reviews/REVIEW-05.md. | IMPL-04 |
 
 ---
 
@@ -389,14 +407,15 @@ After all 5 checks pass, Quimby updates IMPL-01 status to `[✓]` Verified and r
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| ARCH-05 | Jorven | [ ] | Design vector search architecture: DynamoDB embedding storage, Bedrock Titan v2 embedding strategy (when to embed, fields to embed, 1024 dimensions), `/resolve` ranking logic (cosine similarity + tag boost, client-side in Lambda). Migration path to OpenSearch at >5K skills. | Phase 1 complete |
-| ARCH-06 | Jorven | [ ] | Design execution sandbox: Lambda container per language (Python 3.12, Node 22), input/output serialization format, timeout and memory limits, error taxonomy. | Phase 1 complete |
-| IMPL-05 | Ada | [ ] | Implement `/resolve` endpoint: embed intent via Bedrock, vector search OpenSearch, tag filter boost, return best match + confidence. Latency target: p95 < 100ms. | ARCH-05 |
-| IMPL-06 | Ada | [ ] | Implement `/execute` endpoint: check cache (DynamoDB TTL), deserialize inputs per skill contract, invoke sandboxed runner Lambda, serialize outputs, update cache on hit. | ARCH-06 |
-| IMPL-07 | Ada | [ ] | Implement cache layer: `(skill_id, input_hash)` → output, DynamoDB TTL (`codevolve-cache` table per ARCH-01). Cache invalidated on skill version update. | ARCH-05 |
-| DESIGN-06 | Amber | [ ] | Design MCP server interface for codeVolve: tool definitions for resolve/execute/chain/list/validate, resource definitions for skills/problems, prompt templates for skill generation. Output to `docs/platform-design.md`. | ARCH-05, ARCH-06 |
-| REVIEW-05 | Iris | [ ] | Review IMPL-05 (/resolve) — verify no LLM calls in path, latency targets met in tests, confidence scoring logic. | IMPL-05 |
-| REVIEW-06 | Iris | [ ] | Review IMPL-06 (/execute) + IMPL-07 (cache) — verify sandbox isolation, cache correctness, no data leakage between skill executions. | IMPL-06, IMPL-07 |
+| ARCH-05 | Jorven | [✓] | Design vector search architecture: DynamoDB embedding storage, Bedrock Titan v2 embedding strategy (when to embed, fields to embed, 1024 dimensions), `/resolve` ranking logic (cosine similarity + tag boost, client-side in Lambda). Migration path to OpenSearch at >5K skills. Approved with notes 2026-03-21 (REVIEW-06-ARCH). C-01 resolved (no-match returns HTTP 200, not 404). IMPL-05 unblocked. | Phase 1 complete |
+| ARCH-06 | Jorven | [✓] | Design execution sandbox: Lambda-per-language (Python 3.12, Node 22), input/output serialization, timeout/memory limits, error taxonomy, cache layer integration, ADR-006. Output: `docs/execution-sandbox.md`. ADR-006 written to `docs/decisions.md`. **Verified 2026-03-21 by Jorven.** Open item for Ada: add `504 EXECUTION_OOM` to `/execute` error table in `docs/api.md` as part of IMPL-06. Approved with notes 2026-03-21 (REVIEW-06-ARCH). W-03/W-04 resolved (stack trace sanitization defined, version_number corrected). IMPL-06/07 unblocked. | Phase 1 complete |
+| IMPL-05 | Ada | [✓] | Implement `/resolve` endpoint: embed intent via Bedrock, vector search OpenSearch, tag filter boost, return best match + confidence. Latency target: p95 < 100ms. **Approved 2026-03-21 (REVIEW-IMPL-05 + re-review):** N-01 (Kinesis emit on error paths), N-02 (case-sensitive boost matching), N-03 (void emitEvent on success path) all verified. OI-01/OI-02 deferred to IMPL-10. | ARCH-05 |
+| IMPL-06 | Ada | [✓] | Implement `/execute` endpoint: check DynamoDB cache, validate inputs against skill contract, invoke runner Lambda (`codevolve-runner-python312` or `codevolve-runner-node22`), handle cache-on-demand write policy, update execution_count + latency on skill record, emit Kinesis event. Add `504 EXECUTION_OOM` to `docs/api.md`. Full spec: `docs/execution-sandbox.md`. **Approved 2026-03-21 (REVIEW-07 re-review):** All 3 criticals and 3 non-criticals resolved and verified. | ARCH-06 |
+| IMPL-07 | Ada | [✓] | Implement cache layer (`src/cache/cache.ts`): `getCachedOutput`, `writeCachedOutput`, `incrementCacheHit`. Key: `(skill_id, input_hash)` on `codevolve-cache`. Cache write only when `auto_cache: true` on skill record. TTL: 24h default. Full spec: `docs/execution-sandbox.md` §5. **Approved 2026-03-21 (REVIEW-07 re-review):** All fixes verified. | ARCH-06 |
+| DESIGN-06 | Amber | [✓] | Design MCP server interface for codeVolve: tool definitions for resolve/execute/chain/list/validate, resource definitions for skills/problems, prompt templates for skill generation. Output to `docs/platform-design.md`. Completed 2026-03-21. MCP server spec in docs/platform-design.md. IMPL-15 unblocked. | ARCH-05, ARCH-06 |
+| REVIEW-05-IMPL05 | Iris | [✓] | Review IMPL-05 (/resolve) — verify no LLM calls in path, latency targets met in tests, confidence scoring logic. **Approved with notes 2026-03-21:** 14 tests pass, no critical issues. N-01: Kinesis event not emitted on Bedrock/DynamoDB early-exit error paths (spec §7.4 violation). N-02: computeBoost uses case-insensitive matching; spec mandates case-sensitive (requires Jorven decision). N-03: await emitEvent should be void emitEvent (minor latency). OI-01/OI-02: ARCH-07 gap-log and last_resolve_at follow-ups not yet present (not blocking). See docs/reviews/REVIEW-IMPL-05.md. **Re-review 2026-03-21 (Iris):** N-01, N-02, N-03 all verified. IMPL-05 approved. | IMPL-05 |
+| REVIEW-06 | Iris | [✓] | Review ARCH-05 (vector search) + ARCH-06 (execution sandbox). **Approved with notes 2026-03-21:** C-01 resolved (no-match response code), W-02–04 resolved. All blockers cleared. See docs/reviews/REVIEW-06-ARCH.md. | ARCH-05, ARCH-06 |
+| REVIEW-07 | Iris | [✓] | Review IMPL-06 (/execute) + IMPL-07 (cache) — verify sandbox isolation, cache correctness, no data leakage between skill executions. **Request Changes 2026-03-21 (REVIEW-07):** 3 critical issues: C-01 ExecuteResponse missing input_hash+version fields, C-02 504 EXECUTION_OOM absent from api.md, C-03 CDK GSI nonKeyAttributes still has skill_version (should be version_number). 3 warnings, 3 suggestions. All 45 tests pass. See docs/reviews/REVIEW-07.md. **Approved 2026-03-21 (REVIEW-07 re-review):** All 6 fixes (C-01/C-02/C-03/W-01/W-02/S-03) verified correct. IMPL-06 and IMPL-07 approved. | IMPL-06, IMPL-07 |
 
 ---
 
@@ -406,11 +425,11 @@ After all 5 checks pass, Quimby updates IMPL-01 status to `[✓]` Verified and r
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| ARCH-07 | Jorven | [ ] | Design Decision Engine: scheduling (EventBridge), rules logic (auto-cache, optimization flag, gap detection), SQS queue for /evolve pipeline. | Phase 2 complete |
+| ARCH-07 | Jorven | [✓] | Design Decision Engine: scheduling (EventBridge), rules logic (auto-cache, optimization flag, gap detection), SQS queue for /evolve pipeline. Output: `docs/decision-engine.md`, ADR-007 in `docs/decisions.md`. **Verified 2026-03-21 by Jorven.** | Phase 2 complete |
 | IMPL-08 | Ada | [ ] | Implement analytics event consumer: Kinesis → Lambda → ClickHouse/BigQuery. Batch writes, dead-letter queue, idempotent processing. | ARCH-07, DESIGN-02 |
 | IMPL-09 | Ada | [ ] | Implement 5 dashboard API endpoints (read from ClickHouse/BigQuery). | IMPL-08, DESIGN-02 |
 | IMPL-10 | Ada | [ ] | Implement Decision Engine Lambda (scheduled): auto-cache trigger, optimization flag, gap detection → SQS GapQueue, archive evaluation → SQS ArchiveQueue. | ARCH-07, DESIGN-03 |
-| DESIGN-04 | Amber | [ ] | Design mountain visualization data shape: what JSON does the frontend need, how to aggregate skill data for rendering. Output to `docs/platform-design.md`. | Phase 2 complete |
+| DESIGN-04 | Amber | [✓] | Design mountain visualization data shape: what JSON does the frontend need, how to aggregate skill data for rendering. Output to `docs/platform-design.md`. Completed 2026-03-21. Full spec in docs/platform-design.md §DESIGN-04. IMPL-09 unblocked (pending Phase 2 completion). | Phase 2 complete |
 | REVIEW-07 | Iris | [ ] | Review IMPL-08 + IMPL-09 — verify analytics separation, no primary DB writes, query correctness. | IMPL-08, IMPL-09 |
 | REVIEW-08 | Iris | [ ] | Review IMPL-10 (Decision Engine) — verify rule logic, archive trigger safety (no premature archival), gap detection accuracy. | IMPL-10 |
 

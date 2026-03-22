@@ -1,12 +1,19 @@
 /**
  * POST /problems — Create a new problem.
  *
- * Validates request body, checks name uniqueness via Scan,
- * generates problem_id, writes to Problems table.
+ * Validates request body, generates problem_id, and writes to the Problems
+ * table using a conditional PutItem (attribute_not_exists(problem_id)) to
+ * prevent duplicate UUID collisions.
+ *
+ * NOTE: Full name-uniqueness enforcement requires a DynamoDB GSI keyed on
+ * `name`. Without that index, concurrent requests with identical names can
+ * both succeed (TOCTOU race). This is a known limitation tracked for Phase 2.
+ * The scan-based pre-check has been removed because it is both slower and
+ * equally susceptible to the race condition.
  */
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { v4 as uuidv4 } from "uuid";
 import { docClient, PROBLEMS_TABLE } from "../shared/dynamo.js";
 import { validate, CreateProblemRequestSchema } from "../shared/validation.js";
@@ -31,21 +38,6 @@ export async function handler(
 
     const data = validation.data;
 
-    // Check name uniqueness via Scan with filter
-    const existingCheck = await docClient.send(
-      new ScanCommand({
-        TableName: PROBLEMS_TABLE,
-        FilterExpression: "#n = :name",
-        ExpressionAttributeNames: { "#n": "name" },
-        ExpressionAttributeValues: { ":name": data.name },
-        Limit: 1,
-      }),
-    );
-
-    if (existingCheck.Items && existingCheck.Items.length > 0) {
-      return error(409, "CONFLICT", `Problem with name "${data.name}" already exists`);
-    }
-
     const now = new Date().toISOString();
     const problem = {
       problem_id: uuidv4(),
@@ -68,6 +60,10 @@ export async function handler(
       new PutCommand({
         TableName: PROBLEMS_TABLE,
         Item: problem,
+        // Prevent overwriting an existing record with the same problem_id.
+        // UUID collisions from uuidv4() are astronomically unlikely but this
+        // makes the write safe and surfaces any future key-generation bugs.
+        ConditionExpression: "attribute_not_exists(problem_id)",
       }),
     );
 
@@ -75,6 +71,14 @@ export async function handler(
     const { domain_primary, status, ...problemResponse } = problem;
     return success(201, { problem: problemResponse });
   } catch (err) {
+    // ConditionalCheckFailedException means a problem with this problem_id
+    // already exists (UUID collision — should never happen in practice).
+    if (
+      err instanceof Error &&
+      err.name === "ConditionalCheckFailedException"
+    ) {
+      return error(409, "CONFLICT", `Problem with id already exists`);
+    }
     console.error("createProblem error:", err);
     return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
   }

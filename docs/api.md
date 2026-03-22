@@ -756,6 +756,7 @@ const ExecuteResponse = z.object({
 | 400 | `VALIDATION_ERROR` | Missing `skill_id`, invalid `inputs` shape, inputs don't match skill's input schema |
 | 404 | `NOT_FOUND` | Skill does not exist or is archived |
 | 408 | `EXECUTION_TIMEOUT` | Execution exceeded `timeout_ms` |
+| 504 | `EXECUTION_OOM` | Runner Lambda killed by OOM. Skill implementation exceeded 512 MB memory limit. |
 | 422 | `EXECUTION_FAILED` | Skill execution threw a runtime error. `details` field contains error message and stack trace. |
 
 ### Side Effects
@@ -1053,6 +1054,7 @@ const SkillQualityData = z.object({
     partial: z.number().int(),
     verified: z.number().int(),
     optimized: z.number().int(),
+    archived: z.number().int(),
   }),
   lowest_confidence_skills: z.array(z.object({
     skill_id: z.string(),

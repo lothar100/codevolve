@@ -264,6 +264,39 @@ describe("GET /problems", () => {
     expect(problem).toHaveProperty("skill_count");
   });
 
+  it("should include examples field in mapped problem (defaults to empty array)", async () => {
+    mockSend.mockResolvedValueOnce({
+      Items: [mockProblem1],
+      LastEvaluatedKey: undefined,
+    });
+
+    const result = await handler(makeEvent());
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(body.problems[0]).toHaveProperty("examples");
+    expect(body.problems[0].examples).toEqual([]);
+  });
+
+  it("should include examples field when problem has examples", async () => {
+    const problemWithExamples = {
+      ...mockProblem1,
+      examples: [{ input: { nums: [2, 7], target: 9 }, output: { indices: [0, 1] } }],
+    };
+
+    mockSend.mockResolvedValueOnce({
+      Items: [problemWithExamples],
+      LastEvaluatedKey: undefined,
+    });
+
+    const result = await handler(makeEvent());
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(body.problems[0].examples).toHaveLength(1);
+    expect(body.problems[0].examples[0].input).toEqual({ nums: [2, 7], target: 9 });
+  });
+
   it("should handle empty results", async () => {
     mockSend.mockResolvedValueOnce({
       Items: [],

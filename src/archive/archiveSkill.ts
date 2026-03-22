@@ -135,24 +135,40 @@ export async function handler(
   await invalidateCacheForSkill(skillId);
 
   // -------------------------------------------------------------------------
-  // 6. Decrement skill_count on Problems table
+  // 6. Decrement skill_count on Problems table (floor guard: only when > 0)
   // -------------------------------------------------------------------------
-  await docClient.send(
-    new UpdateCommand({
-      TableName: PROBLEMS_TABLE,
-      Key: { problem_id: skill.problem_id as string },
-      UpdateExpression:
-        "SET #skill_count = #skill_count - :one, #updated_at = :now",
-      ExpressionAttributeNames: {
-        "#skill_count": "skill_count",
-        "#updated_at": "updated_at",
-      },
-      ExpressionAttributeValues: {
-        ":one": 1,
-        ":now": now,
-      },
-    }),
-  );
+  try {
+    await docClient.send(
+      new UpdateCommand({
+        TableName: PROBLEMS_TABLE,
+        Key: { problem_id: skill.problem_id as string },
+        UpdateExpression:
+          "SET #skill_count = #skill_count - :one, #updated_at = :now",
+        ConditionExpression: "#skill_count > :zero",
+        ExpressionAttributeNames: {
+          "#skill_count": "skill_count",
+          "#updated_at": "updated_at",
+        },
+        ExpressionAttributeValues: {
+          ":one": 1,
+          ":zero": 0,
+          ":now": now,
+        },
+      }),
+    );
+  } catch (err: unknown) {
+    // ConditionalCheckFailedException means skill_count is already 0 — safe to ignore.
+    if (
+      !(
+        err &&
+        typeof err === "object" &&
+        "name" in err &&
+        (err as { name: string }).name === "ConditionalCheckFailedException"
+      )
+    ) {
+      throw err;
+    }
+  }
 
   // -------------------------------------------------------------------------
   // 7. Write audit record

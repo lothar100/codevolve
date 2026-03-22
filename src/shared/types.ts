@@ -109,6 +109,7 @@ export interface Problem {
   domain: string[];
   tags: string[];
   constraints?: string;
+  examples: SkillExample[];
   canonical_skill_id: string | null;
   skill_count: number;
   created_at: string;

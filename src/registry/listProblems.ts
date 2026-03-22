@@ -164,6 +164,7 @@ function mapProblemFromDynamo(item: Record<string, unknown>): Problem {
     ...(item.constraints !== undefined
       ? { constraints: item.constraints as string }
       : {}),
+    examples: (item.examples as Problem["examples"]) ?? [],
     canonical_skill_id: (item.canonical_skill_id as string) ?? null,
     skill_count: (item.skill_count as number) ?? 0,
     created_at: item.created_at as string,

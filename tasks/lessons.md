@@ -40,3 +40,27 @@ The codeVolve project was bootstrapped on 2026-03-20. Several foundational decis
 - Rule: Always review `tasks/todo.md` at session start before invoking any agent.
 
 ---
+
+### L-005: Parallel worktrees for CDK-touching tasks
+
+**Observation:** When multiple Ada agents implement tasks that both modify `infra/codevolve-stack.ts`, dispatching them to the same working tree causes file conflicts. Starting Phase 2, IMPL-05 and IMPL-06 are dispatched in parallel to isolated git worktrees.
+**Rule:** When multiple implementation tasks modify the same CDK stack file, always use isolated git worktrees per agent. Merge CDK changes manually after agent completion.
+**Action:** Adopted isolated git worktree dispatch pattern for Phase 2 (IMPL-05/IMPL-06 parallel dispatch). Recorded as standard procedure.
+
+---
+
+### L-006: Cache and execute in same phase
+
+**Observation:** The cache layer (IMPL-07) and execute endpoint (IMPL-06) share the same DynamoDB table (`codevolve-cache`) and the same `getCachedOutput`/`writeCachedOutput` interface. Implementing them in parallel worktrees means each worktree holds its own copy of `cache.ts` during development.
+**Rule:** When two parallel tasks share an interface or table, identify the canonical owner at dispatch time (IMPL-07 owns `src/cache/cache.ts`). The non-owning task (IMPL-06) works from a local copy in its worktree and reconciles at merge. Never let the non-owning task's copy become the merged artifact.
+**Action:** IMPL-07 designated as canonical owner of `src/cache/cache.ts`. IMPL-06 worktree uses a temporary local copy for compilation; both are reconciled at merge time.
+
+---
+
+## Session: 2026-03-21 Phase 2 Kick-off
+
+- Phase 1 complete: IMPL-01 through IMPL-04 all [✓] Verified, all FIX tasks done
+- Phase 2 started: IMPL-05 (/resolve), IMPL-06 (/execute), IMPL-07 (cache) dispatched in parallel worktrees
+- Architecture complete: ARCH-05, ARCH-06, REVIEW-06-ARCH all approved
+- ARCH-07 (Decision Engine) and DESIGN-04 (mountain visualization) now being designed in parallel
+- Next: merge worktree results, run Iris review (REVIEW-05-IMPL05, REVIEW-07)

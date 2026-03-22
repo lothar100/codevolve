@@ -266,3 +266,150 @@ Store embedding vectors directly in DynamoDB on the `codevolve-skills` table. Th
 - **Positive:** Embedding data lives alongside skill data — no sync issues between DynamoDB and a separate index.
 - **Negative:** `/resolve` latency scales linearly with skill count. Acceptable up to ~5,000-10,000 skills.
 - **Negative:** No built-in full-text search — `q` parameter on `GET /skills` uses DynamoDB `contains()` filter, which is slow for large datasets. Acceptable at current scale.
+
+---
+
+## ADR-005: Client-Side Vector Search — Phase 2 Implementation Specification
+Date: 2026-03-21
+Status: Accepted
+Decided by: Jorven (ARCH-05)
+
+### Context
+
+ADR-004 established the principle of DynamoDB-stored embeddings with client-side cosine similarity, superseding the OpenSearch Serverless plan from ADR-001. ADR-004 did not specify the full implementation contract: the exact fields to embed, the concatenation format, the boost algorithm, the confidence threshold, the latency budget for Phase 2 at scale, or the precise migration trigger.
+
+Additionally, ADR-004's migration trigger states "when `/resolve` p95 latency exceeds 100ms." That figure is ambiguous: 100ms is the post-OpenSearch target (i.e., what we expect after migration), not the Phase 2 acceptable threshold. At 5,000 skills with a DynamoDB scan and Lambda similarity loop, the estimated p95 is ~400ms. A trigger of "exceeds 100ms" would fire immediately and was not the intent. This ADR clarifies the migration trigger and documents the complete Phase 2 implementation.
+
+### Options Considered
+
+| Option | Description | Trade-off |
+|--------|-------------|-----------|
+| A — Migrate trigger: p95 > 100ms | As written in ADR-004 | Would trigger migration immediately at ~1,000 skills; contradicts the rationale of ADR-004 |
+| B — Migrate trigger: 5,000 active skills (chosen) | Hard count-based trigger | Predictable; avoids latency measurement instability from cold starts and bursty traffic |
+| C — Migrate trigger: p95 > 300ms | Latency-based leading indicator | Valid but harder to automate; depends on sustained traffic to measure p95 accurately |
+
+### Decision
+
+The Phase 2 implementation specification is fully defined in `docs/vector-search.md`. The key decisions recorded here are:
+
+1. **Fields embedded:** `name`, `description`, `domain` (space-joined), `tags` (space-joined). Concatenation format: `{name}. {description} domain:{domain tokens} tags:{tag tokens}`.
+2. **Model:** AWS Bedrock Titan Embed Text v2 (`amazon.titan-embed-text-v2:0`), 1024 dimensions, L2-normalized via `"normalize": true` in the InvokeModel request.
+3. **Similarity:** Dot product of L2-normalized Float32Arrays (equivalent to cosine similarity). Computed in-process in the resolve Lambda after a full DynamoDB scan.
+4. **Boost:** +0.05 per matching tag, +0.10 per matching domain, capped at +0.20 total. Final confidence = cosine_score + boost, capped at 1.0.
+5. **Threshold:** Top candidate must have final confidence >= 0.70 to return a match. Below threshold: return 404 `NO_MATCH` and trigger `/evolve`.
+6. **Phase 2 latency target:** p95 < 500ms at 5,000 skills. This supersedes the "p95 < 100ms" figure in ADR-004, which is correctly interpreted as the post-OpenSearch migration SLO, not the Phase 2 acceptable threshold.
+7. **Migration trigger:** 5,000 active skills in the registry (hard count), not a latency threshold. When the registry reaches 5,000 active non-archived skills, begin the OpenSearch migration process as defined in `docs/vector-search.md` §3.4.
+
+### Reasons
+
+- A count-based migration trigger is operationally simple and predictable. It can be monitored with a DynamoDB metric or a scheduled Lambda counting active skills. A latency-based trigger requires sustained p95 measurement across a representative traffic window, which is unreliable at low call volumes.
+- The 500ms Phase 2 target is conservative and honest. The latency model in `docs/vector-search.md` §5.1 estimates ~400ms p95 at 5,000 skills, giving 100ms headroom. If real-world measurements show this is tighter, the 300ms leading indicator in Option C can be used to start the migration earlier.
+- Dot product on Float32Array in a tight loop is the fastest client-side similarity computation available in Node.js V8. Using Float32Array reduces memory pressure by 2x compared to `number[]` and enables potential SIMD optimizations in future V8 versions.
+
+### Consequences
+
+- **Positive:** Phase 2 `/resolve` is fully specified. Ada can implement IMPL-05 directly from `docs/vector-search.md` without requiring further architecture clarification.
+- **Positive:** The latency target is achievable and honest. Avoids a migration being triggered prematurely or the team being surprised by latency that was always expected at this scale.
+- **Positive:** Boost algorithm gives callers a meaningful way to improve match quality by providing precise tags and domains — incentivizes good tagging practice.
+- **Negative:** ADR-004's "p95 < 100ms migration trigger" is technically superseded by this ADR. The original text is preserved in ADR-004 as written; this ADR's clarification takes precedence for implementation. Quimby should not modify ADR-004 retroactively.
+- **Negative:** The 500ms p95 target is noticeable latency for interactive use. This is acceptable because Phase 2 consumers are agents (not humans), and a 500ms resolve is still far faster than re-deriving the answer from scratch.
+
+---
+
+## ADR-006: Lambda-per-Language Sandbox for `/execute`
+Date: 2026-03-21
+Status: Accepted
+Decided by: Jorven (ARCH-06)
+
+### Context
+
+`POST /execute` runs untrusted skill implementations — code submitted by agents or humans to solve specific problems. That code must be executed in an isolated environment where it cannot: access the network, read or write shared state, invoke AWS services, or interfere with other concurrent executions.
+
+Phase 2 requires support for two languages: Python 3.12 and JavaScript (Node 22). The execution model must be safe, operationally simple, and achievable without introducing container registries or long-running compute.
+
+Three isolation approaches were considered: separate Lambda per language, Docker containers on ECS Fargate, and Lambda container images backed by ECR.
+
+### Options Considered
+
+| Option | Description | Cold start | Ops overhead | Per-execution cost | Language addition |
+|--------|-------------|------------|--------------|-------------------|-------------------|
+| A — Lambda per language (chosen) | Separate Lambda function per language. Runner Lambdas have minimal IAM (CloudWatch Logs only). The `/execute` Lambda invokes runner synchronously via `InvokeCommand`. | ~200–500ms (warm: ~0ms) | Low — standard Lambda deployment via CDK | Lambda pricing per 512 MB invocation | New Lambda function + CDK construct |
+| B — ECS Fargate containers | Long-running containers per language, invoked via an internal HTTP call or SQS. Allows richer sandboxing (seccomp profiles, user namespacing). | N/A (always on) | High — ECS cluster, task definitions, load balancer, VPC configuration | Always-on compute cost even at zero traffic | New task definition, ECS service update |
+| C — Lambda container images (ECR) | Lambda functions backed by custom Docker images stored in ECR. Allows arbitrary OS-level tooling. | ~1–3s (cold start from ECR pull is slow without provisioned concurrency) | Medium — ECR repo, image build pipeline, CDK container image bundling | Lambda pricing + ECR storage | New Dockerfile, ECR repo, image pipeline |
+
+### Decision
+
+Option A: separate Lambda per language. Two runner functions are defined for Phase 2:
+
+| Runner function name | Language | Runtime |
+|---------------------|----------|---------|
+| `codevolve-runner-python312` | Python | Python 3.12 |
+| `codevolve-runner-node22` | JavaScript | Node.js 22 |
+
+The `/execute` orchestration Lambda (`codevolve-execute`) invokes runners synchronously using `InvokeCommand` with `InvocationType: "RequestResponse"`. Runner function names are injected as environment variables (`RUNNER_LAMBDA_PYTHON`, `RUNNER_LAMBDA_NODE`) so they are never hardcoded in handler code.
+
+### Reasons
+
+**Cold start performance:** Standard Lambda cold starts for Python 3.12 and Node 22 (without container images) are 200–500ms. This is acceptable for Phase 2 — the total execution budget is 10 seconds, and cold starts are amortized across warm invocations. ECS Fargate has no cold start but carries always-on cost; Lambda container image cold starts of 1–3 seconds consume a meaningful fraction of the 10-second execution budget.
+
+**IAM scoping:** Runner Lambdas have CloudWatch Logs write access only. An explicit deny on all other AWS service calls is set in their execution role. This ensures a skill implementation that attempts to call DynamoDB, S3, Bedrock, or any other AWS service receives an `AccessDeniedException` rather than succeeding. This is the primary isolation mechanism — Lambda's own ephemeral execution environment prevents cross-invocation state leakage.
+
+**No container registry overhead:** Lambda container images require an ECR repository, image build pipeline, and ECR pull on cold start. Standard Lambda zip deployments have no such dependency chain and deploy in seconds via CDK. For two languages at Phase 2 scale, container images add complexity without meaningful benefit.
+
+**Language addition path:** Adding a new language in Phase 3+ requires one new Lambda function definition, one CDK construct, and one entry in the runner lookup map in `src/execution/runners.ts`. This is a small, contained change that can be reviewed and deployed independently. Compare to Fargate, where a new language requires a new task definition, ECS service update, and load balancer routing rule.
+
+**Operational simplicity:** The entire stack (orchestration Lambda + runner Lambdas) is deployed with `cdk deploy` and managed with standard Lambda tooling (CloudWatch Logs, X-Ray tracing, Lambda metrics). No ECS cluster to monitor, no ECR lifecycle policies to manage.
+
+### Consequences
+
+- **Positive:** Cold start within execution budget. No container registry. IAM-enforced isolation. Language addition is a single CDK construct.
+- **Positive:** Runner Lambdas are fully observable via CloudWatch Logs and Lambda metrics (invocation count, error rate, duration). These feed directly into the analytics pipeline via Kinesis events emitted by the `/execute` handler.
+- **Positive:** Runner Lambda timeout (10 seconds) is enforced by the Lambda service itself — no application-level timeout logic required in the runner handler. The `/execute` Lambda catches the timeout via the `FunctionError` field on the `InvokeCommand` response.
+- **Negative:** Adding a new language requires a new Lambda deployment (not just a configuration change). Acceptable for Phase 2 — languages are not added frequently and each addition is a deliberate architectural decision.
+- **Negative:** The `new Function(...)` sandbox in the Node 22 runner does not provide V8-level isolation (no separate V8 heap, no memory quota enforcement below the 512 MB Lambda limit). If skill code consumes excessive CPU without throwing, it will exhaust the Lambda timeout. Lambda's 10-second timeout is the operative safety net.
+- **Negative:** Lambda concurrent execution limits apply. If many `/execute` calls arrive simultaneously, runner Lambda concurrency may throttle. Mitigated by setting reserved concurrency on runner Lambdas and returning 429 when throttled, rather than allowing Lambda to queue unbounded invocations. Reserved concurrency configuration is a IMPL-06 CDK detail.
+- **Accepted trade-off:** True process-level isolation (seccomp, user namespacing, cgroups) is not provided by this approach. This is acceptable for Phase 2 where the skill registry is a controlled environment with human review of skill implementations. If codeVolve opens to untrusted public contributions in Phase 5, a WASM-based sandbox or Firecracker microVM approach should be evaluated in a new ADR.
+
+---
+
+## ADR-007: Decision Engine Scheduling
+Date: 2026-03-21
+Status: Accepted
+Decided by: Jorven (ARCH-07)
+
+### Context
+
+The Decision Engine is a scheduled Lambda that evaluates four automated rules on every invocation: auto-cache trigger, optimization flag, gap detection, and archive evaluation. It must run periodically without being triggered by API requests, and it must not run concurrently with itself. The two scheduling options are a rate-based EventBridge rule (e.g., `rate(5 minutes)`) and a cron-based rule (e.g., `cron(0/5 * * * ? *)` for every 5 minutes, or `cron(0 4 * * ? *)` for once daily at 04:00 UTC).
+
+The archive evaluation sub-rule has a different cadence requirement (once per 24 hours at approximately 04:00 UTC) from the other three rules (every 5 minutes). This creates a secondary design question: should the Decision Engine Lambda be invoked on two separate schedules, or should a single schedule drive all rules with internal gating for the archive evaluation?
+
+### Options Considered
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| A — Single rate-based schedule, 5-minute interval, internal 24h gate for archive (chosen) | One EventBridge rule at `rate(5 minutes)`. Archive evaluation is internally gated: the Lambda checks whether 23 hours have elapsed since the last archive run. | Single schedule to manage. All rules run from one entry point. Archive gate is testable in unit tests. No timezone configuration required. | Lambda invokes 288 times per day but only runs archive evaluation once. Invocations are cheap — this is not a cost concern. |
+| B — Two separate EventBridge rules | One rule at `rate(5 minutes)` for auto-cache and optimization flag. A second rule at `cron(0 4 * * ? *)` for archive evaluation only. | Archive evaluation schedule is explicit in the infrastructure layer. | Two rules, two Lambda functions or one Lambda with two entry points. More CDK constructs to manage. Cron expressions are timezone-sensitive and harder to test. EventBridge cron uses UTC implicitly but this must be documented and remembered. |
+| C — Single cron-based schedule, once daily | One rule at `cron(0 4 * * ? *)`. Archive evaluation, auto-cache, and optimization flag all run once per day. | Fewest Lambda invocations. Simplest schedule. | Auto-cache and optimization flag become stale for 24 hours. A skill that crosses the auto-cache threshold at 04:01 UTC waits 24 hours to be flagged. Reduces responsiveness of the feedback loop. |
+
+### Decision
+
+Option A: single rate-based EventBridge schedule at `rate(5 minutes)`. The archive evaluation is internally gated by a `last_archive_evaluation` timestamp in `codevolve-config`. The gate condition is: run archive evaluation if `last_archive_evaluation` is absent or more than 23 hours ago.
+
+### Reasons
+
+**Operational simplicity:** One EventBridge rule, one Lambda entry point, one CDK construct. The internal gate is logic rather than infrastructure — it is testable as a unit test, visible in Lambda logs, and configurable via the `codevolve-config` table without a CDK deployment.
+
+**Rate vs cron:** A rate-based rule has no timezone dependency. `rate(5 minutes)` starts immediately on deploy and fires every 5 minutes regardless of clock alignment. A cron expression (`cron(0/5 * * * ? *)` is equivalent) adds no precision benefit and is harder to read and audit in the AWS Console.
+
+**Responsiveness:** The 5-minute cadence means auto-cache and optimization flags are applied within 5 minutes of a skill crossing a threshold, rather than waiting up to 24 hours. This is important during high-activity periods (e.g., bulk skill seeding) when many skills may cross thresholds simultaneously.
+
+**Archive timing:** The 04:00 UTC target for archive evaluation is achieved by setting the initial `last_archive_evaluation` timestamp to the prior 04:00 UTC at deploy time. Each day's archive run will occur within 5 minutes of 04:00 UTC (bounded by the 5-minute schedule tick and the gate's 23-hour window). Maximum daily drift is 5 minutes, which is acceptable.
+
+### Consequences
+
+- **Positive:** Single schedule, single entry point, single CloudWatch log group. Operationally clean.
+- **Positive:** Internal gate for archive evaluation is unit-testable. The scheduling behavior for the archive sub-rule can be verified without deploying to AWS.
+- **Positive:** Rate-based schedules start immediately on deploy. No clock alignment required for the first invocation.
+- **Negative:** Lambda is invoked 288 times per day (every 5 minutes). On 287 of those invocations, Rules 1-3 run and Rule 4 is skipped. This generates 287 Lambda invocations per day with sub-second execution time (~10ms to check the 24h gate and then run Rules 1-3). At Lambda pricing, 287 invocations × ~10ms × 512MB = negligible cost (under $0.01/month).
+- **Negative:** Double-execution window exists when the Lambda is redeployed (EventBridge fires the new version before the old version's invocation has completed). Mitigated by `reservedConcurrentExecutions: 1` on the Lambda, which causes Lambda to throttle the second invocation rather than running two copies. EventBridge retries the throttled invocation with its own retry logic.
+- **Accepted trade-off:** Archive evaluation may drift up to 5 minutes from the 04:00 UTC target each day. Over a month, drift could accumulate to ~2.5 hours. The gate uses a fixed 23-hour window (not clock-aligned), so the maximum daily drift is bounded by the schedule interval (5 minutes), not by accumulated drift. In practice, drift is near zero because each gate check snaps to the 5-minute tick closest to 04:00 UTC.

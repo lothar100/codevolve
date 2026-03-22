@@ -175,7 +175,7 @@ async function processArchiveMessage(message: ArchiveMessage): Promise<void> {
   await invalidateCacheForSkill(skillId);
 
   // -------------------------------------------------------------------------
-  // 4. Decrement skill_count on Problems table
+  // 4. Decrement skill_count on Problems table (floor guard: only when > 0)
   // -------------------------------------------------------------------------
   try {
     await docClient.send(
@@ -184,19 +184,33 @@ async function processArchiveMessage(message: ArchiveMessage): Promise<void> {
         Key: { problem_id: problemId },
         UpdateExpression:
           "SET #skill_count = #skill_count - :one, #updated_at = :now",
+        ConditionExpression: "#skill_count > :zero",
         ExpressionAttributeNames: {
           "#skill_count": "skill_count",
           "#updated_at": "updated_at",
         },
         ExpressionAttributeValues: {
           ":one": 1,
+          ":zero": 0,
           ":now": now,
         },
       }),
     );
-  } catch (err) {
-    console.error(`Failed to decrement skill_count for problem ${problemId}:`, err);
-    // Don't fail the whole message for this — audit record and event are more important
+  } catch (err: unknown) {
+    // ConditionalCheckFailedException means skill_count is already 0 — safe to ignore.
+    // Any other error is logged but does not fail the message acknowledgment (the skill
+    // status update already succeeded; skill_count is informational).
+    if (
+      !(
+        err &&
+        typeof err === "object" &&
+        "name" in err &&
+        (err as { name: string }).name === "ConditionalCheckFailedException"
+      )
+    ) {
+      console.error(`Failed to decrement skill_count for problem ${problemId}:`, err);
+      // Don't fail the whole message for this — audit record and event are more important
+    }
   }
 
   // -------------------------------------------------------------------------

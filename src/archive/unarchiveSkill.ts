@@ -61,6 +61,11 @@ export async function handler(
   }
 
   const now = new Date().toISOString();
+  // Fall back to "verified" when previous_status is absent. Skills that were
+  // in active circulation (and thus eligible to be archived) must have had at
+  // least a "verified" status — "unsolved" and "partial" skills are not expected
+  // to be in the archive workflow. This default avoids permanently downgrading a
+  // skill that was archived before the previous_status field was introduced.
   const previousStatus = (skill.previous_status as string) ?? "verified";
   const versionNumber = skill.version_number as number;
 

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "codevolve": {
+      "command": "node",
+      "args": ["C:\\Users\\pgl49\\source\\repos\\codevolve\\packages\\mcp-server\\dist\\index.js"],
+      "env": {
+        "CODEVOLVE_API_URL": "https://hra190v7x6.execute-api.us-east-2.amazonaws.com/v1",
+        "CODEVOLVE_AGENT_ID": "claude-code-local"
+      }
+    }
+  }
+}

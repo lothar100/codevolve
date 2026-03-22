@@ -197,6 +197,44 @@ describe("archiveProblemIfAllSkillsArchived", () => {
     const result = await archiveProblemIfAllSkillsArchived(PROBLEM_ID);
     expect(result).toBe(false);
   });
+
+  it("paginates through multiple query pages before evaluating all-archived", async () => {
+    // Page 1: all archived, but there are more pages
+    mockSend.mockResolvedValueOnce({
+      Items: [{ status: "archived" }, { status: "archived" }],
+      LastEvaluatedKey: { problem_id: PROBLEM_ID, status: "archived#v2" },
+    });
+    // Page 2: one non-archived skill — should prevent problem archival
+    mockSend.mockResolvedValueOnce({
+      Items: [{ status: "verified" }],
+    });
+
+    const result = await archiveProblemIfAllSkillsArchived(PROBLEM_ID);
+    expect(result).toBe(false);
+    // 2 query calls (two pages), no update attempted
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
+  it("archives problem when all skills across multiple pages are archived", async () => {
+    // Page 1: archived skills with more pages
+    mockSend.mockResolvedValueOnce({
+      Items: [{ status: "archived" }],
+      LastEvaluatedKey: { problem_id: PROBLEM_ID, status: "archived#v1" },
+    });
+    // Page 2: also all archived, no more pages
+    mockSend.mockResolvedValueOnce({
+      Items: [{ status: "archived" }, { status: "archived" }],
+    });
+    // Update problem to archived
+    mockSend.mockResolvedValueOnce({});
+    // Audit record
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await archiveProblemIfAllSkillsArchived(PROBLEM_ID);
+    expect(result).toBe(true);
+    // 2 query pages + 1 update + 1 audit = 4 calls
+    expect(mockSend).toHaveBeenCalledTimes(4);
+  });
 });
 
 // ---------------------------------------------------------------------------

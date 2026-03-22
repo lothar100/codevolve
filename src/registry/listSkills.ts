@@ -147,16 +147,8 @@ export async function handler(
       exprValues[":is_canonical"] = params.is_canonical;
     }
 
-    // Free-text search filter
+    // Free-text search filter (case-sensitive contains on name and description)
     if (params.q) {
-      const qLower = params.q.toLowerCase();
-      filterParts.push(
-        "(contains(#sk_name_lower, :q) OR contains(#sk_desc_lower, :q))",
-      );
-      // DynamoDB contains is case-sensitive, so we filter client-side for q
-      // Actually, we'll use contains on the original fields and do case-insensitive
-      // post-filtering. For now, use contains on name and description directly.
-      filterParts.pop(); // remove the above
       filterParts.push(
         "(contains(#sk_name, :q) OR contains(description, :q))",
       );
@@ -224,7 +216,12 @@ export async function handler(
         | Record<string, unknown>
         | undefined;
     } else {
-      // No partition key filter available — must Scan
+      // No partition key filter available — must Scan.
+      // When a filter expression is active, DynamoDB applies Limit *before*
+      // filtering, which can return fewer items than requested. To avoid
+      // returning unexpectedly short pages, omit Limit when filtering so
+      // DynamoDB scans the entire table segment and returns all matching items.
+      // Without a filter expression, pass Limit to bound the scan cost.
       const result = await docClient.send(
         new ScanCommand({
           TableName: SKILLS_TABLE,
@@ -236,8 +233,7 @@ export async function handler(
                   ? { ExpressionAttributeNames: exprNames }
                   : {}),
               }
-            : {}),
-          Limit: params.limit,
+            : { Limit: params.limit }),
           ...(exclusiveStartKey
             ? { ExclusiveStartKey: exclusiveStartKey }
             : {}),

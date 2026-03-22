@@ -232,6 +232,31 @@ describe("archiveSkill handler", () => {
     expect(mockSend).toHaveBeenCalledTimes(8);
   });
 
+  it("succeeds when skill_count is already 0 (floor guard)", async () => {
+    const skill = makeSkill();
+
+    // 1. Query skill
+    mockSend.mockResolvedValueOnce({ Items: [skill] });
+    // 2. Update skill
+    mockSend.mockResolvedValueOnce({});
+    // 3. Query cache - no entries
+    mockSend.mockResolvedValueOnce({ Items: [] });
+    // 4. Decrement skill_count fails with ConditionalCheckFailedException
+    //    (skill_count is already 0 — floor guard condition "#skill_count > :zero" fails)
+    const condErr = new Error("Condition not met");
+    (condErr as unknown as Record<string, string>).name = "ConditionalCheckFailedException";
+    mockSend.mockRejectedValueOnce(condErr);
+    // 5. Audit record
+    mockSend.mockResolvedValueOnce({});
+    // 6. Check all skills for problem
+    mockSend.mockResolvedValueOnce({ Items: [{ status: "archived" }, { status: "partial" }] });
+
+    const result = await handler(makeEvent(SKILL_ID));
+    // Archive should succeed — the floor guard silently ignores the 0-count condition failure
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body).skill.status).toBe("archived");
+  });
+
   it("emits a Kinesis event on successful archive", async () => {
     const skill = makeSkill();
 

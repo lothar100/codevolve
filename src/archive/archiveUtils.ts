@@ -101,22 +101,33 @@ export async function invalidateCacheForSkill(skillId: string): Promise<number> 
 export async function archiveProblemIfAllSkillsArchived(
   problemId: string,
 ): Promise<boolean> {
-  // Query all skills for this problem using GSI-problem-status
-  const result = await docClient.send(
-    new QueryCommand({
-      TableName: SKILLS_TABLE,
-      IndexName: "GSI-problem-status",
-      KeyConditionExpression: "problem_id = :pid",
-      ExpressionAttributeValues: { ":pid": problemId },
-      ProjectionExpression: "#s",
-      ExpressionAttributeNames: { "#s": "status" },
-    }),
-  );
+  // Query ALL skills for this problem using GSI-problem-status, paginating through
+  // all result pages. A single QueryCommand returns at most 1 MB — problems with many
+  // skill versions can span multiple pages. We must see every item before concluding
+  // that all skills are archived.
+  const allSkills: Array<Record<string, unknown>> = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined;
 
-  const skills = result.Items ?? [];
-  if (skills.length === 0) return false;
+  do {
+    const result = await docClient.send(
+      new QueryCommand({
+        TableName: SKILLS_TABLE,
+        IndexName: "GSI-problem-status",
+        KeyConditionExpression: "problem_id = :pid",
+        ExpressionAttributeValues: { ":pid": problemId },
+        ProjectionExpression: "#s",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
 
-  const allArchived = skills.every((s) => s.status === "archived");
+    allSkills.push(...(result.Items ?? []));
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  if (allSkills.length === 0) return false;
+
+  const allArchived = allSkills.every((s) => s.status === "archived");
   if (!allArchived) return false;
 
   const now = new Date().toISOString();
@@ -303,4 +314,3 @@ export async function unarchiveProblemIfArchived(
   }
 }
 
-export { bedrockClient };

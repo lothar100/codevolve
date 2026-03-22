@@ -176,7 +176,7 @@ Caches execution results keyed on `(skill_id, input_hash)` to avoid redundant co
 |-----------|---------------|-------------|
 | `skill_id` | `S` | References codevolve-skills. Partition key. |
 | `input_hash` | `S` | SHA-256 hex digest of the canonicalized input JSON. Sort key. |
-| `skill_version` | `S` | Semver of the skill version that produced this result. |
+| `version_number` | `N` | Integer version number of the skill version that produced this result. Matches the `version_number` sort key (`N`) on the codevolve-skills table. |
 | `output` | `M` | The cached execution output (map structure matching skill's output schema). |
 | `input_snapshot` | `M` | Copy of the original input for debugging and cache validation. |
 | `hit_count` | `N` | Number of times this cache entry has been served. |
@@ -188,7 +188,7 @@ Caches execution results keyed on `(skill_id, input_hash)` to avoid redundant co
 
 | GSI Name | Partition Key | Sort Key | Projected Attributes | Purpose |
 |----------|--------------|----------|----------------------|---------|
-| `GSI-skill-hitcount` | `skill_id` (S) | `hit_count` (N) | KEYS_ONLY + `input_hash`, `skill_version`, `last_hit_at` | Analytics: find most-hit cache entries per skill. Decision Engine uses this for cache management. |
+| `GSI-skill-hitcount` | `skill_id` (S) | `hit_count` (N) | KEYS_ONLY + `input_hash`, `version_number`, `last_hit_at` | Analytics: find most-hit cache entries per skill. Decision Engine uses this for cache management. |
 
 ### Access Patterns
 
@@ -220,7 +220,7 @@ Caches execution results keyed on `(skill_id, input_hash)` to avoid redundant co
 
 ### Cache Invalidation Rules
 
-- When a new `version_number` is written for a skill (new PutItem in codevolve-skills), all cache entries for that `skill_id` with a different `skill_version` are invalidated. Invalidation is performed by the Skills table DynamoDB Stream consumer, which issues a Query on `skill_id` + DeleteItem for stale entries.
+- When a new `version_number` is written for a skill (new PutItem in codevolve-skills), all cache entries for that `skill_id` with a different `version_number` are invalidated. Invalidation is performed by the Skills table DynamoDB Stream consumer, which issues a Query on `skill_id` + DeleteItem for stale entries.
 - When a skill is archived, all cache entries for that `skill_id` are deleted in a batch cleanup triggered by the archive handler.
 
 ---
