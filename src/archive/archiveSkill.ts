@@ -18,6 +18,7 @@ import {
   archiveProblemIfAllSkillsArchived,
   writeArchiveAuditRecord,
 } from "./archiveUtils.js";
+import { invalidateCloudFrontPaths } from "../shared/cloudfrontInvalidation.js";
 
 const PathParamsSchema = z.object({
   id: z.string().uuid(),
@@ -133,6 +134,15 @@ export async function handler(
   //    but we await here for correctness)
   // -------------------------------------------------------------------------
   await invalidateCacheForSkill(skillId);
+
+  // Invalidate CloudFront edge cache — archived skill must not appear in cached responses.
+  // Fire-and-forget: never throws, failure logged internally.
+  void invalidateCloudFrontPaths([
+    `/skills/${skillId}`,
+    `/skills*`,
+    `/problems/${skill.problem_id as string}`,
+    `/problems*`,
+  ]);
 
   // -------------------------------------------------------------------------
   // 6. Decrement skill_count on Problems table (floor guard: only when > 0)

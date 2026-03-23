@@ -18,6 +18,7 @@ import { docClient, PROBLEMS_TABLE, SKILLS_TABLE } from "../shared/dynamo.js";
 import { validate, CreateSkillRequestSchema } from "../shared/validation.js";
 import { success, error } from "../shared/response.js";
 import { generateEmbedding, buildEmbeddingText } from "./bedrock.js";
+import { invalidateCloudFrontPaths } from "../shared/cloudfrontInvalidation.js";
 
 export async function handler(
   event: APIGatewayProxyEvent,
@@ -148,6 +149,10 @@ export async function handler(
         },
       }),
     );
+
+    // Invalidate CloudFront edge cache for /skills* so GET /skills reflects the new skill.
+    // Fire-and-forget: never throws, failure logged internally.
+    void invalidateCloudFrontPaths(["/skills*"]);
 
     // Return API response shape (map version_number -> version)
     const skillResponse = {

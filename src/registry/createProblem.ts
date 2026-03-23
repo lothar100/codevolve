@@ -18,6 +18,7 @@ import { v4 as uuidv4 } from "uuid";
 import { docClient, PROBLEMS_TABLE } from "../shared/dynamo.js";
 import { validate, CreateProblemRequestSchema } from "../shared/validation.js";
 import { success, error } from "../shared/response.js";
+import { invalidateCloudFrontPaths } from "../shared/cloudfrontInvalidation.js";
 
 export async function handler(
   event: APIGatewayProxyEvent,
@@ -66,6 +67,10 @@ export async function handler(
         ConditionExpression: "attribute_not_exists(problem_id)",
       }),
     );
+
+    // Invalidate CloudFront edge cache for /problems* so GET /problems reflects the new problem.
+    // Fire-and-forget: never throws, failure logged internally.
+    void invalidateCloudFrontPaths(["/problems*"]);
 
     // Return the problem object matching the API contract (exclude internal fields)
     const { domain_primary, status, ...problemResponse } = problem;

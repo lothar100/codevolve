@@ -18,6 +18,7 @@ import {
   writeArchiveAuditRecord,
   unarchiveProblemIfArchived,
 } from "./archiveUtils.js";
+import { invalidateCloudFrontPaths } from "../shared/cloudfrontInvalidation.js";
 
 const PathParamsSchema = z.object({
   id: z.string().uuid(),
@@ -170,6 +171,15 @@ export async function handler(
     input_hash: null,
     success: true,
   });
+
+  // Invalidate CloudFront edge cache — restored skill must appear in cached responses.
+  // Fire-and-forget: never throws, failure logged internally.
+  void invalidateCloudFrontPaths([
+    `/skills/${skillId}`,
+    `/skills*`,
+    `/problems/${skill.problem_id as string}`,
+    `/problems*`,
+  ]);
 
   // -------------------------------------------------------------------------
   // 9. If parent problem is archived, auto-unarchive it

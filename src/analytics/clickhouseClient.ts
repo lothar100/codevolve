@@ -52,7 +52,7 @@ export async function getClickHouseClient(): Promise<ClickHouseClient> {
   const secret = await loadSecret();
 
   cachedClient = createClient({
-    url: `https://${secret.host}:${secret.port}`,
+    url: `${secret.host}:${secret.port}`,
     username: secret.username,
     password: secret.password,
     database: secret.database,
