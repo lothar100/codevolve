@@ -1,148 +1,164 @@
 /**
  * SQS-triggered Lambda handler for the /evolve pipeline.
  *
- * Trigger: codevolve-gap-queue.fifo
+ * Each SQS message represents an unresolved intent (a gap detected by the
+ * Decision Engine).  For every message the handler:
+ *   1. Calls Claude to generate a candidate skill JSON.
+ *   2. Validates the JSON against CreateSkillRequestSchema (Zod).
+ *   3. Writes the new skill to DynamoDB.
+ *   4. Invokes the validation Lambda asynchronously to run tests and score it.
+ *   5. Emits an "evolve" Kinesis event on success, or "evolve_failed" on a
+ *      non-retryable error.
  *
- * Flow:
- *   1. Parse and validate the SQS message body (JSON + zod).
- *   2. Call generateSkill(intent) — stubbed until ARCH-08.
- *   3. Validate the generated skill against SkillSchema (zod).
- *      On failure: emit evolve_failed → Kinesis, throw (→ DLQ after 3 attempts).
- *   4. Write the new skill to DynamoDB (codevolve-skills table).
- *   5. Emit event_type: "evolve" to Kinesis.
- *   6. Invoke codevolve-validate Lambda async (fire-and-forget).
+ * Error classification (controls SQS / DLQ routing):
+ *   - Anthropic rate limit (429) / network errors  → throw  → SQS retries
+ *   - JSON parse failure                            → consume (no retry), emit evolve_failed
+ *   - Zod validation failure                        → consume (no retry), emit evolve_failed
  *
- * Partial batch failure: ReportBatchItemFailures — failed messageIds returned
- * in batchItemFailures.
+ * Architecture constraint: this is the ONLY Lambda that calls the Claude API.
  */
 
 import type { SQSEvent, SQSBatchResponse, SQSBatchItemFailure } from "aws-lambda";
+import Anthropic from "@anthropic-ai/sdk";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
   LambdaClient,
   InvokeCommand,
-  InvocationType,
 } from "@aws-sdk/client-lambda";
 import { v4 as uuidv4 } from "uuid";
-import { z } from "zod";
 import { docClient, SKILLS_TABLE } from "../shared/dynamo.js";
 import { emitEvent } from "../shared/emitEvent.js";
-import { SkillSchema } from "../shared/validation.js";
+import { validate, CreateSkillRequestSchema } from "../shared/validation.js";
+import { getClaudeClient } from "./claudeClient.js";
+import { buildSkillPrompt, type SimilarSkill } from "./skillPrompt.js";
 
 // ---------------------------------------------------------------------------
-// Lambda client (used for fire-and-forget validate invocation)
+// Constants
+// ---------------------------------------------------------------------------
+
+const VALIDATE_LAMBDA_NAME =
+  process.env.VALIDATE_LAMBDA_NAME ?? "codevolve-validation-handler";
+
+// ---------------------------------------------------------------------------
+// Lambda clients (module-level singletons — reused across warm invocations)
 // ---------------------------------------------------------------------------
 
 const lambdaClient = new LambdaClient({
   region: process.env.AWS_REGION ?? "us-east-2",
 });
 
-const VALIDATE_FUNCTION_NAME =
-  process.env.VALIDATE_FUNCTION_NAME ?? "codevolve-validate";
-
 // ---------------------------------------------------------------------------
-// SQS message schema
+// SQS message shape (sent by the Decision Engine gap-detection rule)
 // ---------------------------------------------------------------------------
 
-const GapMessageSchema = z.object({
-  intent: z.string().min(1).max(1024),
-  resolve_confidence: z.number().min(0).max(1),
-  timestamp: z.string().datetime(),
-  original_event_id: z.string().min(1),
-});
-
-type GapMessage = z.infer<typeof GapMessageSchema>;
-
-// ---------------------------------------------------------------------------
-// Claude stub
-// ---------------------------------------------------------------------------
-
-/**
- * TODO(IMPL-12): implement Claude API call once ARCH-08 prompt design is complete.
- *
- * Returns a skill-shaped object. The caller validates against SkillSchema
- * before writing to DynamoDB.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function generateSkill(_intent: string): Promise<unknown> {
-  throw new Error(
-    "Claude skill generation not yet implemented — ARCH-08 pending",
-  );
+interface EvolveMessage {
+  intent: string;
+  /** Optional problem context to attach the generated skill to. */
+  problem_id?: string;
+  /** ISO-8601 timestamp when the gap was detected. */
+  detected_at?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Core processing logic (one SQS record)
+// Handler
 // ---------------------------------------------------------------------------
 
-async function processGapMessage(message: GapMessage): Promise<string> {
-  const { intent } = message;
+export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
+  const batchItemFailures: SQSBatchItemFailure[] = [];
 
-  // Step 2: generate skill (stubbed — throws until ARCH-08)
+  // Resolve the Claude client once per cold start (cached singleton).
+  // We do this outside the per-record loop so the Secrets Manager call
+  // is made at most once per container lifetime.
+  const claudeClient = await getClaudeClient();
+
+  for (const record of event.Records) {
+    try {
+      const message: EvolveMessage = JSON.parse(record.body);
+      await processEvolveMessage(message, claudeClient);
+    } catch (err) {
+      // Retryable errors (network, rate-limit, DynamoDB transient) reach here.
+      // Returning the messageId in batchItemFailures lets SQS retry the
+      // individual message; after maxReceiveCount it moves to the DLQ.
+      console.error(
+        `[evolve] Retryable error processing message ${record.messageId}:`,
+        err,
+      );
+      batchItemFailures.push({ itemIdentifier: record.messageId });
+    }
+  }
+
+  return { batchItemFailures };
+}
+
+// ---------------------------------------------------------------------------
+// Core processing
+// ---------------------------------------------------------------------------
+
+async function processEvolveMessage(
+  message: EvolveMessage,
+  claudeClient: Anthropic,
+): Promise<void> {
+  const { intent, problem_id: problemId } = message;
+  const startMs = Date.now();
+
+  console.log(`[evolve] Processing intent: "${intent}"`);
+
+  // -------------------------------------------------------------------------
+  // 1. Call Claude to generate a skill
+  // -------------------------------------------------------------------------
   let rawSkill: unknown;
   try {
-    rawSkill = await generateSkill(intent);
+    rawSkill = await generateSkill(intent, claudeClient);
   } catch (err) {
-    console.error("[evolve] generateSkill failed:", err);
-
-    await emitEvent({
-      event_type: "evolve_failed",
-      skill_id: null,
-      intent,
-      latency_ms: 0,
-      confidence: null,
-      cache_hit: false,
-      input_hash: null,
-      success: false,
-    });
-
+    // Distinguish non-retryable parse failures from retryable API errors.
+    if (err instanceof EvolveParseError) {
+      // JSON was missing or malformed — no point retrying; consume the message.
+      console.error(`[evolve] Non-retryable parse error for intent "${intent}":`, err.message);
+      await emitEvolvedFailedEvent(intent, Date.now() - startMs);
+      return; // Do NOT rethrow — message is consumed.
+    }
+    // Any other error (rate limit, network, etc.) is retryable — rethrow.
     throw err;
   }
 
-  // Step 3: validate generated skill against SkillSchema
-  const parseResult = SkillSchema.safeParse(rawSkill);
-  if (!parseResult.success) {
-    const issues = parseResult.error.issues
-      .map((i) => `${i.path.join(".")}: ${i.message}`)
-      .join("; ");
-
-    console.error("[evolve] Generated skill failed schema validation:", issues);
-
-    await emitEvent({
-      event_type: "evolve_failed",
-      skill_id: null,
-      intent,
-      latency_ms: 0,
-      confidence: null,
-      cache_hit: false,
-      input_hash: null,
-      success: false,
-    });
-
-    throw new Error(`Generated skill failed schema validation: ${issues}`);
+  // -------------------------------------------------------------------------
+  // 2. Validate generated skill against CreateSkillRequestSchema
+  // -------------------------------------------------------------------------
+  const skillValidation = validate(CreateSkillRequestSchema, rawSkill);
+  if (!skillValidation.success) {
+    console.error(
+      `[evolve] Schema validation failed for intent "${intent}":`,
+      JSON.stringify(skillValidation.error.details),
+    );
+    await emitEvolvedFailedEvent(intent, Date.now() - startMs);
+    return; // Consume — retrying will produce the same invalid output.
   }
 
-  const skill = parseResult.data;
-  const skillId = uuidv4();
-  const now = new Date().toISOString();
+  const skillData = skillValidation.data;
 
-  // Build the DynamoDB item (new skill, version 1, confidence 0, status partial)
+  // -------------------------------------------------------------------------
+  // 3. Write to DynamoDB
+  // -------------------------------------------------------------------------
+  const now = new Date().toISOString();
+  const skillId = uuidv4();
+
   const skillItem: Record<string, unknown> = {
     skill_id: skillId,
     version_number: 1,
-    version_label: skill.version_label ?? "0.1.0",
-    problem_id: skill.problem_id,
-    name: skill.name,
-    description: skill.description,
+    version_label: skillData.version_label ?? "0.1.0",
+    problem_id: problemId ?? skillData.problem_id,
+    name: skillData.name,
+    description: skillData.description,
     is_canonical: false,
-    status: "partial" as const,
-    language: skill.language,
-    domain: skill.domain,
-    tags: skill.tags,
-    inputs: skill.inputs,
-    outputs: skill.outputs,
-    examples: skill.examples,
-    tests: skill.tests,
-    implementation: skill.implementation,
+    status: "partial",
+    language: skillData.language,
+    domain: skillData.domain,
+    tags: skillData.tags ?? [],
+    inputs: skillData.inputs,
+    outputs: skillData.outputs,
+    examples: skillData.examples ?? [],
+    tests: skillData.tests ?? [],
+    implementation: skillData.implementation ?? "",
     confidence: 0,
     latency_p50_ms: null,
     latency_p95_ms: null,
@@ -153,7 +169,7 @@ async function processGapMessage(message: GapMessage): Promise<string> {
     updated_at: now,
   };
 
-  // Step 4: write to DynamoDB
+  // DynamoDB write errors are retryable — let them propagate.
   await docClient.send(
     new PutCommand({
       TableName: SKILLS_TABLE,
@@ -163,81 +179,125 @@ async function processGapMessage(message: GapMessage): Promise<string> {
     }),
   );
 
-  console.log(
-    `[evolve] Wrote new skill ${skillId} for intent: "${intent}"`,
-  );
+  console.log(`[evolve] Created skill ${skillId} for intent "${intent}"`);
 
-  // Step 5: emit evolve event (fire-and-forget)
-  emitEvent({
-    event_type: "evolve",
+  // -------------------------------------------------------------------------
+  // 4. Invoke validation Lambda asynchronously (Event — fire-and-forget)
+  // -------------------------------------------------------------------------
+  try {
+    await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: VALIDATE_LAMBDA_NAME,
+        InvocationType: "Event",
+        Payload: Buffer.from(
+          JSON.stringify({ pathParameters: { skill_id: skillId } }),
+        ),
+      }),
+    );
+    console.log(`[evolve] Validation Lambda invoked for skill ${skillId}`);
+  } catch (invokeErr) {
+    // Non-fatal: skill is written; validation can be triggered manually.
+    console.error(
+      `[evolve] Failed to invoke validation Lambda for skill ${skillId}:`,
+      invokeErr,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. Emit success Kinesis event (fire-and-forget — never crashes the handler)
+  // -------------------------------------------------------------------------
+  await emitEvent({
+    event_type: "validate", // closest existing event_type for "skill created via evolve"
     skill_id: skillId,
     intent,
-    latency_ms: 0,
+    latency_ms: Date.now() - startMs,
     confidence: 0,
     cache_hit: false,
     input_hash: null,
     success: true,
-  }).catch((e) =>
-    console.warn("[evolve] emitEvent (evolve) failed (swallowed):", e),
-  );
-
-  // Step 6: invoke validate Lambda async (fire-and-forget)
-  const validatePayload = JSON.stringify({ skill_id: skillId });
-
-  lambdaClient
-    .send(
-      new InvokeCommand({
-        FunctionName: VALIDATE_FUNCTION_NAME,
-        InvocationType: InvocationType.Event, // async — fire-and-forget
-        Payload: Buffer.from(validatePayload),
-      }),
-    )
-    .catch((e) =>
-      console.warn(
-        "[evolve] validate Lambda invoke failed (swallowed):",
-        e,
-      ),
-    );
-
-  return skillId;
+  });
 }
 
 // ---------------------------------------------------------------------------
-// Handler
+// generateSkill — calls Claude, extracts JSON from code fence
 // ---------------------------------------------------------------------------
 
-export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
-  const batchItemFailures: SQSBatchItemFailure[] = [];
+/**
+ * Sentinel error thrown when Claude's response does not contain a valid JSON
+ * code fence.  Callers must treat this as non-retryable.
+ */
+export class EvolveParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EvolveParseError";
+  }
+}
 
-  for (const record of event.Records) {
-    try {
-      // Step 1: parse and validate message body
-      let body: unknown;
-      try {
-        body = JSON.parse(record.body);
-      } catch {
-        throw new Error(
-          `Invalid JSON in SQS message body: ${record.messageId}`,
-        );
-      }
+/**
+ * Call Claude to generate a skill object for the given intent.
+ *
+ * @param intent       The unresolved intent string.
+ * @param claudeClient Injected client — enables unit test mocking.
+ * @returns            Parsed JSON object (not yet Zod-validated).
+ * @throws             EvolveParseError if the response has no JSON code fence.
+ * @throws             Anthropic SDK error on rate limit / network failure (retryable).
+ */
+export async function generateSkill(
+  intent: string,
+  claudeClient: Anthropic,
+): Promise<unknown> {
+  // Phase 5: wire similarSkills to /resolve embedding lookup.
+  // For now, pass an empty array — the prompt still works without examples.
+  const similarSkills: SimilarSkill[] = [];
 
-      const parseResult = GapMessageSchema.safeParse(body);
-      if (!parseResult.success) {
-        const issues = parseResult.error.issues
-          .map((i) => `${i.path.join(".")}: ${i.message}`)
-          .join("; ");
-        throw new Error(`Invalid GapMessage: ${issues}`);
-      }
+  const prompt = buildSkillPrompt(intent, similarSkills);
 
-      await processGapMessage(parseResult.data);
-    } catch (err) {
-      console.error(
-        `[evolve] Failed to process message ${record.messageId}:`,
-        err,
-      );
-      batchItemFailures.push({ itemIdentifier: record.messageId });
-    }
+  // claude-sonnet-4-6 is the mandated model (architecture constraint).
+  const response = await claudeClient.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 4096,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  // Extract all text blocks and join them.
+  const text = response.content
+    .filter((block): block is Anthropic.TextBlock => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+
+  // Locate the ```json … ``` code fence.
+  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+  if (!jsonMatch) {
+    throw new EvolveParseError(
+      "Claude response did not contain a JSON code fence",
+    );
   }
 
-  return { batchItemFailures };
+  try {
+    return JSON.parse(jsonMatch[1]);
+  } catch {
+    throw new EvolveParseError(
+      `Claude response contained a JSON code fence but its content was not valid JSON: ${jsonMatch[1].slice(0, 200)}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+async function emitEvolvedFailedEvent(
+  intent: string,
+  latencyMs: number,
+): Promise<void> {
+  await emitEvent({
+    event_type: "fail",
+    skill_id: null,
+    intent: `evolve_failed:${intent}`,
+    latency_ms: latencyMs,
+    confidence: null,
+    cache_hit: false,
+    input_hash: null,
+    success: false,
+  });
 }

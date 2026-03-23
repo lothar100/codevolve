@@ -1,41 +1,124 @@
 /**
- * POST /validate/:skill_id — Run tests for a skill and update its confidence score.
+ * POST /validate/:skill_id — Run a skill's test suite and update its
+ * confidence score, status, and latency metrics in DynamoDB.
  *
- * Flow:
- *   1. Validate path parameter (skill_id UUID)
- *   2. Parse optional request body: { version_number?: number }
- *   3. Fetch skill from codevolve-skills (latest version, or specified version)
- *   4. Guard: 404 if not found, 422 if archived, 400 if no tests
- *   5. Run tests via runTests() stub (ARCH-08 pending)
- *   6. Compute confidence = passCount / tests.length (clamped [0, 1])
- *   7. UpdateItem: confidence, last_validated_at, test_pass_count, test_fail_count,
- *      and conditionally clear needs_optimization flag
- *   8. Emit Kinesis event (fire-and-forget)
- *   9. Return { skill_id, confidence, pass_count, fail_count, latency_ms }
+ * Full flow (ARCH-08):
+ *   1.  Parse path parameter skill_id
+ *   2.  Parse and validate request body (Zod)
+ *   3.  Fetch latest skill version from codevolve-skills → 404 if missing/archived
+ *   4.  Merge additional_tests (if supplied) into skill.tests for this run only
+ *   5.  Invoke runTests → per-test results + aggregate latency
+ *   6.  Compute new_confidence = passCount / totalTests (0 if no tests)
+ *   7.  Determine new_status from confidence:
+ *         confidence === 0              → "unsolved"
+ *         0 < confidence < 0.85        → "partial"
+ *         confidence >= 0.85           → "verified"
+ *       ("optimized" is set only by promote-canonical, not here)
+ *       ("archived" is never touched by validate)
+ *   8.  Build UpdateExpression:
+ *         SET confidence, status, updated_at, last_validated_at,
+ *             latency_p50_ms, latency_p95_ms,
+ *             test_pass_count, test_fail_count
+ *         Conditional REMOVE optimization_flagged when latencyP95Ms <= 5000
+ *   9.  Write to DynamoDB (fire-and-forget)
+ *  10.  Emit validate analytics event (fire-and-forget, never throws)
+ *  11.  Evolve trigger: if new_confidence < 0.7, send skill_id to the evolve
+ *       gap queue (SQS) fire-and-forget
+ *  12.  Return ValidateResponse
  */
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { z } from "zod";
 import { docClient, SKILLS_TABLE } from "../shared/dynamo.js";
 import { validate } from "../shared/validation.js";
 import { success, error } from "../shared/response.js";
 import { emitEvent } from "../shared/emitEvent.js";
-import type { Skill } from "../shared/types.js";
+import { SkillTestSchema } from "../shared/validation.js";
+import type { Skill, SkillStatus, SkillTest } from "../shared/types.js";
 import { runTests } from "./testRunner.js";
-import type { TestRunResult } from "./testRunner.js";
 
 // ---------------------------------------------------------------------------
-// Schemas
+// SQS client (for evolve gap queue)
 // ---------------------------------------------------------------------------
 
-const PathParamsSchema = z.object({
-  skill_id: z.string().uuid(),
+const sqsClient = new SQSClient({
+  region: process.env.AWS_REGION ?? "us-east-2",
 });
 
-const RequestBodySchema = z.object({
-  version_number: z.number().int().positive().optional(),
+// Read at call time so tests can set process.env after module load.
+function getEvolveGapQueueUrl(): string {
+  return process.env.EVOLVE_GAP_QUEUE_URL ?? "";
+}
+
+// ---------------------------------------------------------------------------
+// Request schema
+// ---------------------------------------------------------------------------
+
+const ValidateRequestSchema = z.object({
+  timeout_ms: z
+    .number()
+    .int()
+    .min(1000)
+    .max(300000)
+    .optional()
+    .default(30000),
+  additional_tests: z.array(SkillTestSchema).max(128).optional().default([]),
 });
+
+type ValidateRequest = {
+  timeout_ms: number;
+  additional_tests: SkillTest[];
+};
+
+// ---------------------------------------------------------------------------
+// Status transition logic (§6)
+// ---------------------------------------------------------------------------
+
+function deriveStatus(
+  newConfidence: number,
+  currentStatus: SkillStatus,
+): SkillStatus {
+  // "optimized" and "archived" are never downgraded by validate.
+  if (currentStatus === "archived") return "archived";
+  if (currentStatus === "optimized") {
+    // Even optimized skills can be demoted if confidence falls below threshold.
+    // Spec says optimized is set only via promote-canonical, but validate can
+    // still move it back to partial/unsolved if tests regress.
+    if (newConfidence === 0) return "unsolved";
+    if (newConfidence < 0.85) return "partial";
+    return "verified"; // stays verified; promote-canonical re-elevates to optimized
+  }
+
+  if (newConfidence === 0) return "unsolved";
+  if (newConfidence < 0.85) return "partial";
+  return "verified";
+}
+
+// ---------------------------------------------------------------------------
+// Evolve gap trigger (fire-and-forget)
+// ---------------------------------------------------------------------------
+
+async function triggerEvolveGap(skillId: string): Promise<void> {
+  const queueUrl = getEvolveGapQueueUrl();
+  if (!queueUrl) {
+    console.warn(
+      "[validate] EVOLVE_GAP_QUEUE_URL not set — skipping evolve trigger",
+    );
+    return;
+  }
+  await sqsClient.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify({
+        skill_id: skillId,
+        reason: "confidence_below_threshold",
+        triggered_at: new Date().toISOString(),
+      }),
+    }),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -46,207 +129,171 @@ export async function handler(
 ): Promise<APIGatewayProxyResult> {
   const startTime = Date.now();
 
-  // 1. Validate path parameter
-  const pathValidation = validate(PathParamsSchema, {
-    skill_id: event.pathParameters?.skill_id,
-  });
-  if (!pathValidation.success) {
-    return error(400, "VALIDATION_ERROR", "Invalid skill_id: must be a UUID");
+  // 1. Extract skill_id from path parameter.
+  const skillId = event.pathParameters?.skill_id;
+  if (!skillId) {
+    return error(400, "VALIDATION_ERROR", "Missing path parameter: skill_id");
   }
 
-  const skillId = pathValidation.data.skill_id;
-
-  // 2. Parse optional request body
-  let requestBody: { version_number?: number } = {};
-  if (event.body) {
-    let rawBody: unknown;
-    try {
-      rawBody = JSON.parse(event.body);
-    } catch {
-      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
-    }
-
-    const bodyValidation = validate(RequestBodySchema, rawBody);
-    if (!bodyValidation.success) {
-      return error(
-        400,
-        bodyValidation.error.code,
-        bodyValidation.error.message,
-        bodyValidation.error.details,
-      );
-    }
-    requestBody = bodyValidation.data;
-  }
-
-  // 3. Fetch skill from DynamoDB
-  let skillItem: Record<string, unknown> | undefined;
+  // 2. Parse and validate request body.
+  let rawBody: unknown;
   try {
-    if (requestBody.version_number !== undefined) {
-      // Specific version requested
-      const result = await docClient.send(
-        new GetCommand({
-          TableName: SKILLS_TABLE,
-          Key: {
-            skill_id: skillId,
-            version_number: requestBody.version_number,
-          },
-        }),
-      );
-      skillItem = result.Item as Record<string, unknown> | undefined;
-    } else {
-      // Latest version: descending sort, limit 1
-      const result = await docClient.send(
-        new QueryCommand({
-          TableName: SKILLS_TABLE,
-          KeyConditionExpression: "skill_id = :sid",
-          ExpressionAttributeValues: { ":sid": skillId },
-          ScanIndexForward: false,
-          Limit: 1,
-        }),
-      );
-      skillItem = result.Items?.[0] as Record<string, unknown> | undefined;
+    rawBody = JSON.parse(event.body ?? "{}");
+  } catch {
+    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+  }
+
+  const bodyValidation = validate(ValidateRequestSchema, rawBody);
+  if (!bodyValidation.success) {
+    return error(
+      400,
+      bodyValidation.error.code,
+      bodyValidation.error.message,
+      bodyValidation.error.details,
+    );
+  }
+
+  const request = bodyValidation.data as ValidateRequest;
+  const timeoutMs = request.timeout_ms;
+  const additionalTests = request.additional_tests;
+
+  // 3. Fetch latest skill version from DynamoDB.
+  let skill: Skill;
+  let versionNumber: number;
+  try {
+    const queryResult = await docClient.send(
+      new QueryCommand({
+        TableName: SKILLS_TABLE,
+        KeyConditionExpression: "skill_id = :sid",
+        ExpressionAttributeValues: { ":sid": skillId },
+        ScanIndexForward: false,
+        Limit: 1,
+      }),
+    );
+
+    const item = queryResult.Items?.[0];
+    if (!item) {
+      return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
     }
+    if (item.status === "archived") {
+      return error(404, "NOT_FOUND", `Skill ${skillId} is archived`);
+    }
+
+    skill = item as unknown as Skill;
+    versionNumber = item.version_number as number;
   } catch (err) {
-    console.error("validateSkill: DynamoDB fetch error:", err);
+    console.error("validate: DynamoDB fetch error:", err);
     return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
   }
 
-  // 4a. Guard: 404 if not found
-  if (!skillItem) {
-    return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
-  }
+  const previousConfidence = skill.confidence ?? 0;
 
-  // 4b. Guard: 422 if archived
-  if (skillItem.status === "archived") {
-    return error(
-      422,
-      "SKILL_ARCHIVED",
-      `Skill ${skillId} is archived and cannot be validated`,
-    );
-  }
-
-  // 4c. Guard: 400 if no tests
-  const tests = (skillItem.tests as Skill["tests"] | undefined) ?? [];
-  if (tests.length === 0) {
-    return error(
-      400,
-      "NO_TESTS",
-      `Skill ${skillId} has no test cases — add tests before validating`,
-    );
-  }
-
-  // Build the Skill object for the test runner
-  const skill: Skill = {
-    skill_id: skillItem.skill_id as string,
-    problem_id: skillItem.problem_id as string,
-    name: skillItem.name as string,
-    description: (skillItem.description as string) ?? "",
-    version: skillItem.version_number as number,
-    ...(skillItem.version_label
-      ? { version_label: skillItem.version_label as string }
-      : {}),
-    is_canonical: (skillItem.is_canonical as boolean) ?? false,
-    status: skillItem.status as Skill["status"],
-    language: skillItem.language as Skill["language"],
-    domain: (skillItem.domain as string[]) ?? [],
-    tags: (skillItem.tags as string[]) ?? [],
-    inputs: (skillItem.inputs as Skill["inputs"]) ?? [],
-    outputs: (skillItem.outputs as Skill["outputs"]) ?? [],
-    examples: (skillItem.examples as Skill["examples"]) ?? [],
-    tests,
-    implementation: (skillItem.implementation as string) ?? "",
-    confidence: (skillItem.confidence as number) ?? 0,
-    latency_p50_ms: (skillItem.latency_p50_ms as number | null) ?? null,
-    latency_p95_ms: (skillItem.latency_p95_ms as number | null) ?? null,
-    created_at: skillItem.created_at as string,
-    updated_at: skillItem.updated_at as string,
+  // 4. Merge additional_tests into skill.tests for this run only.
+  const mergedSkill: Skill = {
+    ...skill,
+    tests: [...(skill.tests ?? []), ...additionalTests],
   };
 
-  const versionNumber = skill.version;
-
-  // 5. Run tests (stub — throws until ARCH-08 is wired)
-  let testResult: TestRunResult;
+  // 5. Run tests — may throw if language is unsupported.
+  let testResult: Awaited<ReturnType<typeof runTests>>;
   try {
-    testResult = await runTests(skill);
-  } catch (err) {
-    console.error("validateSkill: test runner error:", err);
-    const latencyMs = Date.now() - startTime;
-
-    emitEvent({
-      event_type: "fail",
-      skill_id: skillId,
-      intent: null,
-      latency_ms: latencyMs,
-      confidence: skill.confidence,
-      cache_hit: false,
-      input_hash: null,
-      success: false,
-    }).catch((e) =>
-      console.warn("validateSkill: emitEvent failed (swallowed):", e),
+    testResult = await runTests(mergedSkill, timeoutMs);
+  } catch (runErr) {
+    const errMsg =
+      runErr instanceof Error ? runErr.message : "Test runner failed";
+    // Unsupported language produces a 400-level error.
+    const isUnsupported =
+      errMsg.toLowerCase().includes("unsupported language") ||
+      errMsg.toLowerCase().includes("environment variable is not set");
+    return error(
+      isUnsupported ? 400 : 500,
+      isUnsupported ? "UNSUPPORTED_LANGUAGE" : "INTERNAL_ERROR",
+      errMsg,
     );
-
-    return error(500, "RUNNER_ERROR", "Test runner failed — ARCH-08 pending");
   }
 
-  const { passCount, failCount, latencyMs: runnerLatencyMs } = testResult;
-  const totalTests = tests.length;
+  const { results, passCount, failCount, latencyP50Ms, latencyP95Ms } =
+    testResult;
+  const totalTests = results.length;
 
-  // 6. Compute confidence (clamped [0, 1])
-  const confidence = Math.min(1, Math.max(0, passCount / totalTests));
+  // 6. Compute new_confidence.
+  const newConfidence =
+    totalTests === 0 ? 0 : passCount / totalTests;
 
+  // 7. Determine new_status.
+  const newStatus = deriveStatus(newConfidence, skill.status);
+
+  // 8. Build and execute DynamoDB UpdateExpression.
   const now = new Date().toISOString();
 
-  // 7. UpdateItem: write validation results back to DynamoDB
-  // If all tests pass AND runner latency is within the 5000ms p95 budget,
-  // clear the needs_optimization flag.
-  const clearOptimizationFlag =
-    failCount === 0 && runnerLatencyMs <= 5000;
+  // Conditional: only REMOVE optimization_flagged when p95 is within threshold.
+  const shouldClearOptFlag = latencyP95Ms <= 5000;
 
-  try {
-    const updateExpression = clearOptimizationFlag
-      ? "SET confidence = :conf, last_validated_at = :now, test_pass_count = :pass, test_fail_count = :fail REMOVE needs_optimization"
-      : "SET confidence = :conf, last_validated_at = :now, test_pass_count = :pass, test_fail_count = :fail";
+  const updateExpression = shouldClearOptFlag
+    ? "SET confidence = :conf, #st = :status, updated_at = :now, last_validated_at = :now, " +
+      "latency_p50_ms = :p50, latency_p95_ms = :p95, " +
+      "test_pass_count = :passCount, test_fail_count = :failCount " +
+      "REMOVE optimization_flagged"
+    : "SET confidence = :conf, #st = :status, updated_at = :now, last_validated_at = :now, " +
+      "latency_p50_ms = :p50, latency_p95_ms = :p95, " +
+      "test_pass_count = :passCount, test_fail_count = :failCount";
 
-    await docClient.send(
+  docClient
+    .send(
       new UpdateCommand({
         TableName: SKILLS_TABLE,
         Key: { skill_id: skillId, version_number: versionNumber },
         UpdateExpression: updateExpression,
+        ExpressionAttributeNames: { "#st": "status" },
         ExpressionAttributeValues: {
-          ":conf": confidence,
+          ":conf": newConfidence,
+          ":status": newStatus,
           ":now": now,
-          ":pass": passCount,
-          ":fail": failCount,
+          ":p50": latencyP50Ms,
+          ":p95": latencyP95Ms,
+          ":passCount": passCount,
+          ":failCount": failCount,
         },
       }),
+    )
+    .catch((e) =>
+      console.error("validate: DynamoDB update failed (swallowed):", e),
     );
-  } catch (err) {
-    console.error("validateSkill: DynamoDB update error:", err);
-    return error(500, "INTERNAL_ERROR", "Failed to persist validation results");
-  }
 
-  const totalLatencyMs = Date.now() - startTime;
-
-  // 8. Emit Kinesis event (fire-and-forget — must not crash handler)
+  // 10. Emit validate analytics event (fire-and-forget).
+  const latencyMs = Date.now() - startTime;
   emitEvent({
     event_type: "validate",
     skill_id: skillId,
     intent: null,
-    latency_ms: totalLatencyMs,
-    confidence,
+    latency_ms: latencyMs,
+    confidence: newConfidence,
     cache_hit: false,
     input_hash: null,
-    success: true,
+    success: totalTests > 0 && failCount === 0,
   }).catch((e) =>
-    console.warn("validateSkill: emitEvent failed (swallowed):", e),
+    console.warn("validate: emitEvent failed (swallowed):", e),
   );
 
-  // 9. Return result
+  // 11. Evolve trigger: confidence < 0.7 → send to gap queue.
+  if (newConfidence < 0.7) {
+    triggerEvolveGap(skillId).catch((e) =>
+      console.warn("validate: evolve trigger failed (swallowed):", e),
+    );
+  }
+
+  // 12. Return response.
   return success(200, {
     skill_id: skillId,
-    confidence,
+    version: versionNumber,
+    previous_confidence: previousConfidence,
+    new_confidence: newConfidence,
+    new_status: newStatus,
+    total_tests: totalTests,
     pass_count: passCount,
     fail_count: failCount,
-    latency_ms: runnerLatencyMs,
+    latency_p50_ms: latencyP50Ms,
+    latency_p95_ms: latencyP95Ms,
+    results,
   });
 }

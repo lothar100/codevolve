@@ -1,23 +1,21 @@
 /**
  * Unit tests for src/evolve/handler.ts
  *
- * Covers:
- *   1. generateSkill throws → evolve_failed Kinesis event emitted, error thrown (→ DLQ)
- *   2. generateSkill returns invalid skill JSON → zod fails → evolve_failed + throw
- *   3. Valid generated skill → DynamoDB write, evolve Kinesis event, validate Lambda invoked
- *   4. Validate Lambda invoke failure → handler does NOT fail (fire-and-forget)
- *   5. Invalid SQS message body → error thrown (→ DLQ)
- *   6. ReportBatchItemFailures: failed record's messageId in batchItemFailures
+ * All external I/O is mocked:
+ *   - @anthropic-ai/sdk        → mock Claude client
+ *   - @aws-sdk/lib-dynamodb    → mockSend (PutCommand)
+ *   - @aws-sdk/client-lambda   → mockLambdaSend (InvokeCommand)
+ *   - src/shared/emitEvent     → mockEmitEvent
+ *   - src/evolve/claudeClient  → _setClaudeClientForTesting
  */
 
 import type { SQSEvent, SQSRecord } from "aws-lambda";
 
 // ---------------------------------------------------------------------------
-// Mocks — must be declared before any module imports
+// Mocks — must be declared before any imports that reference these modules
 // ---------------------------------------------------------------------------
 
 const mockSend = jest.fn();
-const mockLambdaSend = jest.fn();
 
 jest.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: jest.fn().mockImplementation(() => ({})),
@@ -30,279 +28,406 @@ jest.mock("@aws-sdk/lib-dynamodb", () => ({
   PutCommand: jest.fn().mockImplementation((input: unknown) => ({ input })),
 }));
 
-jest.mock("@aws-sdk/client-lambda", () => ({
-  LambdaClient: jest.fn().mockImplementation(() => ({
-    send: mockLambdaSend,
-  })),
-  InvokeCommand: jest.fn().mockImplementation((input: unknown) => ({ input })),
-  InvocationType: { Event: "Event" },
-}));
+const mockLambdaSend = jest.fn();
 
-jest.mock("@aws-sdk/client-kinesis", () => ({
-  KinesisClient: jest.fn().mockImplementation(() => ({})),
-  PutRecordCommand: jest.fn(),
-  PutRecordsCommand: jest.fn(),
+jest.mock("@aws-sdk/client-lambda", () => ({
+  LambdaClient: jest.fn().mockImplementation(() => ({ send: mockLambdaSend })),
+  InvokeCommand: jest.fn().mockImplementation((input: unknown) => ({ input })),
 }));
 
 const mockEmitEvent = jest.fn().mockResolvedValue(undefined);
+
 jest.mock("../../../src/shared/emitEvent", () => ({
   emitEvent: mockEmitEvent,
   EVENTS_STREAM: "codevolve-events",
   kinesisClient: {},
 }));
 
-// Mock generateSkill so individual tests can control its behaviour
-const mockGenerateSkill = jest.fn();
-jest.mock("../../../src/evolve/handler", () => {
-  // We need to import the real module, override generateSkill only
-  const actual =
-    jest.requireActual<typeof import("../../../src/evolve/handler")>(
-      "../../../src/evolve/handler",
-    );
-  return actual;
-});
+jest.mock("@aws-sdk/client-kinesis", () => ({
+  KinesisClient: jest.fn().mockImplementation(() => ({})),
+  PutRecordCommand: jest.fn(),
+}));
+
+// Mock Secrets Manager so claudeClient does not attempt a real AWS call in tests.
+jest.mock("@aws-sdk/client-secrets-manager", () => ({
+  SecretsManagerClient: jest.fn().mockImplementation(() => ({})),
+  GetSecretValueCommand: jest.fn().mockImplementation((input: unknown) => ({ input })),
+}));
 
 // ---------------------------------------------------------------------------
-// Import handler AFTER mocks are established
+// Import handler AFTER mocks are registered
 // ---------------------------------------------------------------------------
 
-import { handler } from "../../../src/evolve/handler";
+import { handler, generateSkill, EvolveParseError } from "../../../src/evolve/handler";
+import { _setClaudeClientForTesting } from "../../../src/evolve/claudeClient";
+import Anthropic from "@anthropic-ai/sdk";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Fixtures
 // ---------------------------------------------------------------------------
 
-const SKILL_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const PROBLEM_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
 
-const makeValidGapMessage = (
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> => ({
-  intent: "sort an array of integers in ascending order",
-  resolve_confidence: 0.45,
-  timestamp: "2026-03-22T10:00:00.000Z",
-  original_event_id: "evt-001",
-  ...overrides,
-});
-
-const makeSQSRecord = (
-  messageId: string,
-  body: Record<string, unknown> | string,
-): SQSRecord =>
-  ({
-    messageId,
-    receiptHandle: `receipt-${messageId}`,
-    body: typeof body === "string" ? body : JSON.stringify(body),
-    attributes: {} as never,
-    messageAttributes: {},
-    md5OfBody: "",
-    eventSource: "aws:sqs",
-    eventSourceARN:
-      "arn:aws:sqs:us-east-2:123456789012:codevolve-gap-queue.fifo",
-    awsRegion: "us-east-2",
-  }) as SQSRecord;
-
-const makeSQSEvent = (records: SQSRecord[]): SQSEvent => ({
-  Records: records,
-});
+/**
+ * A minimal generated skill JSON that satisfies CreateSkillRequestSchema.
+ * Claude would return this (serialised) inside a ```json ``` fence.
+ */
+const VALID_GENERATED_SKILL = {
+  problem_id: PROBLEM_ID,
+  name: "Two Sum",
+  description: "Find two numbers that add up to the target.",
+  language: "python",
+  domain: ["arrays"],
+  tags: ["hash-map", "two-sum"],
+  inputs: [
+    { name: "nums", type: "list[int]" },
+    { name: "target", type: "int" },
+  ],
+  outputs: [{ name: "indices", type: "list[int]" }],
+  examples: [
+    { input: { nums: [2, 7, 11, 15], target: 9 }, output: { indices: [0, 1] } },
+  ],
+  tests: [
+    { input: { nums: [2, 7, 11, 15], target: 9 }, expected: { indices: [0, 1] } },
+    { input: { nums: [3, 2, 4], target: 6 }, expected: { indices: [1, 2] } },
+    { input: { nums: [3, 3], target: 6 }, expected: { indices: [0, 1] } },
+  ],
+  implementation: "def two_sum(nums, target):\n    seen = {}\n    for i, n in enumerate(nums):\n        if target - n in seen:\n            return [seen[target - n], i]\n        seen[n] = i",
+  status: "partial",
+};
 
 /**
- * Builds a minimal valid skill that passes SkillSchema.
- * Used by tests that simulate a successful Claude response.
+ * Build a Claude API response that wraps `obj` inside a ```json ``` fence.
  */
-const makeValidSkill = (
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> => ({
-  skill_id: SKILL_ID,
-  problem_id: PROBLEM_ID,
-  name: "Sort Integers",
-  description: "Sort an array of integers in ascending order",
-  version: 1,
-  version_label: "0.1.0",
-  is_canonical: false,
-  status: "partial",
-  language: "python",
-  domain: ["sorting"],
-  tags: ["array", "sorting"],
-  inputs: [{ name: "nums", type: "list[int]" }],
-  outputs: [{ name: "sorted_nums", type: "list[int]" }],
-  examples: [{ input: { nums: [3, 1, 2] }, output: { sorted_nums: [1, 2, 3] } }],
-  tests: [{ input: { nums: [3, 1, 2] }, expected: { sorted_nums: [1, 2, 3] } }],
-  implementation: "def handler(nums): return sorted(nums)",
-  confidence: 0,
-  latency_p50_ms: null,
-  latency_p95_ms: null,
-  created_at: "2026-03-22T10:00:00.000Z",
-  updated_at: "2026-03-22T10:00:00.000Z",
-  ...overrides,
+function makeClaudeResponse(obj: unknown): Anthropic.Message {
+  return {
+    id: "msg_test",
+    type: "message",
+    role: "assistant",
+    content: [
+      {
+        type: "text",
+        text: `Here is the skill:\n\`\`\`json\n${JSON.stringify(obj, null, 2)}\n\`\`\``,
+      },
+    ],
+    model: "claude-sonnet-4-6",
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 100, output_tokens: 200 },
+  } as Anthropic.Message;
+}
+
+/**
+ * Build a mock Anthropic client whose messages.create resolves to a given response.
+ */
+function makeMockClaudeClient(
+  createImpl: () => Promise<Anthropic.Message>,
+): Anthropic {
+  return {
+    messages: {
+      create: jest.fn().mockImplementation(createImpl),
+    },
+  } as unknown as Anthropic;
+}
+
+/**
+ * Build a minimal SQS event with a single record.
+ */
+function makeSqsEvent(body: unknown, messageId = "msg-001"): SQSEvent {
+  return {
+    Records: [
+      {
+        messageId,
+        body: JSON.stringify(body),
+        receiptHandle: "receipt-001",
+        attributes: {
+          ApproximateReceiveCount: "1",
+          SentTimestamp: "0",
+          SenderId: "AIDA",
+          ApproximateFirstReceiveTimestamp: "0",
+        },
+        messageAttributes: {},
+        md5OfBody: "md5",
+        eventSource: "aws:sqs",
+        eventSourceARN: "arn:aws:sqs:us-east-2:123:GapQueue",
+        awsRegion: "us-east-2",
+      } as SQSRecord,
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Setup / teardown
+// ---------------------------------------------------------------------------
+
+beforeEach(() => {
+  jest.clearAllMocks();
+
+  // Default: DynamoDB write succeeds
+  mockSend.mockResolvedValue({});
+
+  // Default: Lambda invoke succeeds
+  mockLambdaSend.mockResolvedValue({ StatusCode: 202 });
+});
+
+afterEach(() => {
+  // Reset the cached Claude client so tests are isolated
+  _setClaudeClientForTesting(null);
 });
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("evolveHandler (SQS consumer)", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockGenerateSkill.mockReset();
+describe("handler (SQS batch)", () => {
+  it("happy path: valid generated skill → DynamoDB write, evolve Kinesis event, validate Lambda invoked", async () => {
+    // Arrange
+    const mockClient = makeMockClaudeClient(() =>
+      Promise.resolve(makeClaudeResponse(VALID_GENERATED_SKILL)),
+    );
+    _setClaudeClientForTesting(mockClient);
+
+    const event = makeSqsEvent({
+      intent: "find two numbers that add up to a target",
+      problem_id: PROBLEM_ID,
+    });
+
+    // Act
+    const result = await handler(event);
+
+    // Assert: no failures (message consumed successfully)
+    expect(result.batchItemFailures).toHaveLength(0);
+
+    // DynamoDB PutCommand was called with a well-formed item
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const putCall = mockSend.mock.calls[0][0] as { input: Record<string, unknown> };
+    const item = putCall.input.Item as Record<string, unknown>;
+    expect(typeof item.skill_id).toBe("string");
+    expect(item.status).toBe("partial");
+    expect(item.is_canonical).toBe(false);
+
+    // Validation Lambda was invoked asynchronously
+    expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+    const invocation = mockLambdaSend.mock.calls[0][0] as {
+      input: { InvocationType: string };
+    };
+    expect(invocation.input.InvocationType).toBe("Event");
+
+    // Kinesis success event emitted
+    expect(mockEmitEvent).toHaveBeenCalledTimes(1);
+    const emittedEvent = mockEmitEvent.mock.calls[0][0] as Record<string, unknown>;
+    expect(emittedEvent.success).toBe(true);
+    expect(emittedEvent.intent).toBe("find two numbers that add up to a target");
   });
 
-  // -------------------------------------------------------------------------
-  // Test 1: generateSkill throws → evolve_failed emitted, record in batchItemFailures
-  // -------------------------------------------------------------------------
-  it("emits evolve_failed and DLQs the message when generateSkill throws", async () => {
-    // The handler calls generateSkill internally — since it always throws as a stub,
-    // we just need to confirm the expected Kinesis event and batchItemFailures.
-    const event = makeSQSEvent([
-      makeSQSRecord("msg-1", makeValidGapMessage()),
-    ]);
+  it("Claude rate limit error → message returned in batchItemFailures for SQS retry", async () => {
+    // Anthropic SDK raises errors with status codes; simulate a 429-like error
+    const rateLimitError = new Error("Rate limit exceeded");
+    (rateLimitError as NodeJS.ErrnoException).code = "429";
+
+    const mockClient = makeMockClaudeClient(() => Promise.reject(rateLimitError));
+    _setClaudeClientForTesting(mockClient);
+
+    const event = makeSqsEvent(
+      { intent: "sort by frequency" },
+      "msg-rate-limit",
+    );
 
     const result = await handler(event);
 
-    // Record must appear in batchItemFailures (causes SQS retry → DLQ)
-    expect(result.batchItemFailures).toHaveLength(1);
-    expect(result.batchItemFailures[0].itemIdentifier).toBe("msg-1");
+    // Message must be in batchItemFailures so SQS retries it
+    expect(result.batchItemFailures).toEqual([
+      { itemIdentifier: "msg-rate-limit" },
+    ]);
+
+    // No DynamoDB write should have happened
+    expect(mockSend).not.toHaveBeenCalled();
+
+    // No success Kinesis event
+    expect(mockEmitEvent).not.toHaveBeenCalled();
+  });
+
+  it("Claude response with no JSON code fence → evolve_failed emitted, message consumed (not in batchItemFailures)", async () => {
+    // Claude returns prose with no ```json ``` block
+    const noFenceResponse: Anthropic.Message = {
+      id: "msg_nofence",
+      type: "message",
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "I cannot generate a skill for this intent. Please try again.",
+        },
+      ],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 50, output_tokens: 20 },
+    } as Anthropic.Message;
+
+    const mockClient = makeMockClaudeClient(() =>
+      Promise.resolve(noFenceResponse),
+    );
+    _setClaudeClientForTesting(mockClient);
+
+    const event = makeSqsEvent(
+      { intent: "do something impossible" },
+      "msg-no-fence",
+    );
+
+    const result = await handler(event);
+
+    // Message must NOT be in batchItemFailures — it is consumed, not retried
+    expect(result.batchItemFailures).toHaveLength(0);
+
+    // DynamoDB write must not have been attempted
+    expect(mockSend).not.toHaveBeenCalled();
 
     // evolve_failed event must be emitted
-    expect(mockEmitEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event_type: "evolve_failed",
-        intent: "sort an array of integers in ascending order",
-        success: false,
-        skill_id: null,
-      }),
+    expect(mockEmitEvent).toHaveBeenCalledTimes(1);
+    const emittedEvent = mockEmitEvent.mock.calls[0][0] as Record<string, unknown>;
+    expect(emittedEvent.event_type).toBe("fail");
+    expect(emittedEvent.success).toBe(false);
+    expect(typeof emittedEvent.intent).toBe("string");
+    expect((emittedEvent.intent as string).startsWith("evolve_failed:")).toBe(true);
+  });
+
+  it("Zod validation failure on generated skill → evolve_failed emitted, message consumed", async () => {
+    // Claude returns a JSON fence but the content fails schema validation
+    // (missing required 'inputs' field)
+    const invalidSkill = {
+      name: "Broken Skill",
+      description: "Missing required fields",
+      language: "python",
+      domain: ["arrays"],
+      // inputs missing → fails CreateSkillRequestSchema
+      outputs: [{ name: "result", type: "int" }],
+      status: "partial",
+    };
+
+    const mockClient = makeMockClaudeClient(() =>
+      Promise.resolve(makeClaudeResponse(invalidSkill)),
+    );
+    _setClaudeClientForTesting(mockClient);
+
+    const event = makeSqsEvent(
+      { intent: "compute something" },
+      "msg-zod-fail",
     );
 
-    // DynamoDB must NOT be written to
-    expect(mockSend).not.toHaveBeenCalled();
-  });
-
-  // -------------------------------------------------------------------------
-  // Test 2: generateSkill returns invalid skill → zod fails → evolve_failed + DLQ
-  // -------------------------------------------------------------------------
-  it("emits evolve_failed and DLQs when generated skill fails schema validation", async () => {
-    // We cannot easily override the internal generateSkill without refactoring.
-    // Since generateSkill always throws the stub error in this implementation,
-    // this test verifies the same path (stub → throw → evolve_failed → DLQ).
-    // Once ARCH-08 lands and generateSkill is mockable, this test will be extended
-    // to cover an invalid-shape return (missing required fields).
-    //
-    // For now: simulate the zod-validation branch by passing a malformed GapMessage
-    // that will parse OK but whose intent triggers the stub throw.
-    const event = makeSQSEvent([
-      makeSQSRecord("msg-2", makeValidGapMessage({ intent: "binary search" })),
-    ]);
-
     const result = await handler(event);
 
-    expect(result.batchItemFailures).toHaveLength(1);
-    expect(result.batchItemFailures[0].itemIdentifier).toBe("msg-2");
-    expect(mockEmitEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event_type: "evolve_failed",
-        success: false,
-      }),
-    );
-  });
-
-  // -------------------------------------------------------------------------
-  // Test 3 (prepared for ARCH-08): valid skill → DynamoDB write + evolve event + validate invoke
-  // This test is skipped until generateSkill is mockable from tests.
-  // The TODO comment documents the intended behaviour.
-  // -------------------------------------------------------------------------
-  it.todo(
-    "writes new skill to DynamoDB, emits evolve event, and invokes validate Lambda " +
-      "when generateSkill returns a valid skill — enable after ARCH-08",
-  );
-
-  // -------------------------------------------------------------------------
-  // Test 4: validate Lambda invoke failure does not fail the handler
-  // -------------------------------------------------------------------------
-  it("does not fail the handler when validate Lambda invoke errors (fire-and-forget)", async () => {
-    // This test verifies the fire-and-forget contract. Since generateSkill always
-    // throws in this stub implementation, the validate invoke is never reached.
-    // The test documents the expected behavior for when ARCH-08 enables real generation:
-    // a validate invoke failure must be swallowed, not surfaced as a batchItemFailure.
-    //
-    // We verify this indirectly: if the validate invoke DID throw (even swallowed),
-    // the message would still need to NOT appear in batchItemFailures.
-    // Since the stub throws before reaching the invoke, this confirms the
-    // fire-and-forget path doesn't introduce an uncaught promise rejection.
-    mockLambdaSend.mockRejectedValue(new Error("Lambda service error"));
-
-    const event = makeSQSEvent([
-      makeSQSRecord("msg-4", makeValidGapMessage()),
-    ]);
-
-    // Handler must not throw — it must return a valid SQSBatchResponse
-    await expect(handler(event)).resolves.toMatchObject({
-      batchItemFailures: expect.any(Array),
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Test 5: invalid SQS message body (not JSON) → error thrown → DLQ
-  // -------------------------------------------------------------------------
-  it("DLQs the message when the SQS body is not valid JSON", async () => {
-    const event = makeSQSEvent([
-      makeSQSRecord("msg-5", "not-valid-json"),
-    ]);
-
-    const result = await handler(event);
-
-    expect(result.batchItemFailures).toHaveLength(1);
-    expect(result.batchItemFailures[0].itemIdentifier).toBe("msg-5");
-    // No Kinesis event for JSON parse failure (no intent available to emit against)
-    expect(mockEmitEvent).not.toHaveBeenCalled();
-  });
-
-  // -------------------------------------------------------------------------
-  // Test 6: invalid GapMessage shape → schema validation fails → DLQ
-  // -------------------------------------------------------------------------
-  it("DLQs the message when the GapMessage body is missing required fields", async () => {
-    // Missing intent and resolve_confidence
-    const event = makeSQSEvent([
-      makeSQSRecord("msg-6", { original_event_id: "evt-999" }),
-    ]);
-
-    const result = await handler(event);
-
-    expect(result.batchItemFailures).toHaveLength(1);
-    expect(result.batchItemFailures[0].itemIdentifier).toBe("msg-6");
-    expect(mockEmitEvent).not.toHaveBeenCalled();
-  });
-
-  // -------------------------------------------------------------------------
-  // Test 7: ReportBatchItemFailures — batch with mixed success/failure
-  // One bad message (invalid JSON), one valid message.
-  // Only the bad message's messageId should appear in batchItemFailures.
-  // -------------------------------------------------------------------------
-  it("returns only failed message IDs in batchItemFailures for a mixed batch", async () => {
-    const event = makeSQSEvent([
-      makeSQSRecord("msg-bad", "not-valid-json"),
-      makeSQSRecord("msg-also-fails", makeValidGapMessage()),
-      // Note: both fail in this stub-only state (generateSkill always throws).
-      // The key assertion is that EACH failing messageId appears individually.
-    ]);
-
-    const result = await handler(event);
-
-    const failedIds = result.batchItemFailures.map((f) => f.itemIdentifier);
-    expect(failedIds).toContain("msg-bad");
-    expect(failedIds).toContain("msg-also-fails");
-    expect(result.batchItemFailures).toHaveLength(2);
-  });
-
-  // -------------------------------------------------------------------------
-  // Test 8: handler returns empty batchItemFailures when no records provided
-  // -------------------------------------------------------------------------
-  it("returns empty batchItemFailures for an empty SQS batch", async () => {
-    const event = makeSQSEvent([]);
-
-    const result = await handler(event);
-
+    // Message consumed, not retried
     expect(result.batchItemFailures).toHaveLength(0);
-    expect(mockEmitEvent).not.toHaveBeenCalled();
+
+    // No DynamoDB write
     expect(mockSend).not.toHaveBeenCalled();
+
+    // evolve_failed emitted
+    expect(mockEmitEvent).toHaveBeenCalledTimes(1);
+    const emittedEvent = mockEmitEvent.mock.calls[0][0] as Record<string, unknown>;
+    expect(emittedEvent.event_type).toBe("fail");
+    expect(emittedEvent.success).toBe(false);
+  });
+
+  it("validation Lambda invoke failure does not fail the message", async () => {
+    // Claude succeeds and DynamoDB succeeds, but Lambda invoke throws
+    const mockClient = makeMockClaudeClient(() =>
+      Promise.resolve(makeClaudeResponse(VALID_GENERATED_SKILL)),
+    );
+    _setClaudeClientForTesting(mockClient);
+
+    mockLambdaSend.mockRejectedValueOnce(new Error("Lambda invocation failed"));
+
+    const event = makeSqsEvent({ intent: "sum two numbers" });
+
+    const result = await handler(event);
+
+    // Message still consumed successfully — validation failure is non-fatal
+    expect(result.batchItemFailures).toHaveLength(0);
+
+    // DynamoDB write still happened
+    expect(mockSend).toHaveBeenCalledTimes(1);
+
+    // Success event still emitted
+    expect(mockEmitEvent).toHaveBeenCalledTimes(1);
+    const emittedEvent = mockEmitEvent.mock.calls[0][0] as Record<string, unknown>;
+    expect(emittedEvent.success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateSkill unit tests
+// ---------------------------------------------------------------------------
+
+describe("generateSkill", () => {
+  it("returns parsed JSON from a valid code-fenced Claude response", async () => {
+    const mockClient = makeMockClaudeClient(() =>
+      Promise.resolve(makeClaudeResponse(VALID_GENERATED_SKILL)),
+    );
+
+    const result = await generateSkill("find two numbers adding to target", mockClient);
+
+    expect(result).toEqual(VALID_GENERATED_SKILL);
+  });
+
+  it("throws EvolveParseError when response has no JSON code fence", async () => {
+    const mockClient = makeMockClaudeClient(() =>
+      Promise.resolve({
+        id: "msg_x",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Sorry, I cannot help." }],
+        model: "claude-sonnet-4-6",
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 5 },
+      } as Anthropic.Message),
+    );
+
+    await expect(generateSkill("some intent", mockClient)).rejects.toThrow(
+      EvolveParseError,
+    );
+  });
+
+  it("throws EvolveParseError when the code fence contains invalid JSON", async () => {
+    const badJsonResponse: Anthropic.Message = {
+      id: "msg_badjson",
+      type: "message",
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "```json\n{ this is not valid json }\n```",
+        },
+      ],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 10 },
+    } as Anthropic.Message;
+
+    const mockClient = makeMockClaudeClient(() =>
+      Promise.resolve(badJsonResponse),
+    );
+
+    await expect(generateSkill("some intent", mockClient)).rejects.toThrow(
+      EvolveParseError,
+    );
+  });
+
+  it("re-throws non-parse errors (e.g. rate limit) so SQS retries the message", async () => {
+    const rateLimitError = new Error("429 Too Many Requests");
+    const mockClient = makeMockClaudeClient(() =>
+      Promise.reject(rateLimitError),
+    );
+
+    await expect(generateSkill("some intent", mockClient)).rejects.toThrow(
+      "429 Too Many Requests",
+    );
+    // Must NOT be wrapped in EvolveParseError
+    await expect(generateSkill("some intent", mockClient)).rejects.not.toThrow(
+      EvolveParseError,
+    );
   });
 });

@@ -16,6 +16,8 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as events from "aws-cdk-lib/aws-events";
 import * as eventsTargets from "aws-cdk-lib/aws-events-targets";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -481,6 +483,70 @@ export class CodevolveStack extends cdk.Stack {
     archiveQueue.grantSendMessages(decisionEngineFn);
     this.eventsStream.grantWrite(decisionEngineFn);
     this.archiveDryRunTable.grantWriteData(decisionEngineFn);
+
+    // -----------------------------------------------------------------------
+    // Analytics Consumer (IMPL-08-B)
+    // -----------------------------------------------------------------------
+
+    // Import ClickHouse credentials secret (managed outside CDK)
+    const clickhouseSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "ClickHouseSecret",
+      "codevolve/clickhouse-credentials",
+    );
+
+    // DLQ for failed analytics consumer batches
+    const analyticsConsumerDlq = new sqs.Queue(this, "AnalyticsConsumerDlq", {
+      queueName: "codevolve-analytics-consumer-dlq",
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    // Analytics consumer Lambda — reads from Kinesis, writes to ClickHouse
+    const analyticsConsumerFn = new NodejsFunction(
+      this,
+      "AnalyticsConsumerFn",
+      {
+        ...commonNodejsProps,
+        functionName: "codevolve-analytics-consumer",
+        entry: path.join(__dirname, "../src/analytics/consumer.ts"),
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(300),
+        environment: {
+          ...lambdaEnvironment,
+          CLICKHOUSE_SECRET_ARN: clickhouseSecret.secretArn,
+        },
+      },
+    );
+
+    // Wire Kinesis stream to analytics consumer
+    analyticsConsumerFn.addEventSource(
+      new lambdaEventSources.KinesisEventSource(this.eventsStream, {
+        batchSize: 100,
+        maxBatchingWindow: cdk.Duration.seconds(5),
+        reportBatchItemFailures: true,
+        retryAttempts: 3,
+        onFailure: new lambdaEventSources.SqsDlq(analyticsConsumerDlq),
+        startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+        bisectBatchOnError: true,
+      }),
+    );
+
+    // CloudWatch alarm: alert when any records land in the DLQ
+    new cloudwatch.Alarm(this, "AnalyticsConsumerDlqAlarm", {
+      alarmName: "codevolve-analytics-consumer-dlq-nonempty",
+      metric: analyticsConsumerDlq.metricNumberOfMessagesSent(),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+    });
+
+    // IAM grants for analytics consumer
+    clickhouseSecret.grantRead(analyticsConsumerFn);
+    this.eventsStream.grantRead(analyticsConsumerFn);
+
+    // Also grant ClickHouse secret read to Decision Engine (IMPL-08-B note)
+    clickhouseSecret.grantRead(decisionEngineFn);
 
     // -----------------------------------------------------------------------
     // API Gateway

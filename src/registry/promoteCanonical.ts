@@ -75,13 +75,10 @@ export const handler = async (
     }
 
     // ------------------------------------------------------------------
-    // 2. Already canonical — idempotent, return 200 with current state
+    // 2. Already canonical — 409 CONFLICT per spec §4.1
     // ------------------------------------------------------------------
     if (skillItem.is_canonical === true) {
-      return success(200, {
-        skill: mapSkillFromDynamo(skillItem),
-        demoted_skill_id: null,
-      });
+      return error(409, "CONFLICT", "Skill is already the canonical for this problem");
     }
 
     // ------------------------------------------------------------------
@@ -117,30 +114,52 @@ export const handler = async (
       );
     }
 
+    // ------------------------------------------------------------------
+    // 5b. Gate condition 3: must have been validated (test_pass_count > 0)
+    // ------------------------------------------------------------------
+    const testPassCount = (skillItem.test_pass_count as number | undefined) ?? 0;
+    if (testPassCount === 0) {
+      return error(
+        422,
+        "PRECONDITION_FAILED",
+        "Skill has not been validated or all tests are failing",
+        { test_pass_count: testPassCount },
+      );
+    }
+
     const problemId = skillItem.problem_id as string;
     const versionNumber = skillItem.version_number as number;
     const now = new Date().toISOString();
 
     // ------------------------------------------------------------------
-    // 6. Find the current canonical for the same problem_id (GSI-problem-status)
+    // 6. Find the current canonical for the same problem_id + language
+    //    Uses GSI-canonical (is_canonical_status PK) with language filter.
+    //    Query both verified and optimized statuses since either can be canonical.
     // ------------------------------------------------------------------
-    const canonicalQuery = await docClient.send(
-      new QueryCommand({
-        TableName: SKILLS_TABLE,
-        IndexName: "GSI-problem-status",
-        KeyConditionExpression: "problem_id = :pid",
-        FilterExpression: "is_canonical = :true",
-        ExpressionAttributeValues: {
-          ":pid": problemId,
-          ":true": true,
-        },
-      }),
-    );
+    const skillLanguage = skillItem.language as string;
+    let previousCanonicalItem: Record<string, unknown> | null = null;
 
-    const previousCanonicalItem =
-      canonicalQuery.Items && canonicalQuery.Items.length > 0
-        ? (canonicalQuery.Items[0] as Record<string, unknown>)
-        : null;
+    for (const statusSuffix of ["verified", "optimized"]) {
+      const canonicalQuery = await docClient.send(
+        new QueryCommand({
+          TableName: SKILLS_TABLE,
+          IndexName: "GSI-canonical",
+          KeyConditionExpression: "is_canonical_status = :ics",
+          FilterExpression: "problem_id = :pid AND #lang = :lang",
+          ExpressionAttributeNames: { "#lang": "language" },
+          ExpressionAttributeValues: {
+            ":ics": `true#${statusSuffix}`,
+            ":pid": problemId,
+            ":lang": skillLanguage,
+          },
+          Limit: 1,
+        }),
+      );
+      if (canonicalQuery.Items && canonicalQuery.Items.length > 0) {
+        previousCanonicalItem = canonicalQuery.Items[0] as Record<string, unknown>;
+        break;
+      }
+    }
 
     const previousCanonicalId: string | null = previousCanonicalItem
       ? (previousCanonicalItem.skill_id as string)
@@ -156,7 +175,7 @@ export const handler = async (
 
     const transactInput: TransactWriteCommandInput = {
       TransactItems: [
-        // Promote target skill
+        // Promote target skill — ConditionExpression guards against race conditions
         {
           Update: {
             TableName: SKILLS_TABLE,
@@ -166,10 +185,14 @@ export const handler = async (
             },
             UpdateExpression:
               "SET is_canonical = :true, is_canonical_status = :ics, updated_at = :now",
+            ConditionExpression:
+              "confidence >= :threshold AND test_fail_count = :zero",
             ExpressionAttributeValues: {
               ":true": true,
               ":ics": isCanonicalStatus,
               ":now": now,
+              ":threshold": 0.85,
+              ":zero": 0,
             },
           },
         },
@@ -208,7 +231,21 @@ export const handler = async (
       });
     }
 
-    await docClient.send(new TransactWriteCommand(transactInput));
+    try {
+      await docClient.send(new TransactWriteCommand(transactInput));
+    } catch (txErr) {
+      if (
+        txErr instanceof Error &&
+        txErr.name === "TransactionCanceledException"
+      ) {
+        return error(
+          422,
+          "PRECONDITION_FAILED",
+          "Promotion conditions no longer met — concurrent modification detected",
+        );
+      }
+      throw txErr;
+    }
 
     // ------------------------------------------------------------------
     // 8. Emit Kinesis event (fire-and-forget)

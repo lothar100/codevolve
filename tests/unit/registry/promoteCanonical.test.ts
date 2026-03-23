@@ -1,16 +1,21 @@
 /**
  * Unit tests for POST /skills/:skill_id/promote-canonical handler.
  *
- * Test cases per IMPL-13 spec:
- *  1. Happy path: confidence=0.85, test_fail_count=0, previous canonical exists
- *     → TransactWriteItems called with both demote + promote, Kinesis event emitted, 200
- *  2. Happy path: no previous canonical → TransactWriteItems with only promote, 200
+ * Test cases per IMPL-13 spec (post REVIEW-09 fixes):
+ *  1. Happy path: confidence=0.85, test_fail_count=0, test_pass_count>0, previous canonical exists
+ *     → TransactWriteItems called with 3 items (promote + problem + demote), Kinesis emitted, 200
+ *  2. Happy path: no previous canonical → TransactWriteItems with 2 items, 200
  *  3. confidence=0.84 → 422 with confidence in details
  *  4. test_fail_count=1 → 422 with test_fail_count in details
  *  5. Skill not found → 404
  *  6. Skill archived → 422
- *  7. Already canonical → 200 (idempotent, no-op)
+ *  7. Already canonical → 409 CONFLICT (CRITICAL-01 fix)
  *  8. Kinesis emit failure does not fail the request (fire-and-forget)
+ *  9. Never-validated skill (test_pass_count=0) → 422 (CRITICAL-03 fix)
+ * 10. TransactionCanceledException → 422 PRECONDITION_FAILED (WARNING-01 fix)
+ * 11. Invalid UUID → 400
+ * 12. Unexpected DynamoDB error → 500
+ * 13. confidence=0.85 exact threshold passes
  */
 
 import { handler } from "../../../src/registry/promoteCanonical.js";
@@ -89,6 +94,7 @@ const validSkillItem = {
   examples: [],
   tests: [{ input: { nums: [2, 7], target: 9 }, expected: { indices: [0, 1] } }],
   test_fail_count: 0,
+  test_pass_count: 1, // CRITICAL-03: must have been validated
   implementation: "def two_sum(nums, target): ...",
   confidence: 0.9,
   latency_p50_ms: 10,
@@ -102,6 +108,7 @@ const prevCanonicalItem = {
   skill_id: PREV_CANONICAL_ID,
   version_number: 2,
   is_canonical: true,
+  is_canonical_status: "true#verified",
 };
 
 // ---------------------------------------------------------------------------
@@ -119,7 +126,7 @@ describe("POST /skills/:skill_id/promote-canonical", () => {
   it("promotes skill and demotes previous canonical when one exists", async () => {
     // call 1: fetch latest skill version
     mockDocSend.mockResolvedValueOnce({ Items: [validSkillItem] });
-    // call 2: query GSI-problem-status for existing canonical
+    // call 2: query GSI-canonical for "verified" — finds previous canonical
     mockDocSend.mockResolvedValueOnce({ Items: [prevCanonicalItem] });
     // call 3: TransactWriteCommand
     mockDocSend.mockResolvedValueOnce({});
@@ -155,9 +162,11 @@ describe("POST /skills/:skill_id/promote-canonical", () => {
   it("promotes skill when no previous canonical exists for the problem", async () => {
     // call 1: fetch latest skill version
     mockDocSend.mockResolvedValueOnce({ Items: [validSkillItem] });
-    // call 2: query GSI-problem-status — no canonical found
+    // call 2: query GSI-canonical for "verified" — empty
     mockDocSend.mockResolvedValueOnce({ Items: [] });
-    // call 3: TransactWriteCommand
+    // call 3: query GSI-canonical for "optimized" — empty
+    mockDocSend.mockResolvedValueOnce({ Items: [] });
+    // call 4: TransactWriteCommand
     mockDocSend.mockResolvedValueOnce({});
 
     const result = await handler(makeEvent(SKILL_ID));
@@ -230,9 +239,9 @@ describe("POST /skills/:skill_id/promote-canonical", () => {
     expect(body.error.code).toBe("PRECONDITION_FAILED");
   });
 
-  // ---------- Test 7: Already canonical — idempotent 200 ----------
+  // ---------- Test 7: Already canonical — 409 CONFLICT (CRITICAL-01) ----------
 
-  it("returns 200 idempotently when skill is already canonical", async () => {
+  it("returns 409 CONFLICT when skill is already canonical", async () => {
     mockDocSend.mockResolvedValueOnce({
       Items: [{ ...validSkillItem, is_canonical: true }],
     });
@@ -240,15 +249,14 @@ describe("POST /skills/:skill_id/promote-canonical", () => {
     const result = await handler(makeEvent(SKILL_ID));
     const body = JSON.parse(result.body);
 
-    expect(result.statusCode).toBe(200);
-    expect(body.skill.is_canonical).toBe(true);
-    expect(body.demoted_skill_id).toBeNull();
+    expect(result.statusCode).toBe(409);
+    expect(body.error.code).toBe("CONFLICT");
 
-    // No TransactWrite should be called for an idempotent no-op
+    // No TransactWrite should be called
     const { TransactWriteCommand } = jest.requireMock("@aws-sdk/lib-dynamodb");
     expect(TransactWriteCommand).not.toHaveBeenCalled();
 
-    // No Kinesis event for no-op
+    // No Kinesis event
     expect(mockEmitEvent).not.toHaveBeenCalled();
   });
 
@@ -256,6 +264,7 @@ describe("POST /skills/:skill_id/promote-canonical", () => {
 
   it("returns 200 even when Kinesis emit throws", async () => {
     mockDocSend.mockResolvedValueOnce({ Items: [validSkillItem] });
+    mockDocSend.mockResolvedValueOnce({ Items: [] });
     mockDocSend.mockResolvedValueOnce({ Items: [] });
     mockDocSend.mockResolvedValueOnce({});
 
@@ -265,6 +274,52 @@ describe("POST /skills/:skill_id/promote-canonical", () => {
     const result = await handler(makeEvent(SKILL_ID));
 
     expect(result.statusCode).toBe(200);
+  });
+
+  // ---------- Test 9: Never-validated skill (CRITICAL-03) ----------
+
+  it("returns 422 when skill has never been validated (test_pass_count=0)", async () => {
+    mockDocSend.mockResolvedValueOnce({
+      Items: [{ ...validSkillItem, test_pass_count: 0 }],
+    });
+
+    const result = await handler(makeEvent(SKILL_ID));
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(422);
+    expect(body.error.code).toBe("PRECONDITION_FAILED");
+    expect(body.error.details).toHaveProperty("test_pass_count", 0);
+  });
+
+  it("returns 422 when skill has undefined test_pass_count (never validated)", async () => {
+    const { test_pass_count: _, ...itemWithoutPassCount } = validSkillItem;
+    mockDocSend.mockResolvedValueOnce({ Items: [itemWithoutPassCount] });
+
+    const result = await handler(makeEvent(SKILL_ID));
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(422);
+    expect(body.error.code).toBe("PRECONDITION_FAILED");
+  });
+
+  // ---------- Test 10: TransactionCanceledException → 422 (WARNING-01) ----------
+
+  it("returns 422 when TransactionCanceledException is thrown", async () => {
+    mockDocSend.mockResolvedValueOnce({ Items: [validSkillItem] });
+    mockDocSend.mockResolvedValueOnce({ Items: [] });
+    mockDocSend.mockResolvedValueOnce({ Items: [] });
+
+    // Throw a TransactionCanceledException-shaped error
+    const txError = Object.assign(new Error("Transaction cancelled"), {
+      name: "TransactionCanceledException",
+    });
+    mockDocSend.mockRejectedValueOnce(txError);
+
+    const result = await handler(makeEvent(SKILL_ID));
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(422);
+    expect(body.error.code).toBe("PRECONDITION_FAILED");
   });
 
   // ---------- Additional edge cases ----------
@@ -291,6 +346,7 @@ describe("POST /skills/:skill_id/promote-canonical", () => {
     mockDocSend.mockResolvedValueOnce({
       Items: [{ ...validSkillItem, confidence: 0.85 }],
     });
+    mockDocSend.mockResolvedValueOnce({ Items: [] });
     mockDocSend.mockResolvedValueOnce({ Items: [] });
     mockDocSend.mockResolvedValueOnce({});
 
