@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "codevolve": {
+      "command": "node",
+      "args": ["dist/mcp/index.js"],
+      "env": {
+        "CODEVOLVE_API_URL": "https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1"
+      }
+    }
+  }
+}

@@ -2304,3 +2304,474 @@ The execution Lambda should maintain an in-process LRU cache keyed by `skill_id 
 The MCP server / agent SDK wraps local execution by default — agents resolve and download skills, then run them locally. This is the zero-cost path and the primary driver of analytics telemetry. Cloud execution is the premium path for environments where running code locally is not possible or not desired.
 
 *Last updated: 2026-03-22 — DESIGN-05*
+
+`OrbitControls` from `@react-three/drei`:
+
+```typescript
+minDistance: 10       // cannot zoom inside the mountain
+maxDistance: 800      // cannot zoom so far out bricks are invisible
+minPolarAngle: 0      // can look from directly above
+maxPolarAngle: Math.PI / 2   // cannot go below ground plane
+enableDamping: true   // smooth deceleration after mouse release
+dampingFactor: 0.08
+```
+
+Controls are disabled (locked) during camera-animate-to-brick transitions (see §4, Search interaction). They re-enable once the animation completes.
+
+---
+
+### 3. Brick Geometry and Material
+
+#### Geometry
+
+Each problem brick is a `BoxGeometry`. Dimensions:
+
+```
+width:  2.0   (uniform across all bricks)
+height: varies by difficulty — easy: 1.0, medium: 1.8, hard: 2.8
+depth:  2.0
+```
+
+Height variation by difficulty gives the mountain texture: hard problems are visually taller than easy ones, even at the same altitude. This is purely cosmetic — altitude (y-position) is the difficulty axis, height is the brick's visual weight.
+
+#### Material
+
+All bricks use a single shared `MeshStandardMaterial` per status color. With instanced meshes, per-instance color is written directly into an `InstancedMesh`'s color buffer rather than by creating separate material instances per brick.
+
+```typescript
+const material = new THREE.MeshStandardMaterial({
+  roughness: 0.7,
+  metalness: 0.1,
+});
+// Per-instance color applied via instancedMesh.setColorAt(index, color)
+```
+
+**Emissive glow:** A second `emissive` color channel encodes execution frequency. The emissive color uses the same hue as the brick's status color but driven by a normalized intensity value derived from `execution_count_30d` (or `execution_count_total` — whichever name IMPL-09 resolves to):
+
+```typescript
+const maxCount = Math.max(...problems.map(p => p.execution_count_30d));
+const intensity = maxCount > 0 ? problem.execution_count_30d / maxCount : 0;
+// intensity range: 0.0 (no glow) → 1.0 (brightest glow)
+// emissiveIntensity applied to the shared material is per-mesh, not per-instance
+// Solution: encode as a separate InstancedMesh attribute or use a custom shader attribute
+```
+
+**Implementation note for Ada (IMPL-14):** `MeshStandardMaterial` does not support per-instance `emissiveIntensity` natively in Three.js r155. Two options:
+1. Use a custom `ShaderMaterial` that reads `instanceColor` plus a custom `instanceEmissive` buffer attribute.
+2. Group bricks into frequency buckets (0%, low, medium, high) and render each bucket as a separate `InstancedMesh` with a different `emissiveIntensity`. Four `InstancedMesh` objects instead of one — simpler to implement, acceptable at 10K bricks.
+
+Option 2 (four-bucket approach) is the recommended starting point. IMPL-14 should use this unless a custom shader is already in scope.
+
+**Pulsing animation:** Bricks executing within the last 5 minutes pulse their emissive intensity using a sine wave on each animation frame. The frontend receives `last_executed_at` via a WebSocket push or via the 5-minute mountain refresh — see §5 for the refresh mechanism. On refresh, bricks whose `last_executed_at` is within the last 5 minutes are flagged in the Zustand store and the animation loop reads this flag.
+
+**Cracked/degraded texture:** Bricks with a failing canonical skill (`canonical_skill.confidence < 0.5`) receive a secondary overlay mesh — a slightly larger `BoxGeometry` with a transparent cracked texture (`opacity: 0.35`, `transparent: true`). This is rendered as a separate small `InstancedMesh` over only the failing bricks. The cracked texture is a 512x512 PNG asset bundled with the frontend.
+
+---
+
+### 4. Data Shape the Frontend Needs
+
+DESIGN-04 defines the `MountainResponse` and `MountainProblem` shapes returned by `GET /analytics/dashboards/mountain`. DESIGN-05 extends this with the position fields that the frontend computes client-side.
+
+DESIGN-04 does not include `x`, `y`, `z` position fields in the response — position is computed client-side from `difficulty` and `domain`. This is intentional: position is a rendering concern, not a data concern.
+
+#### Client-Side Position Algorithm
+
+The mountain is organized as a set of domain clusters arranged radially around a center point. Within each cluster, bricks are arranged by difficulty on the y-axis.
+
+```typescript
+interface BrickPosition {
+  x: number;
+  y: number;
+  z: number;
+}
+
+function computePositions(problems: MountainProblem[]): Map<string, BrickPosition> {
+  // 1. Group problems by primary domain (domain[0])
+  const byDomain = groupBy(problems, p => p.domain[0] ?? "misc");
+
+  // 2. Assign each domain a radial slice around the center (y=0, x=0, z=0)
+  const domains = Object.keys(byDomain);
+  const angleStep = (2 * Math.PI) / domains.length;
+  const clusterRadius = 30;          // distance from center to cluster center
+
+  const positions = new Map<string, BrickPosition>();
+
+  domains.forEach((domain, domainIndex) => {
+    const clusterAngle = domainIndex * angleStep;
+    const clusterCenterX = Math.sin(clusterAngle) * clusterRadius;
+    const clusterCenterZ = Math.cos(clusterAngle) * clusterRadius;
+
+    const clusterProblems = byDomain[domain];
+
+    // 3. Within each cluster, sort by difficulty then lay bricks in a grid
+    const sorted = [...clusterProblems].sort(difficultySort);
+    const cols = Math.ceil(Math.sqrt(sorted.length));
+
+    sorted.forEach((problem, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+
+      const x = clusterCenterX + (col - cols / 2) * 3.0;   // 3.0 = brick width + gap
+      const z = clusterCenterZ + (row - cols / 2) * 3.0;
+
+      // 4. Y (height) is driven by difficulty
+      const baseY: Record<string, number> = { easy: 0, medium: 8, hard: 18 };
+      const y = baseY[problem.difficulty] ?? 0;
+
+      positions.set(problem.problem_id, { x, y, z });
+    });
+  });
+
+  return positions;
+}
+```
+
+**Rationale:** Client-side position computation keeps the backend free of rendering logic. The algorithm is deterministic given the same problem list, so positions are stable across refreshes (bricks do not jump). Domain-based clusters make the mountain readable: related problems are spatially grouped.
+
+**Open question resolved from DESIGN-04 §Open Questions #3 (archived problem toggle):** The `GET /mountain` endpoint does not return archived problems by default. The frontend does not render archived bricks unless the user enables the "show archived" filter, which appends `?include_archived=true` to the request. The backend (`IMPL-09` or a Phase 5 patch) must support this parameter. When included, archived problem bricks render in dark gray (`#374151`) at their original position, with no glow and no pulse.
+
+#### `GET /mountain` Endpoint (Phase 5 Addition)
+
+DESIGN-04 defines `GET /analytics/dashboards/mountain`. DESIGN-05 adds a parallel, cleaner endpoint path for the Phase 5 frontend:
+
+```
+GET /mountain
+```
+
+This is not a replacement for `GET /analytics/dashboards/mountain` — it is a new route added in Phase 5 that serves the same aggregated data via a dedicated Lambda, positioned alongside the other primary routes rather than nested under `/analytics/dashboards`. The `/analytics/dashboards/mountain` route remains for backward compatibility.
+
+**Query parameters:** identical to DESIGN-04 §2, plus:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `include_archived` | boolean | `false` | When `true`, includes archived problems in the response. Archived problems appear with `dominant_status: "archived"` (new sentinel value). |
+
+**Response:** same `MountainResponse` shape from DESIGN-04 §3. When `include_archived=true`, archived problems are included in the `problems` array with `dominant_status: "archived"`.
+
+#### `GET /mountain/problem/:id` Endpoint (Phase 5 Addition)
+
+```
+GET /mountain/problem/:id
+```
+
+Returns the full `MountainProblem` record for a single problem, plus extended detail for the `SkillInfoPanel`:
+
+```typescript
+interface MountainProblemDetail extends MountainProblem {
+  skills: Array<{
+    skill_id: string;
+    name: string;
+    language: string;
+    status: string;
+    confidence: number;
+    latency_p50_ms: number | null;
+    latency_p95_ms: number | null;
+    is_canonical: boolean;
+    last_validated_at: string | null;   // ISO 8601
+    execution_count: number;
+    tags: string[];
+  }>;
+  last_validated_at: string | null;     // most recent validation across all skills
+  created_at: string;                   // problem creation timestamp
+}
+```
+
+This endpoint is called when a user clicks a brick. It is not called during initial mountain load. It reads from DynamoDB directly (no mountain cache row) because it is a low-frequency, single-record read.
+
+**Cache:** No dedicated cache. DynamoDB read latency is sufficient for an on-demand click event. A future optimization could add a 60-second TTL cache if click traffic is high.
+
+---
+
+### 5. React Component Tree
+
+```
+<App>
+  └── <MountainPage>
+        ├── <MountainControls />          (filter panel sidebar)
+        ├── <SearchBar />                 (intent search, calls /resolve)
+        ├── <Canvas>                      (@react-three/fiber canvas root)
+        │     └── <MountainScene>
+        │           ├── <PerspectiveCamera />
+        │           ├── <AmbientLight />
+        │           ├── <DirectionalLight /> (key)
+        │           ├── <DirectionalLight /> (fill)
+        │           ├── <OrbitControls />
+        │           ├── <ProblemBricks />   (instanced mesh group)
+        │           ├── <CrackedOverlay />  (instanced overlay for failing bricks)
+        │           ├── <DomainLabels />    (cluster label billboards)
+        │           └── <HoverTooltip />    (Html overlay on hovered brick)
+        └── <SkillInfoPanel />            (sidebar, shown on brick click)
+```
+
+#### `<MountainScene>`
+
+The Three.js canvas root. Owns the animation loop (`useFrame` in R3F). Responsible for:
+- Receiving filtered `problems` from the Zustand store.
+- Computing brick positions via `computePositions`.
+- Passing position + color + emissive data to `<ProblemBricks>`.
+- Reading the hover/selection state from Zustand and applying highlight overrides.
+
+Not responsible for: fetching data (that is `<MountainPage>`'s concern via React Query), rendering UI overlays (those are sibling components outside `<Canvas>`).
+
+#### `<ProblemBricks>`
+
+The performance-critical component. Renders all visible bricks as four `InstancedMesh` objects (one per emissive frequency bucket: none, low, medium, high). Each `InstancedMesh` uses the same `BoxGeometry` with a shared `MeshStandardMaterial` whose `emissiveIntensity` is set to the bucket's value.
+
+```typescript
+// Frequency bucket thresholds (normalized 0–1 against maxCount)
+const BUCKETS = [
+  { key: "none",   min: 0.00, max: 0.00, emissiveIntensity: 0.00 },
+  { key: "low",    min: 0.01, max: 0.33, emissiveIntensity: 0.15 },
+  { key: "medium", min: 0.34, max: 0.66, emissiveIntensity: 0.45 },
+  { key: "high",   min: 0.67, max: 1.00, emissiveIntensity: 0.90 },
+];
+```
+
+Instance color is set via `instancedMesh.setColorAt(i, color)` using the `dominant_status` → hex mapping from DESIGN-04 §5. Updated whenever filter state changes (instanced mesh redraws are cheap — just a buffer update, not a full re-render).
+
+**Raycasting for interaction:** R3F's `onPointerOver`, `onPointerOut`, and `onClick` events on each `InstancedMesh` provide `instanceId`. The component maps `instanceId` to `problem_id` via a stable array that mirrors the instanced mesh instance order.
+
+**Visibility:** Filtered-out bricks have their scale set to `[0, 0, 0]` (effectively hidden) rather than being removed from the instanced mesh. This avoids rebuilding the instance buffer on every filter change — the buffer is written once and scale overrides hide/show instances. Performance target: filter application must complete in <16ms (one frame).
+
+**Performance target:** 10,000 bricks at 60fps. Each `InstancedMesh` holds up to 10,000 instances. Four `InstancedMesh` objects = 4 draw calls total. Benchmark target: stable 60fps on a mid-range laptop GPU (e.g., Intel Iris Xe) with all 10K bricks visible and OrbitControls active.
+
+#### `<CrackedOverlay>`
+
+A single `InstancedMesh` rendered only for bricks where `canonical_skill.confidence < 0.5`. Uses a slightly larger `BoxGeometry` (scaled by 1.02) with a `MeshStandardMaterial` using a cracked texture, `transparent: true`, `opacity: 0.35`. Instance count is bounded by the number of failing skills (expected to be small). This mesh is updated when mountain data refreshes.
+
+#### `<DomainLabels>`
+
+One `<Text>` component (from `@react-three/drei`) per domain cluster. Rendered as billboards (always facing camera) at the cluster center, offset upward by the tallest brick in the cluster + 5 units. Labels are visible at zoom levels where individual bricks are still readable (camera distance < 250). At zoom-out beyond 250 units, labels fade in using opacity driven by camera distance.
+
+#### `<HoverTooltip>`
+
+An `<Html>` overlay (from `@react-three/drei`) that renders a small React tooltip card at the hovered brick's 3D position. Content: problem `name`, `dominant_status`, `canonical_skill.confidence` (if exists). Tooltip disappears immediately on `pointerOut`. No delay — the tooltip is informational, not a CTA.
+
+#### `<MountainControls>`
+
+A React sidebar (outside `<Canvas>`, standard DOM). Contains:
+- Domain filter: multi-select dropdown. Selecting a domain shows only problems where `domain[0]` matches.
+- Language filter: single-select dropdown. Filters to problems with at least one non-archived skill in this language.
+- Status filter: checkbox group (unsolved / partial / verified / optimized).
+- Confidence range slider: min–max (0.0–1.0). Filters to problems whose canonical skill confidence is in range.
+- "Show archived" toggle: off by default. When on, re-fetches `GET /mountain?include_archived=true`.
+- "Reset filters" button.
+
+All filter state is in Zustand. Changing a filter updates the store and `<ProblemBricks>` re-applies scale overrides on the next frame. No additional HTTP call is made for filter-only changes (the full problem list is already in memory).
+
+**Exception:** "Show archived" toggle triggers a new `GET /mountain?include_archived=true` fetch because archived problems are not included in the initial response.
+
+#### `<SkillInfoPanel>`
+
+A React sidebar (outside `<Canvas>`, standard DOM). Hidden by default. Shown when a brick is clicked. Populated by `GET /mountain/problem/:id`.
+
+Content layout:
+
+```
+Problem: Binary Search
+Domain: searching, arrays
+Difficulty: easy
+
+Canonical Skill
+  Language: python
+  Confidence: 0.97
+  Latency p50: 12ms
+  Last validated: 2026-03-20
+
+All Skills (4)
+  [list of skill rows: name, language, status, confidence]
+
+Execution activity (30d): 1,842 executions
+
+[View full problem →]   (links to /problems/:id, opens in new tab)
+```
+
+The "View full problem" link opens the problem detail page (standard HTML navigation). The panel does not navigate the user away from the mountain — it opens a new tab.
+
+Closing the panel (X button or pressing Escape) clears the Zustand `selectedProblemId` and hides the panel. The previously selected brick returns to its unselected color.
+
+#### `<SearchBar>`
+
+An input field (outside `<Canvas>`, positioned at the top of the mountain page). On submit (Enter or search button):
+1. Calls `POST /resolve` with `{ "intent": "<user input>" }`.
+2. If a match is returned with `confidence >= 0.5`, extracts `skill_id`, finds the corresponding `problem_id` from the loaded problem list, and triggers a camera animation to that brick's 3D position.
+3. If no match or confidence < 0.5, shows a "No matching problem found" message beneath the search bar.
+4. On successful match, also opens the `<SkillInfoPanel>` for the matching problem (same behavior as clicking the brick).
+
+**Camera animation:** Uses a `useFrame`-driven lerp in `<MountainScene>`. When a search target position is set in Zustand, the animation loop moves the camera toward a position 20 units above and 30 units in front of the target brick over ~60 frames (1 second at 60fps). `OrbitControls` are disabled during the animation and re-enabled after.
+
+---
+
+### 6. Interaction Model
+
+#### Click a brick
+
+1. `onPointerDown` fires on `InstancedMesh` with `instanceId`.
+2. Component maps `instanceId` → `problem_id`.
+3. Zustand `selectedProblemId` is set.
+4. `<ProblemBricks>` highlights the brick: scale increases to `[1.1, 1.1, 1.1]` (subtle pop).
+5. React Query fetches `GET /mountain/problem/:id` (or returns cached result if clicked recently).
+6. `<SkillInfoPanel>` renders with the fetched data.
+
+#### Hover a brick
+
+1. `onPointerOver` fires with `instanceId`.
+2. Zustand `hoveredProblemId` is set.
+3. `<ProblemBricks>` brightens the brick: emissive intensity increases by +0.3 (clamped to 1.0).
+4. `<HoverTooltip>` renders at the brick's world position.
+5. `onPointerOut` clears `hoveredProblemId`. Tooltip disappears, brick returns to normal brightness.
+6. If the hovered brick is already selected, no additional highlight is applied (the selection highlight takes precedence).
+
+#### Filter
+
+1. User changes a filter in `<MountainControls>`.
+2. Zustand filter state updates.
+3. `<ProblemBricks>` receives the new visible set on next render.
+4. Instances that no longer match the filter have their scale set to `[0, 0, 0]` (hidden).
+5. Instances that now match have their scale restored to `[1, <height_by_difficulty>, 1]`.
+6. `<DomainLabels>` recalculate visibility — a domain label hides if all its bricks are filtered out.
+7. No HTTP call is made. Filter is purely in-memory.
+
+#### Double-click a brick
+
+1. Navigates to `/problems/:id` in a new tab (same behavior as "View full problem" link in the panel).
+2. Does not navigate away from the mountain.
+
+#### Search
+
+1. User types in `<SearchBar>` and submits.
+2. `POST /resolve` is called with the intent string.
+3. On success (confidence >= 0.5): camera animates to the brick. `<SkillInfoPanel>` opens.
+4. On no match: search bar shows inline error message. No camera animation.
+5. Search does not modify the filter state — a search result is highlighted on top of whatever filters are active, even if the target brick would normally be hidden by a filter. The target brick is temporarily un-hidden for the duration of the selection.
+
+#### Status change animation
+
+When mountain data refreshes (every 5 minutes, see §7), bricks whose `dominant_status` has changed since the last fetch smoothly transition their color via a lerp in the animation loop. Transition duration: 30 frames (0.5 seconds at 60fps). This makes status promotions (e.g., partial → verified) visually apparent to operators watching the dashboard.
+
+---
+
+### 7. Backend Additions (Phase 5)
+
+#### New Endpoint: `GET /mountain`
+
+```
+GET /mountain
+```
+
+**Lambda:** `src/visualization/mountainHandler.ts`
+
+**CDK route:** added to `CodevolveStack` as a new API Gateway route in Phase 5.
+
+**Behavior:** Identical to `GET /analytics/dashboards/mountain` (defined in DESIGN-04). Serves the same aggregated `MountainResponse` shape. Differences from the DESIGN-04 route:
+- Supports `?include_archived=true` (archived problems included with `dominant_status: "archived"`).
+- Returns the `dominant_status` value `"archived"` (new sentinel, not in DESIGN-04's color table — added here).
+
+**Color mapping addition for `"archived"` dominant_status:**
+
+| `dominant_status` | Color Name | Hex | Three.js Material |
+|-------------------|------------|-----|-------------------|
+| `archived` | Dark Gray | `#374151` | `MeshStandardMaterial` |
+
+This extends the color table from DESIGN-04 §5 without modifying any existing row.
+
+**Position algorithm:** The position algorithm (§4 of this spec) applies to archived bricks the same as active bricks. Archived bricks appear in their domain cluster, at the base (difficulty defaults to their last-known difficulty before archival). This allows operators to see where archived bricks were in the mountain.
+
+#### New Endpoint: `GET /mountain/problem/:id`
+
+```
+GET /mountain/problem/:id
+```
+
+**Lambda:** `src/visualization/mountainProblemHandler.ts`
+
+**CDK route:** added alongside `GET /mountain` in Phase 5.
+
+**Behavior:** Returns `MountainProblemDetail` (defined in §4 of this spec). Reads from `codevolve-problems` and `codevolve-skills` DynamoDB tables directly. No cache. Covered by the existing `GSI-problem-status` access pattern (ARCH-09 in the DynamoDB schema).
+
+**Error:** If `problem_id` does not exist or is not a valid UUID v4, returns `404 PROBLEM_NOT_FOUND`.
+
+#### CDK Infra (Phase 5)
+
+**Static React app hosting:**
+
+```
+S3 bucket: codevolve-mountain-frontend
+  - Static website hosting enabled
+  - Versioned
+  - Server-side encryption (SSE-S3)
+
+CloudFront distribution:
+  - Origin: S3 bucket (OAC — Origin Access Control)
+  - Default root object: index.html
+  - Error pages: 403 and 404 → index.html (SPA fallback for React Router)
+  - Cache behavior: default TTL 3600s (1 hour) for JS/CSS assets (fingerprinted by Vite build)
+  - Cache behavior: TTL 0 for index.html (always fresh)
+  - Price class: PriceClass_100 (North America + Europe)
+  - HTTPS only
+```
+
+**Mountain data invalidation:**
+
+EventBridge rule (rate: 5 minutes) → Lambda `src/visualization/mountainCacheInvalidator.ts`:
+1. Calls `cloudfront.createInvalidation({ DistributionId, Paths: ["/mountain*"] })`.
+2. Also re-computes and re-warms the mountain cache row in `codevolve-cache` (proactive warm, not cold-start warm).
+
+This ensures the CloudFront edge cache for the mountain API route is invalidated every 5 minutes, not just when a user's request hits an expired TTL. The DynamoDB cache row and CloudFront cache both refresh on the same 5-minute cadence.
+
+**GSI coverage:** The `GSI-status-domain` on `codevolve-problems` and `GSI-problem-status` on `codevolve-skills` (referenced in ARCH-09 of `docs/dynamo-schemas.md`) cover all DynamoDB access patterns required by `GET /mountain` and `GET /mountain/problem/:id`. No new GSIs are needed.
+
+---
+
+### 8. Alert Thresholds and Refresh
+
+**Mountain data refresh cadence:** 5 minutes. Driven by the EventBridge rule described in §7. The 5-minute cadence matches the analytics dashboards refresh cadence from DESIGN-02 — operators see a consistent "current as of 5 minutes ago" guarantee across all observability surfaces.
+
+**CloudFront cache TTL for `/mountain` API responses:** 300 seconds (5 minutes), matching the EventBridge invalidation cadence. The frontend's React Query cache is set to `staleTime: 4 * 60 * 1000` (4 minutes) so it refetches before the CloudFront cache expires, ensuring users see fresh data without a stale-cache miss.
+
+**Color transition animation on status change:** When the React Query refetch returns a new mountain payload, the frontend diffs the previous `dominant_status` per `problem_id` against the new values. Changed bricks animate their color over 30 frames (0.5 seconds). This is the primary visual feedback mechanism for operators monitoring skill quality in real time.
+
+**Frontend performance alerts (not operational alerts — developer-facing):**
+
+The `<MountainScene>` includes an optional `<Stats>` overlay (from `@react-three/drei`) that shows FPS, render time, and draw call count. This is enabled in development builds and hidden in production. If the FPS monitor drops below 45fps during IMPL-14 development, Ada should investigate the instanced mesh bucket counts and raycasting overhead.
+
+**Operational alert (CloudWatch):**
+
+A CloudWatch alarm on the `GET /mountain` Lambda:
+- Metric: `Errors`
+- Threshold: error rate > 1% of invocations in a 5-minute window
+- Action: SNS notification to platform-ops channel
+
+The mountain endpoint failing silently (returning stale cache without alerting) is acceptable for up to 15 minutes. After 15 minutes of failure, operators should be notified so they can investigate.
+
+---
+
+### Edge Cases Considered
+
+| Scenario | Behavior |
+|----------|----------|
+| 0 problems in registry (empty mountain) | Render an empty scene with a centered text overlay: "No problems found. Seed the registry to begin." No bricks, no clusters. |
+| Single domain (all problems in one domain) | Single cluster at the mountain center. No radial layout needed. Position algorithm places bricks in a grid centered at `[0, y, 0]`. |
+| >50 domains | Radial layout with `angleStep < 7.2 degrees`. Clusters overlap at `clusterRadius = 30`. Increase `clusterRadius` proportionally: `clusterRadius = max(30, domains.length * 2.5)`. This is a rare case at Phase 5 registry size. |
+| Problem with no domain (`domain = []`) | Assigned to a synthetic "misc" cluster. Logged as a data quality warning. |
+| Mountain data fetch fails (network error) | React Query retries 3 times with exponential backoff. After 3 failures, shows an error banner: "Mountain data unavailable. Retrying..." Mountain remains visible with last-known data (React Query stale-while-error). |
+| User clicks a brick that no longer exists in the refreshed data | `GET /mountain/problem/:id` returns `404`. Panel shows: "This problem was archived or removed." Panel remains open. Brick is hidden from the scene on the next render. |
+| Filter leaves 0 visible bricks | Scene renders empty (all bricks scaled to `[0, 0, 0]`). Domain labels hidden. Filter panel shows: "No problems match the current filters." |
+| Camera animation target brick is filtered out | Brick is temporarily un-hidden for the animation and selection. Filter override is active only while the brick is selected. Deselecting (clicking elsewhere or pressing Escape) re-applies the filter. |
+| Two bricks at the exact same computed position (hash collision in layout) | Position algorithm guarantees unique grid positions per domain cluster — collisions cannot occur if the grid layout is correct. If a bug produces a collision, bricks overlap visually (not a crash). Add a debug assertion in development builds: `console.assert(seenPositions.has(key) === false)`. |
+
+---
+
+### Open Questions
+
+1. **`execution_count_30d` vs `execution_count_total` naming:** Inherited from DESIGN-04 §Open Questions #1. This spec uses `execution_count_30d` throughout. IMPL-09 must resolve the naming before IMPL-14 begins, because IMPL-14 reads this field to compute emissive intensity. If renamed to `execution_count_total`, IMPL-14 updates its field reference accordingly. No design change required — the emissive computation is the same regardless of the field name.
+
+2. **WebSocket vs polling for pulsing state:** The 5-minute mountain refresh is sufficient for status color transitions. However, the "pulsing brick" feature (bricks currently executing pulse for 5 minutes) requires knowing `last_executed_at` at finer granularity than the mountain refresh provides. Two options: (a) include `last_executed_at` in the `MountainProblem` shape and accept that pulsing lags up to 5 minutes; (b) add a lightweight WebSocket endpoint that pushes `{ problem_id, last_executed_at }` events in real time. Option (a) is simpler and acceptable for Phase 5 — pulsing is a cosmetic feature, not a critical observability signal. Recommend option (a) unless real-time pulsing is explicitly requested.
+
+3. **Mobile / tablet support:** The mountain visualization is a 3D WebGL scene. Touch controls via `OrbitControls` (pinch-to-zoom, two-finger pan) work on mobile but the filter sidebar and skill panel require horizontal space. A responsive layout that stacks the panel below the canvas on small screens is achievable but not in scope for IMPL-14. Recommend desktop-only for Phase 5, with a "best viewed on desktop" message on screens < 768px wide.
+
+4. **`?include_archived=true` backend implementation:** DESIGN-04 explicitly deferred this to DESIGN-05. This spec confirms the parameter should be supported and defines its behavior. Ada should include it in the IMPL-14 acceptance criteria checklist so the backend work is not missed.
+
+---
+
+*Last updated: 2026-03-22 — DESIGN-05 by Amber*

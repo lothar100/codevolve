@@ -18,6 +18,7 @@ import * as events from "aws-cdk-lib/aws-events";
 import * as eventsTargets from "aws-cdk-lib/aws-events-targets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cognito from "aws-cdk-lib/aws-cognito";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -547,6 +548,96 @@ export class CodevolveStack extends cdk.Stack {
     // Also grant ClickHouse secret read to Decision Engine (IMPL-08-B note)
     clickhouseSecret.grantRead(decisionEngineFn);
 
+    // Dashboards Lambda — reads from ClickHouse, serves GET /analytics/dashboards/:type (IMPL-09)
+    const dashboardsFn = new NodejsFunction(this, "DashboardsFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-dashboards",
+      entry: path.join(__dirname, "../src/analytics/dashboards.ts"),
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        ...lambdaEnvironment,
+        CLICKHOUSE_SECRET_ARN: clickhouseSecret.secretArn,
+      },
+    });
+    clickhouseSecret.grantRead(dashboardsFn);
+
+    // -----------------------------------------------------------------------
+    // Community Auth — Cognito (IMPL-16)
+    // -----------------------------------------------------------------------
+
+    const userPool = new cognito.UserPool(this, "CommunityUserPool", {
+      userPoolName: "codevolve-community",
+      selfSignUpEnabled: true,
+      signInAliases: { email: true },
+      autoVerify: { email: true },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: false,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const userPoolClient = new cognito.UserPoolClient(
+      this,
+      "CommunityUserPoolClient",
+      {
+        userPool,
+        userPoolClientName: "codevolve-web",
+        authFlows: { userPassword: true, userSrp: true },
+        generateSecret: false,
+        oAuth: {
+          flows: { implicitCodeGrant: true },
+          scopes: [
+            cognito.OAuthScope.EMAIL,
+            cognito.OAuthScope.OPENID,
+            cognito.OAuthScope.PROFILE,
+          ],
+        },
+      },
+    );
+
+    // Backup custom authorizer Lambda (for non-native-Cognito integrations)
+    const cognitoAuthorizerFn = new NodejsFunction(
+      this,
+      "CognitoAuthorizerFn",
+      {
+        ...commonNodejsProps,
+        functionName: "codevolve-cognito-authorizer",
+        entry: path.join(__dirname, "../src/auth/authorizer.ts"),
+        memorySize: 128,
+        timeout: cdk.Duration.seconds(10),
+        environment: {
+          COGNITO_USER_POOL_ID: userPool.userPoolId,
+          COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
+        },
+      },
+    );
+
+    const cognitoAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(
+      this,
+      "CommunityAuthorizer",
+      {
+        cognitoUserPools: [userPool],
+        authorizerName: "CommunityAuth",
+        identitySource: "method.request.header.Authorization",
+      },
+    );
+
+    const authMethodOptions: apigateway.MethodOptions = {
+      authorizer: cognitoAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    };
+
+    new cdk.CfnOutput(this, "UserPoolId", { value: userPool.userPoolId });
+    new cdk.CfnOutput(this, "UserPoolClientId", {
+      value: userPoolClient.userPoolClientId,
+    });
+
     // -----------------------------------------------------------------------
     // API Gateway
     // -----------------------------------------------------------------------
@@ -588,6 +679,7 @@ export class CodevolveStack extends cdk.Stack {
     skillsResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(createSkillFn),
+      authMethodOptions,
     );
     const skillByIdResource = skillsResource.addResource("{id}");
     skillByIdResource.addMethod(
@@ -604,6 +696,7 @@ export class CodevolveStack extends cdk.Stack {
     promoteCanonicalResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(promoteCanonicalFn),
+      authMethodOptions,
     );
     const archiveResource = skillByIdResource.addResource("archive");
     archiveResource.addMethod(
@@ -621,6 +714,7 @@ export class CodevolveStack extends cdk.Stack {
     problemsResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(createProblemFn),
+      authMethodOptions,
     );
     problemsResource.addMethod(
       "GET",
@@ -669,8 +763,11 @@ export class CodevolveStack extends cdk.Stack {
     // /analytics
     const analyticsResource = this.api.root.addResource("analytics");
     const dashboardsResource = analyticsResource.addResource("dashboards");
-    dashboardsResource.addResource("{type}");
-    // GET /analytics/dashboards/:type
+    const dashboardsTypeResource = dashboardsResource.addResource("{type}");
+    dashboardsTypeResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(dashboardsFn),
+    );
 
     // /evolve
     this.api.root.addResource("evolve");
