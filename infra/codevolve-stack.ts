@@ -401,7 +401,7 @@ export class CodevolveStack extends cdk.Stack {
 
     const archiveQueue = new sqs.Queue(this, "ArchiveQueue", {
       queueName: "codevolve-archive-queue",
-      visibilityTimeout: cdk.Duration.seconds(60),
+      visibilityTimeout: cdk.Duration.seconds(300),
       retentionPeriod: cdk.Duration.hours(24),
       deadLetterQueue: {
         queue: archiveQueueDlq,
@@ -450,7 +450,6 @@ export class CodevolveStack extends cdk.Stack {
       entry: path.join(__dirname, "../src/decision-engine/handler.ts"),
       memorySize: 512,
       timeout: cdk.Duration.seconds(240),
-      reservedConcurrentExecutions: 1,
       environment: {
         ...lambdaEnvironment,
         GAP_LOG_TABLE: this.gapLogTable.tableName,
