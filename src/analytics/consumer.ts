@@ -22,7 +22,7 @@ import type {
 import { ClickHouseError } from "@clickhouse/client";
 import { AnalyticsEventSchema } from "../shared/validation.js";
 import { getClickHouseClient } from "./clickhouseClient.js";
-import { deriveEventId } from "./eventId.js";
+import { computeEventId as deriveEventId } from "./eventId.js";
 import { toClickHouseRow } from "./toClickHouseRow.js";
 
 /**
@@ -71,8 +71,9 @@ export async function handler(
       continue;
     }
 
-    const eventId = deriveEventId(validation.data);
-    rows.push(toClickHouseRow(validation.data, eventId));
+    const ev = validation.data;
+    const eventId = deriveEventId(ev.event_type, ev.timestamp, ev.skill_id ?? null, ev.intent ?? null, ev.input_hash ?? null);
+    rows.push(toClickHouseRow(ev, eventId));
     rowSequenceNumbers.push(sequenceNumber);
   }
 

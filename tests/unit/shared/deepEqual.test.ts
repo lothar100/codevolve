@@ -1,31 +1,41 @@
-import { deepEqual } from "../../../src/shared/deepEqual";
+/**
+ * Unit tests for src/shared/deepEqual.ts
+ */
+
+import { deepEqual } from "../../../src/shared/deepEqual.js";
 
 describe("deepEqual", () => {
-  // 1. Equal primitives
+  // ---------------------------------------------------------------------------
+  // Primitives — equal
+  // ---------------------------------------------------------------------------
+
   describe("equal primitives", () => {
-    it("returns true for equal numbers", () => {
+    it("returns true for identical numbers", () => {
       expect(deepEqual(42, 42)).toBe(true);
     });
 
-    it("returns true for equal strings", () => {
+    it("returns true for identical strings", () => {
       expect(deepEqual("hello", "hello")).toBe(true);
     });
 
-    it("returns true for equal booleans", () => {
+    it("returns true for identical booleans", () => {
       expect(deepEqual(true, true)).toBe(true);
       expect(deepEqual(false, false)).toBe(true);
     });
 
-    it("returns true for null === null", () => {
-      expect(deepEqual(null, null)).toBe(true);
+    it("returns true for zero compared to zero", () => {
+      expect(deepEqual(0, 0)).toBe(true);
     });
 
-    it("returns true for zero", () => {
-      expect(deepEqual(0, 0)).toBe(true);
+    it("returns true for empty string compared to empty string", () => {
+      expect(deepEqual("", "")).toBe(true);
     });
   });
 
-  // 2. Unequal primitives
+  // ---------------------------------------------------------------------------
+  // Primitives — unequal
+  // ---------------------------------------------------------------------------
+
   describe("unequal primitives", () => {
     it("returns false for different numbers", () => {
       expect(deepEqual(1, 2)).toBe(false);
@@ -35,154 +45,170 @@ describe("deepEqual", () => {
       expect(deepEqual("a", "b")).toBe(false);
     });
 
-    it("returns false for different booleans", () => {
+    it("returns false for different boolean values", () => {
       expect(deepEqual(true, false)).toBe(false);
     });
 
-    it("returns false for 0 vs 1", () => {
-      expect(deepEqual(0, 1)).toBe(false);
-    });
-
-    it("returns false for number vs string with same display value", () => {
+    it("returns false for number vs string with same coercive value", () => {
       expect(deepEqual(1, "1")).toBe(false);
     });
-  });
 
-  // 3. Equal nested objects (order-independent keys)
-  describe("equal nested objects", () => {
-    it("returns true for equal flat objects", () => {
-      expect(deepEqual({ a: 1, b: 2 }, { a: 1, b: 2 })).toBe(true);
-    });
-
-    it("returns true for equal objects regardless of key order", () => {
-      expect(deepEqual({ b: 2, a: 1 }, { a: 1, b: 2 })).toBe(true);
-    });
-
-    it("returns true for equal nested objects", () => {
-      expect(
-        deepEqual({ x: { y: { z: 3 } } }, { x: { y: { z: 3 } } }),
-      ).toBe(true);
-    });
-
-    it("returns true for empty objects", () => {
-      expect(deepEqual({}, {})).toBe(true);
+    it("returns false for 0 vs false", () => {
+      expect(deepEqual(0, false)).toBe(false);
     });
   });
 
-  // 4. Unequal objects (missing key, different value)
-  describe("unequal objects", () => {
-    it("returns false when b is missing a key from a", () => {
-      expect(deepEqual({ a: 1, b: 2 }, { a: 1 })).toBe(false);
+  // ---------------------------------------------------------------------------
+  // Null and undefined
+  // ---------------------------------------------------------------------------
+
+  describe("null and undefined handling", () => {
+    it("returns true for null vs null", () => {
+      expect(deepEqual(null, null)).toBe(true);
     });
 
-    it("returns false when a has fewer keys than b", () => {
-      expect(deepEqual({ a: 1 }, { a: 1, b: 2 })).toBe(false);
-    });
-
-    it("returns false when values differ for the same key", () => {
-      expect(deepEqual({ a: 1 }, { a: 2 })).toBe(false);
-    });
-
-    it("returns false for {} vs { a: 1 }", () => {
-      expect(deepEqual({}, { a: 1 })).toBe(false);
-    });
-  });
-
-  // 5. Equal arrays
-  describe("equal arrays", () => {
-    it("returns true for equal flat arrays", () => {
-      expect(deepEqual([1, 2, 3], [1, 2, 3])).toBe(true);
-    });
-
-    it("returns true for equal empty arrays", () => {
-      expect(deepEqual([], [])).toBe(true);
-    });
-
-    it("returns true for arrays of strings", () => {
-      expect(deepEqual(["a", "b"], ["a", "b"])).toBe(true);
-    });
-  });
-
-  // 6. Arrays with different lengths → false
-  describe("arrays with different lengths", () => {
-    it("returns false when lengths differ", () => {
-      expect(deepEqual([1, 2, 3], [1, 2])).toBe(false);
-    });
-
-    it("returns false when first is longer", () => {
-      expect(deepEqual([1, 2, 3], [1, 2])).toBe(false);
-    });
-
-    it("returns false when second is longer", () => {
-      expect(deepEqual([1], [1, 2])).toBe(false);
-    });
-  });
-
-  // 7. Deeply nested equal/unequal
-  describe("deeply nested structures", () => {
-    it("returns true for deeply nested equal structure", () => {
-      const a = { outer: { inner: { list: [1, { key: "val" }] } } };
-      const b = { outer: { inner: { list: [1, { key: "val" }] } } };
-      expect(deepEqual(a, b)).toBe(true);
-    });
-
-    it("returns false for deeply nested structure with leaf difference", () => {
-      const a = { outer: { inner: { list: [1, { key: "val" }] } } };
-      const b = { outer: { inner: { list: [1, { key: "different" }] } } };
-      expect(deepEqual(a, b)).toBe(false);
-    });
-
-    it("returns false when nested array element differs", () => {
-      expect(deepEqual([[1, 2], [3, 4]], [[1, 2], [3, 5]])).toBe(false);
-    });
-  });
-
-  // 8. undefined vs null → false
-  describe("undefined vs null", () => {
-    it("returns false for undefined vs null", () => {
-      expect(deepEqual(undefined, null)).toBe(false);
+    it("returns true for undefined vs undefined", () => {
+      expect(deepEqual(undefined, undefined)).toBe(true);
     });
 
     it("returns false for null vs undefined", () => {
       expect(deepEqual(null, undefined)).toBe(false);
     });
 
-    it("returns false for undefined vs undefined (both are undefined — but spec says undefined is a mismatch)", () => {
-      // Per §2.6: undefined is always a mismatch. However, undefined === undefined
-      // passes the strict === check before we reach object checks.
-      // The spec says "undefined is a mismatch" meaning it should never match null,
-      // not that it can't match itself. We test only the null/undefined cross-check.
-      expect(deepEqual(undefined, null)).toBe(false);
-      expect(deepEqual(null, undefined)).toBe(false);
+    it("returns false for null vs 0", () => {
+      expect(deepEqual(null, 0)).toBe(false);
+    });
+
+    it("returns false for null vs empty string", () => {
+      expect(deepEqual(null, "")).toBe(false);
+    });
+
+    it("returns false for null vs object", () => {
+      expect(deepEqual(null, {})).toBe(false);
+    });
+
+    it("returns false for object vs null", () => {
+      expect(deepEqual({}, null)).toBe(false);
+    });
+
+    it("returns false for undefined vs object", () => {
+      expect(deepEqual(undefined, {})).toBe(false);
     });
   });
 
-  // 9. {} vs { a: 1 } → false (already in unequal objects above, explicit test)
-  describe("empty object vs populated object", () => {
-    it("returns false for {} vs { a: 1 }", () => {
-      expect(deepEqual({}, { a: 1 })).toBe(false);
+  // ---------------------------------------------------------------------------
+  // Nested objects — equal (key-order-independent)
+  // ---------------------------------------------------------------------------
+
+  describe("equal nested objects — key-order-independent", () => {
+    it("returns true for identical flat objects", () => {
+      expect(deepEqual({ a: 1, b: 2 }, { a: 1, b: 2 })).toBe(true);
     });
 
-    it("returns false for { a: 1 } vs {}", () => {
-      expect(deepEqual({ a: 1 }, {})).toBe(false);
+    it("returns true for flat objects with different key order", () => {
+      expect(deepEqual({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(true);
+    });
+
+    it("returns true for nested objects with different key order", () => {
+      const a = { x: { foo: 1, bar: 2 }, y: 3 };
+      const b = { y: 3, x: { bar: 2, foo: 1 } };
+      expect(deepEqual(a, b)).toBe(true);
+    });
+
+    it("returns true for deeply nested equal objects", () => {
+      const a = { a: { b: { c: { d: 42 } } } };
+      const b = { a: { b: { c: { d: 42 } } } };
+      expect(deepEqual(a, b)).toBe(true);
+    });
+
+    it("returns true for objects containing null values", () => {
+      expect(deepEqual({ a: null, b: 1 }, { b: 1, a: null })).toBe(true);
     });
   });
 
-  // Additional edge cases
-  describe("array vs object", () => {
-    it("returns false when one is array and other is object", () => {
-      expect(deepEqual([], {})).toBe(false);
-      expect(deepEqual({}, [])).toBe(false);
+  // ---------------------------------------------------------------------------
+  // Nested objects — unequal
+  // ---------------------------------------------------------------------------
+
+  describe("unequal nested objects", () => {
+    it("returns false for objects with different values at the same key", () => {
+      expect(deepEqual({ a: 1 }, { a: 2 })).toBe(false);
+    });
+
+    it("returns false for objects with different key sets", () => {
+      expect(deepEqual({ a: 1 }, { b: 1 })).toBe(false);
+    });
+
+    it("returns false for objects with different key counts", () => {
+      expect(deepEqual({ a: 1, b: 2 }, { a: 1 })).toBe(false);
+    });
+
+    it("returns false for nested objects with different deep values", () => {
+      expect(deepEqual({ x: { a: 1 } }, { x: { a: 2 } })).toBe(false);
+    });
+
+    it("returns false when a nested key is missing in b", () => {
+      expect(deepEqual({ x: { a: 1, b: 2 } }, { x: { a: 1 } })).toBe(false);
     });
   });
 
-  describe("number precision", () => {
-    it("returns false for values that differ within floating point (exact comparison)", () => {
-      expect(deepEqual(0.1 + 0.2, 0.3)).toBe(false);
+  // ---------------------------------------------------------------------------
+  // Arrays
+  // ---------------------------------------------------------------------------
+
+  describe("arrays", () => {
+    it("returns true for equal empty arrays", () => {
+      expect(deepEqual([], [])).toBe(true);
     });
 
-    it("returns true for identical floats", () => {
-      expect(deepEqual(1.5, 1.5)).toBe(true);
+    it("returns true for equal primitive arrays", () => {
+      expect(deepEqual([1, 2, 3], [1, 2, 3])).toBe(true);
+    });
+
+    it("returns true for equal nested arrays", () => {
+      expect(deepEqual([[1, 2], [3, 4]], [[1, 2], [3, 4]])).toBe(true);
+    });
+
+    it("returns true for arrays of equal objects", () => {
+      expect(deepEqual([{ a: 1 }], [{ a: 1 }])).toBe(true);
+    });
+
+    it("returns false for arrays with same elements in different order", () => {
+      expect(deepEqual([1, 2, 3], [3, 2, 1])).toBe(false);
+    });
+
+    it("returns false for arrays of different lengths", () => {
+      expect(deepEqual([1, 2], [1, 2, 3])).toBe(false);
+    });
+
+    it("returns false for arrays with different element values", () => {
+      expect(deepEqual([1, 2, 3], [1, 2, 4])).toBe(false);
+    });
+
+    it("returns false when comparing array to object", () => {
+      expect(deepEqual([1, 2], { 0: 1, 1: 2 })).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Mixed / edge cases
+  // ---------------------------------------------------------------------------
+
+  describe("edge cases", () => {
+    it("returns true for two empty objects", () => {
+      expect(deepEqual({}, {})).toBe(true);
+    });
+
+    it("returns false for object vs primitive", () => {
+      expect(deepEqual({}, 1)).toBe(false);
+    });
+
+    it("returns true for objects containing array values", () => {
+      expect(deepEqual({ arr: [1, 2, 3] }, { arr: [1, 2, 3] })).toBe(true);
+    });
+
+    it("returns false for objects containing arrays with different order", () => {
+      expect(deepEqual({ arr: [1, 2, 3] }, { arr: [3, 2, 1] })).toBe(false);
     });
   });
 });

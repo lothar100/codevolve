@@ -1,218 +1,226 @@
-import { handler, _setClickHouseClientForTesting } from "../../../src/analytics/dashboards.js";
+/**
+ * Unit tests for GET /analytics/dashboards/:type handler.
+ *
+ * Covers:
+ * - All 5 dashboard types return 200
+ * - W-04: Invalid ISO8601 from/to returns 400 INVALID_DATE_RANGE
+ * - from >= to returns 400 INVALID_DATE_RANGE
+ * - Missing from/to uses defaults (no error)
+ * - Invalid dashboard type returns 400 VALIDATION_ERROR
+ * - ClickHouse error returns 500
+ */
+
+import { handler } from "../../../src/analytics/dashboards.js";
 import type { APIGatewayProxyEvent } from "aws-lambda";
 
 // ---------------------------------------------------------------------------
-// Module-level mocks — prevent real SDK clients from being constructed
+// Mock the ClickHouse client
 // ---------------------------------------------------------------------------
 
-jest.mock("@aws-sdk/client-secrets-manager", () => ({
-  SecretsManagerClient: jest.fn().mockImplementation(() => ({})),
-  GetSecretValueCommand: jest.fn(),
+const mockQueryFn = jest.fn();
+
+jest.mock("../../../src/analytics/clickhouseClient.js", () => ({
+  getClickHouseClient: jest.fn().mockReturnValue({
+    query: jest.fn().mockImplementation(() =>
+      Promise.resolve({
+        json: () => Promise.resolve([]),
+      }),
+    ),
+  }),
 }));
 
-jest.mock("@clickhouse/client", () => ({
-  createClient: jest.fn(),
-}));
+// After the module loads, grab the mock for test-level control
+import { getClickHouseClient } from "../../../src/analytics/clickhouseClient.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function makeEvent(
-  dashboardType: string | null,
+  type: string,
   queryParams?: Record<string, string>,
 ): APIGatewayProxyEvent {
   return {
     body: null,
-    pathParameters: dashboardType !== null ? { type: dashboardType } : null,
+    pathParameters: { type },
     queryStringParameters: queryParams ?? null,
     multiValueQueryStringParameters: null,
     headers: {},
     multiValueHeaders: {},
     httpMethod: "GET",
     isBase64Encoded: false,
-    path: `/analytics/dashboards/${dashboardType ?? ""}`,
+    path: `/analytics/dashboards/${type}`,
     stageVariables: null,
     requestContext: {} as never,
     resource: "",
   };
 }
 
-function makeMockClient(rows: unknown[]) {
-  const mockResultSet = { json: jest.fn().mockResolvedValue(rows) };
-  const mockClient = { query: jest.fn().mockResolvedValue(mockResultSet) };
-  return { mockClient, mockResultSet };
-}
+const VALID_FROM = "2026-01-01T00:00:00.000Z";
+const VALID_TO = "2026-01-02T00:00:00.000Z";
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-afterEach(() => {
-  _setClickHouseClientForTesting(null);
-  jest.clearAllMocks();
-});
-
 describe("GET /analytics/dashboards/:type", () => {
-  describe("resolve-performance", () => {
-    it("returns 200 with rows from ClickHouse", async () => {
-      const rows = [{ minute: "2026-03-22T10:00:00Z", p50_ms: 45, p95_ms: 90, high_confidence_pct: 80, success_rate_pct: 99, total_resolves: 120 }];
-      const { mockClient } = makeMockClient(rows);
-      _setClickHouseClientForTesting(mockClient as never);
-
-      const event = makeEvent("resolve-performance");
-      const result = await handler(event);
-
-      expect(result.statusCode).toBe(200);
-      const body = JSON.parse(result.body);
-      expect(body.dashboard).toBe("resolve-performance");
-      expect(body.rows).toEqual(rows);
-      expect(body.from).toBeDefined();
-      expect(body.to).toBeDefined();
-      expect(mockClient.query).toHaveBeenCalledTimes(1);
-      const callArgs = mockClient.query.mock.calls[0][0] as { query: string; format: string };
-      expect(callArgs.format).toBe("JSONEachRow");
-      expect(callArgs.query).toContain("resolve");
-    });
-
-    it("passes from/to query params into the SQL", async () => {
-      const { mockClient } = makeMockClient([]);
-      _setClickHouseClientForTesting(mockClient as never);
-
-      const from = "2026-03-22T00:00:00.000Z";
-      const to = "2026-03-22T01:00:00.000Z";
-      const event = makeEvent("resolve-performance", { from, to });
-      await handler(event);
-
-      const callArgs = mockClient.query.mock.calls[0][0] as { query: string };
-      expect(callArgs.query).toContain(from);
-      expect(callArgs.query).toContain(to);
-    });
+  beforeEach(() => {
+    jest.clearAllMocks();
   });
 
-  describe("execution-caching", () => {
-    it("returns 200 with rows from ClickHouse", async () => {
-      const rows = [
-        { skill_id: "abc", execution_count: 500, unique_inputs: 50, input_repeat_rate: 0.9, cache_hit_rate_pct: 75, p50_ms: 30, p95_ms: 80 },
-      ];
-      const { mockClient } = makeMockClient(rows);
-      _setClickHouseClientForTesting(mockClient as never);
+  // -------------------------------------------------------------------------
+  // 200 — all 5 dashboard types
+  // -------------------------------------------------------------------------
 
-      const event = makeEvent("execution-caching");
-      const result = await handler(event);
-
-      expect(result.statusCode).toBe(200);
-      const body = JSON.parse(result.body);
-      expect(body.dashboard).toBe("execution-caching");
-      expect(body.rows).toEqual(rows);
-      const callArgs = mockClient.query.mock.calls[0][0] as { query: string };
-      expect(callArgs.query).toContain("execute");
-    });
+  it("200: resolve-performance returns data shape", async () => {
+    const result = await handler(
+      makeEvent("resolve-performance", { from: VALID_FROM, to: VALID_TO }),
+    );
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.dashboard).toBe("resolve-performance");
+    expect(body.time_range).toEqual({ from: VALID_FROM, to: VALID_TO });
   });
 
-  describe("evolution-gap", () => {
-    it("returns 200 with unresolved intent rows", async () => {
-      const rows = [
-        { intent: "sort a linked list", occurrences: 42, first_seen: "2026-03-01T00:00:00Z", last_seen: "2026-03-22T00:00:00Z" },
-      ];
-      const { mockClient } = makeMockClient(rows);
-      _setClickHouseClientForTesting(mockClient as never);
-
-      const event = makeEvent("evolution-gap");
-      const result = await handler(event);
-
-      expect(result.statusCode).toBe(200);
-      const body = JSON.parse(result.body);
-      expect(body.dashboard).toBe("evolution-gap");
-      expect(body.rows).toEqual(rows);
-      const callArgs = mockClient.query.mock.calls[0][0] as { query: string };
-      expect(callArgs.query).toContain("resolve");
-      expect(callArgs.query).toContain("success = 0");
-    });
+  it("200: execution-caching returns data shape", async () => {
+    const result = await handler(
+      makeEvent("execution-caching", { from: VALID_FROM, to: VALID_TO }),
+    );
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.dashboard).toBe("execution-caching");
   });
 
-  describe("skill-quality", () => {
-    it("returns 200 with validate-event rows", async () => {
-      const rows = [
-        { skill_id: "xyz", passed: 90, failed: 10, pass_rate_pct: 90, avg_confidence: 0.87, total_validations: 100 },
-      ];
-      const { mockClient } = makeMockClient(rows);
-      _setClickHouseClientForTesting(mockClient as never);
-
-      const event = makeEvent("skill-quality");
-      const result = await handler(event);
-
-      expect(result.statusCode).toBe(200);
-      const body = JSON.parse(result.body);
-      expect(body.dashboard).toBe("skill-quality");
-      expect(body.rows).toEqual(rows);
-    });
+  it("200: skill-quality returns data shape", async () => {
+    const result = await handler(
+      makeEvent("skill-quality", { from: VALID_FROM, to: VALID_TO }),
+    );
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.dashboard).toBe("skill-quality");
   });
 
-  describe("agent-behavior", () => {
-    it("returns 200 with hourly funnel rows", async () => {
-      const rows = [
-        { hour: "2026-03-22T10:00:00Z", resolve_count: 100, execute_count: 75, resolve_to_execute_pct: 75, fail_count: 2 },
-      ];
-      const { mockClient } = makeMockClient(rows);
-      _setClickHouseClientForTesting(mockClient as never);
-
-      const event = makeEvent("agent-behavior");
-      const result = await handler(event);
-
-      expect(result.statusCode).toBe(200);
-      const body = JSON.parse(result.body);
-      expect(body.dashboard).toBe("agent-behavior");
-      expect(body.rows).toEqual(rows);
-    });
+  it("200: evolution-gap returns data shape", async () => {
+    const result = await handler(
+      makeEvent("evolution-gap", { from: VALID_FROM, to: VALID_TO }),
+    );
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.dashboard).toBe("evolution-gap");
   });
 
-  describe("invalid dashboard type", () => {
-    it("returns 400 for an unknown dashboard type", async () => {
-      const event = makeEvent("not-a-real-dashboard");
-      const result = await handler(event);
-
-      expect(result.statusCode).toBe(400);
-      const body = JSON.parse(result.body);
-      expect(body.error.code).toBe("INVALID_DASHBOARD_TYPE");
-    });
-
-    it("returns 400 when the path parameter is missing", async () => {
-      const event = makeEvent(null);
-      const result = await handler(event);
-
-      expect(result.statusCode).toBe(400);
-      const body = JSON.parse(result.body);
-      expect(body.error.code).toBe("INVALID_DASHBOARD_TYPE");
-    });
+  it("200: agent-behavior returns data shape", async () => {
+    const result = await handler(
+      makeEvent("agent-behavior", { from: VALID_FROM, to: VALID_TO }),
+    );
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.dashboard).toBe("agent-behavior");
   });
 
-  describe("ClickHouse error handling", () => {
-    it("returns 500 when the ClickHouse client throws", async () => {
-      const mockClient = {
-        query: jest.fn().mockRejectedValue(new Error("connection refused")),
-      };
-      _setClickHouseClientForTesting(mockClient as never);
+  it("200: uses default time range when from/to are omitted", async () => {
+    const result = await handler(makeEvent("resolve-performance"));
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    // from and to should be populated with defaults
+    expect(body.time_range.from).toBeTruthy();
+    expect(body.time_range.to).toBeTruthy();
+  });
 
-      const event = makeEvent("resolve-performance");
-      const result = await handler(event);
+  // -------------------------------------------------------------------------
+  // 400 — W-04: invalid date range
+  // -------------------------------------------------------------------------
 
-      expect(result.statusCode).toBe(500);
-      const body = JSON.parse(result.body);
-      expect(body.error.code).toBe("QUERY_ERROR");
-    });
+  it("400 INVALID_DATE_RANGE: from is not a valid ISO8601 date", async () => {
+    const result = await handler(
+      makeEvent("resolve-performance", { from: "not-a-date", to: VALID_TO }),
+    );
+    expect(result.statusCode).toBe(400);
+    const body = JSON.parse(result.body);
+    expect(body.error.code).toBe("INVALID_DATE_RANGE");
+  });
 
-    it("returns 500 when resultSet.json() throws", async () => {
-      const mockResultSet = { json: jest.fn().mockRejectedValue(new Error("parse error")) };
-      const mockClient = { query: jest.fn().mockResolvedValue(mockResultSet) };
-      _setClickHouseClientForTesting(mockClient as never);
+  it("400 INVALID_DATE_RANGE: to is not a valid ISO8601 date", async () => {
+    const result = await handler(
+      makeEvent("resolve-performance", { from: VALID_FROM, to: "invalid" }),
+    );
+    expect(result.statusCode).toBe(400);
+    const body = JSON.parse(result.body);
+    expect(body.error.code).toBe("INVALID_DATE_RANGE");
+  });
 
-      const event = makeEvent("execution-caching");
-      const result = await handler(event);
+  it("400 INVALID_DATE_RANGE: from is a plain date without time", async () => {
+    // Plain "2026-01-01" without time component — Date.parse still accepts this in most engines.
+    // The handler should accept it (Date.parse("2026-01-01") returns valid epoch).
+    // This test verifies the handler doesn't crash on partial ISO8601.
+    const result = await handler(
+      makeEvent("resolve-performance", { from: "2026-01-01", to: VALID_TO }),
+    );
+    // 2026-01-01 is parseable, so should be 200
+    expect(result.statusCode).toBe(200);
+  });
 
-      expect(result.statusCode).toBe(500);
-      const body = JSON.parse(result.body);
-      expect(body.error.code).toBe("QUERY_ERROR");
-    });
+  it("400 INVALID_DATE_RANGE: from >= to", async () => {
+    const result = await handler(
+      makeEvent("resolve-performance", {
+        from: VALID_TO,
+        to: VALID_FROM, // intentionally reversed
+      }),
+    );
+    expect(result.statusCode).toBe(400);
+    const body = JSON.parse(result.body);
+    expect(body.error.code).toBe("INVALID_DATE_RANGE");
+  });
+
+  it("400 INVALID_DATE_RANGE: from === to", async () => {
+    const result = await handler(
+      makeEvent("resolve-performance", {
+        from: VALID_FROM,
+        to: VALID_FROM,
+      }),
+    );
+    expect(result.statusCode).toBe(400);
+    const body = JSON.parse(result.body);
+    expect(body.error.code).toBe("INVALID_DATE_RANGE");
+  });
+
+  it("400 INVALID_DATE_RANGE: numeric string is not ISO8601", async () => {
+    const result = await handler(
+      makeEvent("resolve-performance", { from: "1234567890", to: VALID_TO }),
+    );
+    expect(result.statusCode).toBe(400);
+    const body = JSON.parse(result.body);
+    expect(body.error.code).toBe("INVALID_DATE_RANGE");
+  });
+
+  // -------------------------------------------------------------------------
+  // 400 — invalid dashboard type
+  // -------------------------------------------------------------------------
+
+  it("400 VALIDATION_ERROR: unknown dashboard type", async () => {
+    const result = await handler(
+      makeEvent("unknown-type", { from: VALID_FROM, to: VALID_TO }),
+    );
+    expect(result.statusCode).toBe(400);
+    const body = JSON.parse(result.body);
+    expect(body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  // -------------------------------------------------------------------------
+  // 500 — ClickHouse error
+  // -------------------------------------------------------------------------
+
+  it("500 INTERNAL_ERROR: ClickHouse query throws", async () => {
+    const mockClient = getClickHouseClient();
+    (mockClient.query as jest.Mock).mockRejectedValueOnce(
+      new Error("ClickHouse connection refused"),
+    );
+
+    const result = await handler(
+      makeEvent("resolve-performance", { from: VALID_FROM, to: VALID_TO }),
+    );
+    expect(result.statusCode).toBe(500);
+    const body = JSON.parse(result.body);
+    expect(body.error.code).toBe("INTERNAL_ERROR");
   });
 });

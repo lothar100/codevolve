@@ -27,3 +27,5 @@ export const PROBLEMS_TABLE =
 export const SKILLS_TABLE = process.env.SKILLS_TABLE ?? "codevolve-skills";
 export const CACHE_TABLE = process.env.CACHE_TABLE ?? "codevolve-cache";
 export const ARCHIVE_TABLE = process.env.ARCHIVE_TABLE ?? "codevolve-archive";
+export const EVOLVE_JOBS_TABLE =
+  process.env.EVOLVE_JOBS_TABLE ?? "codevolve-evolve-jobs";

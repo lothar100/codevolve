@@ -11,6 +11,7 @@
 3. [codevolve-cache](#3-codevolve-cache)
 4. [codevolve-archive](#4-codevolve-archive)
 5. [Cross-Table Access Pattern Summary](#5-cross-table-access-pattern-summary)
+6. [codevolve-evolve-jobs](#5-codevolve-evolve-jobs)
 
 ---
 
@@ -109,6 +110,9 @@ This is the core table. Most API endpoints read or write it.
 | `execution_count` | `N` | Denormalized counter. Incremented by `/execute`. |
 | `last_executed_at` | `S` | ISO 8601. Updated by `/execute`. |
 | `optimization_flagged` | `BOOL` | Set by Decision Engine when `latency_p95 > threshold AND usage_high`. |
+| `last_validated_at` | `S` | ISO 8601. Set by `POST /validate/:skill_id` on each validation run. |
+| `test_pass_count` | `N` | Number of tests that passed in the most recent validation run. Set by `/validate`. |
+| `test_fail_count` | `N` | Number of tests that failed in the most recent validation run. Set by `/validate`. |
 | `created_at` | `S` | ISO 8601 timestamp. |
 | `updated_at` | `S` | ISO 8601 timestamp. |
 | `archived_at` | `S` | ISO 8601. Set when `status` changes to `archived`. Null otherwise. |
@@ -324,16 +328,63 @@ This maps every API endpoint to the DynamoDB tables and indexes it touches.
 
 ---
 
-## Phase 4 — Future Tables
+## 5. codevolve-evolve-jobs
 
-These tables are not implemented yet. They will be defined when the corresponding features are built out.
+Tracks the lifecycle of each `/evolve` job — from SQS intake through Claude generation to completion or failure. Used for `GET /evolve/:job_id` status polling and the `recent_evolve_jobs` field in the `evolution-gap` analytics dashboard.
 
-### codevolve-evolve-jobs (Phase 4)
+### Key Schema
 
-Will track the lifecycle of async `/evolve` jobs — from queue intake through Claude Code agent processing to completion or failure. Required to support `GET /evolve/:evolve_id` status polling and the `recent_evolve_jobs` field in the `evolution-gap` analytics dashboard.
+| Key | Attribute | Type |
+|-----|-----------|------|
+| Partition Key | `job_id` | `S` (UUID v4) |
+| Sort Key | — | — |
 
-This table is deliberately deferred because `/evolve` is currently fire-and-forget (Kinesis-only, no DynamoDB write). Full job tracking will be designed as part of the Phase 4 implementation plan.
+### Attributes
+
+| Attribute | DynamoDB Type | Description |
+|-----------|---------------|-------------|
+| `job_id` | `S` | UUID v4. Primary identifier. Partition key. |
+| `intent` | `S` | The original intent string from the GapQueue message. |
+| `status` | `S` | One of: `pending`, `running`, `complete`, `failed`. |
+| `skill_id` | `S` | UUID v4. Populated on success with the newly created skill's ID. Null otherwise. |
+| `error` | `S` | Error message. Populated on failure. Null otherwise. |
+| `created_at` | `S` | ISO 8601 timestamp. When the job record was first written. |
+| `updated_at` | `S` | ISO 8601 timestamp. Last status transition time. |
+| `expires_at` | `N` | Unix epoch seconds. DynamoDB TTL — job records auto-expire after 30 days. |
+
+### Global Secondary Indexes
+
+None required. Jobs are looked up by `job_id` only.
+
+### Access Patterns
+
+| Operation | Description | Key Used |
+|-----------|-------------|----------|
+| `PutItem` (status: running) | Written at SQS consumer start | `job_id` (table PK) |
+| `UpdateItem` (status: complete) | Written after skill creation succeeds | `job_id` (table PK) |
+| `UpdateItem` (status: failed) | Written after permanent error | `job_id` (table PK) |
+| `GET /evolve/:job_id` | Status polling | `job_id` (table PK) |
+
+### Configuration
+
+| Setting | Value | Rationale |
+|---------|-------|-----------|
+| Capacity mode | On-demand | Low write volume (one write per evolve job, typically < 10/day). On-demand avoids idle provisioned capacity cost. |
+| TTL attribute | `expires_at` (N) | Auto-expire old job records. Default TTL: 30 days (2592000 seconds from `created_at`). |
+| Streams | None | No downstream consumers needed. Evolve events are emitted to Kinesis by the handler directly. |
 
 ---
 
-*Last updated: 2026-03-21 -- ARCH-01 initial design by Jorven*
+## 6. Cross-Table Access Pattern Summary (updated)
+
+See Section 5 (Cross-Table Access Pattern Summary) above for full table. The `/evolve` pipeline adds:
+
+| Operation | codevolve-evolve-jobs | codevolve-skills |
+|-----------|----------------------|-----------------|
+| SQS consumer start | PutItem (`job_id`, `status: running`) | — |
+| Skill generation success | UpdateItem (`status: complete`, `skill_id`) | PutItem (new skill record) |
+| Skill generation failure | UpdateItem (`status: failed`, `error`) | — |
+
+---
+
+*Last updated: 2026-03-23 — IMPL-11-A: last_validated_at/test_pass_count/test_fail_count added; IMPL-12-A: codevolve-evolve-jobs table added*

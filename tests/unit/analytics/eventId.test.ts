@@ -1,69 +1,96 @@
-import { deriveEventId } from '../../../src/analytics/eventId.js';
-import { AnalyticsEvent } from '../../../src/shared/types.js';
+/**
+ * Unit tests for src/analytics/eventId.ts
+ *
+ * Verifies:
+ * - NULL_FIELD_SENTINEL is the string "null" (not empty string)
+ * - computeEventId produces a 64-char hex SHA-256 digest
+ * - computeEventId is deterministic
+ * - computeEventId varies with each input field
+ * - null fields use the "null" sentinel, not empty string
+ */
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+import { computeEventId, NULL_FIELD_SENTINEL } from "../../../src/analytics/eventId.js";
 
-function makeEvent(overrides: Partial<AnalyticsEvent> = {}): AnalyticsEvent {
-  return {
-    event_type: 'execute',
-    timestamp: '2026-03-22T12:00:00.000Z',
-    skill_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-    intent: 'sort a list',
-    latency_ms: 42,
-    confidence: 0.95,
-    cache_hit: false,
-    input_hash: 'abc123',
-    success: true,
-    ...overrides,
-  };
-}
+describe("NULL_FIELD_SENTINEL", () => {
+  it("is the string literal 'null' (not empty string)", () => {
+    expect(NULL_FIELD_SENTINEL).toBe("null");
+    expect(NULL_FIELD_SENTINEL).not.toBe("");
+  });
+});
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+describe("computeEventId", () => {
+  const TS = "2026-03-23T00:00:00.000Z";
+  const SKILL_ID = "11111111-1111-1111-1111-111111111111";
+  const INTENT = "sort an array";
+  const INPUT_HASH = "abc123def456";
 
-describe('deriveEventId', () => {
-  it('returns the same hash for identical inputs (deterministic)', () => {
-    const event = makeEvent();
-    expect(deriveEventId(event)).toBe(deriveEventId(event));
+  it("returns a 64-character hex string (SHA-256)", () => {
+    const id = computeEventId("resolve", TS, SKILL_ID, INTENT, INPUT_HASH);
+    expect(id).toHaveLength(64);
+    expect(/^[0-9a-f]{64}$/.test(id)).toBe(true);
   });
 
-  it('returns a different hash when skill_id differs', () => {
-    const a = makeEvent({ skill_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' });
-    const b = makeEvent({ skill_id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' });
-    expect(deriveEventId(a)).not.toBe(deriveEventId(b));
+  it("is deterministic — same inputs produce same output", () => {
+    const id1 = computeEventId("resolve", TS, SKILL_ID, INTENT, INPUT_HASH);
+    const id2 = computeEventId("resolve", TS, SKILL_ID, INTENT, INPUT_HASH);
+    expect(id1).toBe(id2);
   });
 
-  it('returns a different hash when event_type differs', () => {
-    const a = makeEvent({ event_type: 'execute' });
-    const b = makeEvent({ event_type: 'resolve' });
-    expect(deriveEventId(a)).not.toBe(deriveEventId(b));
+  it("varies with event_type", () => {
+    const id1 = computeEventId("resolve", TS, SKILL_ID, INTENT, INPUT_HASH);
+    const id2 = computeEventId("execute", TS, SKILL_ID, INTENT, INPUT_HASH);
+    expect(id1).not.toBe(id2);
   });
 
-  it('returns a different hash when timestamp differs', () => {
-    const a = makeEvent({ timestamp: '2026-03-22T12:00:00.000Z' });
-    const b = makeEvent({ timestamp: '2026-03-22T13:00:00.000Z' });
-    expect(deriveEventId(a)).not.toBe(deriveEventId(b));
+  it("varies with timestamp", () => {
+    const id1 = computeEventId("resolve", TS, SKILL_ID, INTENT, INPUT_HASH);
+    const id2 = computeEventId("resolve", "2026-03-23T00:01:00.000Z", SKILL_ID, INTENT, INPUT_HASH);
+    expect(id1).not.toBe(id2);
   });
 
-  it('returns a different hash when input_hash differs', () => {
-    const a = makeEvent({ input_hash: 'abc123' });
-    const b = makeEvent({ input_hash: 'def456' });
-    expect(deriveEventId(a)).not.toBe(deriveEventId(b));
+  it("varies with skill_id", () => {
+    const id1 = computeEventId("resolve", TS, SKILL_ID, INTENT, INPUT_HASH);
+    const id2 = computeEventId("resolve", TS, "22222222-2222-2222-2222-222222222222", INTENT, INPUT_HASH);
+    expect(id1).not.toBe(id2);
   });
 
-  it('does not crash when skill_id is null (uses "null" string)', () => {
-    const event = makeEvent({ skill_id: null });
-    expect(() => deriveEventId(event)).not.toThrow();
-    expect(typeof deriveEventId(event)).toBe('string');
+  it("varies with intent", () => {
+    const id1 = computeEventId("resolve", TS, SKILL_ID, INTENT, INPUT_HASH);
+    const id2 = computeEventId("resolve", TS, SKILL_ID, "different intent", INPUT_HASH);
+    expect(id1).not.toBe(id2);
   });
 
-  it('null input_hash does not crash and does not collide with a non-null input_hash', () => {
-    const withNull = makeEvent({ input_hash: null });
-    const withValue = makeEvent({ input_hash: 'somevalue' });
-    expect(() => deriveEventId(withNull)).not.toThrow();
-    expect(deriveEventId(withNull)).not.toBe(deriveEventId(withValue));
+  it("varies with input_hash", () => {
+    const id1 = computeEventId("resolve", TS, SKILL_ID, INTENT, INPUT_HASH);
+    const id2 = computeEventId("resolve", TS, SKILL_ID, INTENT, "different_hash");
+    expect(id1).not.toBe(id2);
+  });
+
+  it("null skill_id uses 'null' sentinel — differs from empty string", () => {
+    const withNull = computeEventId("resolve", TS, null, INTENT, INPUT_HASH);
+    const withEmpty = computeEventId("resolve", TS, "", INTENT, INPUT_HASH);
+    const withSentinel = computeEventId("resolve", TS, "null", INTENT, INPUT_HASH);
+    // null uses "null" sentinel which equals passing "null" string explicitly
+    expect(withNull).toBe(withSentinel);
+    // null should NOT equal empty string
+    expect(withNull).not.toBe(withEmpty);
+  });
+
+  it("null intent uses 'null' sentinel — differs from empty string", () => {
+    const withNull = computeEventId("resolve", TS, SKILL_ID, null, INPUT_HASH);
+    const withEmpty = computeEventId("resolve", TS, SKILL_ID, "", INPUT_HASH);
+    expect(withNull).not.toBe(withEmpty);
+  });
+
+  it("null input_hash uses 'null' sentinel — differs from empty string", () => {
+    const withNull = computeEventId("resolve", TS, SKILL_ID, INTENT, null);
+    const withEmpty = computeEventId("resolve", TS, SKILL_ID, INTENT, "");
+    expect(withNull).not.toBe(withEmpty);
+  });
+
+  it("all null fields produce a deterministic ID (no crash)", () => {
+    const id = computeEventId("fail", TS, null, null, null);
+    expect(id).toHaveLength(64);
+    expect(/^[0-9a-f]{64}$/.test(id)).toBe(true);
   });
 });

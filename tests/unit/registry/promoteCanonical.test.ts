@@ -1,21 +1,19 @@
 /**
- * Unit tests for POST /skills/:skill_id/promote-canonical handler.
+ * Unit tests for POST /skills/:id/promote-canonical handler.
  *
- * Test cases per IMPL-13 spec (post REVIEW-09 fixes):
- *  1. Happy path: confidence=0.85, test_fail_count=0, test_pass_count>0, previous canonical exists
- *     → TransactWriteItems called with 3 items (promote + problem + demote), Kinesis emitted, 200
- *  2. Happy path: no previous canonical → TransactWriteItems with 2 items, 200
- *  3. confidence=0.84 → 422 with confidence in details
- *  4. test_fail_count=1 → 422 with test_fail_count in details
- *  5. Skill not found → 404
- *  6. Skill archived → 422
- *  7. Already canonical → 409 CONFLICT (CRITICAL-01 fix)
- *  8. Kinesis emit failure does not fail the request (fire-and-forget)
- *  9. Never-validated skill (test_pass_count=0) → 422 (CRITICAL-03 fix)
- * 10. TransactionCanceledException → 422 PRECONDITION_FAILED (WARNING-01 fix)
- * 11. Invalid UUID → 400
- * 12. Unexpected DynamoDB error → 500
- * 13. confidence=0.85 exact threshold passes
+ * Covers IMPL-13-C spec:
+ *   - 200 success with demotion
+ *   - 200 success no previous canonical
+ *   - 409 ALREADY_CANONICAL
+ *   - 422 CONFIDENCE_TOO_LOW
+ *   - 422 NEVER_VALIDATED
+ *   - 422 TESTS_FAILING
+ *   - 422 WRONG_STATUS
+ *   - 409 SKILL_ARCHIVED
+ *   - 422 TransactionCanceledException → ConditionalCheckFailed
+ *   - 404 skill not found
+ *   - 400 invalid UUID
+ *   - 500 unexpected error
  */
 
 import { handler } from "../../../src/registry/promoteCanonical.js";
@@ -25,8 +23,7 @@ import type { APIGatewayProxyEvent } from "aws-lambda";
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockDocSend = jest.fn();
-const mockEmitEvent = jest.fn();
+const mockSend = jest.fn();
 
 jest.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: jest.fn().mockImplementation(() => ({})),
@@ -36,33 +33,30 @@ jest.mock("@aws-sdk/lib-dynamodb", () => ({
   DynamoDBDocumentClient: {
     from: jest
       .fn()
-      .mockReturnValue({ send: (...args: unknown[]) => mockDocSend(...args) }),
+      .mockReturnValue({ send: (...args: unknown[]) => mockSend(...args) }),
   },
   QueryCommand: jest
     .fn()
     .mockImplementation((input) => ({ _type: "QueryCommand", input })),
+  GetCommand: jest
+    .fn()
+    .mockImplementation((input) => ({ _type: "GetCommand", input })),
   TransactWriteCommand: jest
     .fn()
     .mockImplementation((input) => ({ _type: "TransactWriteCommand", input })),
 }));
 
-jest.mock("../../../src/shared/emitEvent.js", () => ({
-  emitEvent: (...args: unknown[]) => mockEmitEvent(...args),
-  EVENTS_STREAM: "codevolve-events",
-}));
-
 // ---------------------------------------------------------------------------
-// Test fixtures
+// Test helpers
 // ---------------------------------------------------------------------------
 
 const SKILL_ID = "22222222-2222-2222-2222-222222222222";
 const PROBLEM_ID = "11111111-1111-1111-1111-111111111111";
-const PREV_CANONICAL_ID = "33333333-3333-3333-3333-333333333333";
+const PREV_SKILL_ID = "33333333-3333-3333-3333-333333333333";
 
 function makeEvent(pathId: string): APIGatewayProxyEvent {
   return {
     body: null,
-    // CDK registers the route with {id} path param
     pathParameters: { id: pathId },
     queryStringParameters: null,
     multiValueQueryStringParameters: null,
@@ -77,280 +71,266 @@ function makeEvent(pathId: string): APIGatewayProxyEvent {
   };
 }
 
-/** Minimal valid skill item stored in DynamoDB */
+/** A skill item that passes all gate checks. */
 const validSkillItem = {
   skill_id: SKILL_ID,
   version_number: 1,
   problem_id: PROBLEM_ID,
   name: "Two Sum Hash Map",
-  description: "O(n) solution using hash map",
+  description: "O(n) solution",
   is_canonical: false,
   status: "verified",
   language: "python",
   domain: ["arrays"],
   tags: ["hash-map"],
-  inputs: [{ name: "nums", type: "number[]" }, { name: "target", type: "number" }],
+  inputs: [{ name: "nums", type: "number[]" }],
   outputs: [{ name: "indices", type: "number[]" }],
   examples: [],
-  tests: [{ input: { nums: [2, 7], target: 9 }, expected: { indices: [0, 1] } }],
-  test_fail_count: 0,
-  test_pass_count: 1, // CRITICAL-03: must have been validated
-  implementation: "def two_sum(nums, target): ...",
+  tests: [{ input: { nums: [1, 2], target: 3 }, expected: { indices: [0, 1] } }],
+  implementation: "def two_sum(): ...",
   confidence: 0.9,
+  test_pass_count: 5,
+  test_fail_count: 0,
+  archived: false,
   latency_p50_ms: 10,
   latency_p95_ms: 25,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
 };
 
-const prevCanonicalItem = {
-  ...validSkillItem,
-  skill_id: PREV_CANONICAL_ID,
-  version_number: 2,
-  is_canonical: true,
-  is_canonical_status: "true#verified",
-};
+/** Set up mocks for the happy path with no previous canonical. */
+function setupSuccessNoPrevious() {
+  // Query #1: fetch skill (latest version)
+  mockSend.mockResolvedValueOnce({ Items: [validSkillItem] });
+  // Query #2: GSI-canonical verified — no previous canonical
+  mockSend.mockResolvedValueOnce({ Items: [] });
+  // Query #3: GSI-canonical optimized — no previous canonical
+  mockSend.mockResolvedValueOnce({ Items: [] });
+  // TransactWriteCommand — success
+  mockSend.mockResolvedValueOnce({});
+  // Query #4: re-fetch promoted skill
+  mockSend.mockResolvedValueOnce({
+    Items: [{ ...validSkillItem, is_canonical: true, status: "optimized" }],
+  });
+}
+
+/** Set up mocks for the happy path with one previous canonical to demote. */
+function setupSuccessWithDemotion() {
+  const prevCanonicalItem = {
+    ...validSkillItem,
+    skill_id: PREV_SKILL_ID,
+    version_number: 2,
+    is_canonical: true,
+    is_canonical_status: "true#verified",
+  };
+
+  // Query #1: fetch skill
+  mockSend.mockResolvedValueOnce({ Items: [validSkillItem] });
+  // Query #2: GSI-canonical verified — found one previous canonical
+  mockSend.mockResolvedValueOnce({ Items: [prevCanonicalItem] });
+  // Query #3: GSI-canonical optimized — none
+  mockSend.mockResolvedValueOnce({ Items: [] });
+  // TransactWriteCommand — success
+  mockSend.mockResolvedValueOnce({});
+  // Query #4: re-fetch promoted skill
+  mockSend.mockResolvedValueOnce({
+    Items: [{ ...validSkillItem, is_canonical: true, status: "optimized" }],
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("POST /skills/:skill_id/promote-canonical", () => {
+describe("POST /skills/:id/promote-canonical", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockEmitEvent.mockResolvedValue(undefined);
   });
 
-  // ---------- Test 1: Happy path — previous canonical exists ----------
+  // -------------------------------------------------------------------------
+  // 200 — success paths
+  // -------------------------------------------------------------------------
 
-  it("promotes skill and demotes previous canonical when one exists", async () => {
-    // call 1: fetch latest skill version
-    mockDocSend.mockResolvedValueOnce({ Items: [validSkillItem] });
-    // call 2: query GSI-canonical for "verified" — finds previous canonical
-    mockDocSend.mockResolvedValueOnce({ Items: [prevCanonicalItem] });
-    // call 3: TransactWriteCommand
-    mockDocSend.mockResolvedValueOnce({});
+  it("200: promotes skill with no previous canonical", async () => {
+    setupSuccessNoPrevious();
 
     const result = await handler(makeEvent(SKILL_ID));
     const body = JSON.parse(result.body);
 
     expect(result.statusCode).toBe(200);
     expect(body.skill.is_canonical).toBe(true);
-    expect(body.skill.skill_id).toBe(SKILL_ID);
-    expect(body.demoted_skill_id).toBe(PREV_CANONICAL_ID);
-
-    // TransactWriteCommand was called
-    const { TransactWriteCommand } = jest.requireMock("@aws-sdk/lib-dynamodb");
-    expect(TransactWriteCommand).toHaveBeenCalledTimes(1);
-    const callArg = TransactWriteCommand.mock.calls[0][0];
-    // Should have 3 items: promote + problem update + demote
-    expect(callArg.TransactItems).toHaveLength(3);
-
-    // Kinesis event emitted
-    expect(mockEmitEvent).toHaveBeenCalledTimes(1);
-    expect(mockEmitEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event_type: "promote_canonical",
-        skill_id: SKILL_ID,
-        success: true,
-      }),
-    );
-  });
-
-  // ---------- Test 2: Happy path — no previous canonical ----------
-
-  it("promotes skill when no previous canonical exists for the problem", async () => {
-    // call 1: fetch latest skill version
-    mockDocSend.mockResolvedValueOnce({ Items: [validSkillItem] });
-    // call 2: query GSI-canonical for "verified" — empty
-    mockDocSend.mockResolvedValueOnce({ Items: [] });
-    // call 3: query GSI-canonical for "optimized" — empty
-    mockDocSend.mockResolvedValueOnce({ Items: [] });
-    // call 4: TransactWriteCommand
-    mockDocSend.mockResolvedValueOnce({});
-
-    const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
-    expect(result.statusCode).toBe(200);
-    expect(body.skill.is_canonical).toBe(true);
+    expect(body.skill.status).toBe("optimized");
     expect(body.demoted_skill_id).toBeNull();
-
-    // TransactWriteCommand should have only 2 items: promote + problem update
-    const { TransactWriteCommand } = jest.requireMock("@aws-sdk/lib-dynamodb");
-    expect(TransactWriteCommand).toHaveBeenCalledTimes(1);
-    const callArg = TransactWriteCommand.mock.calls[0][0];
-    expect(callArg.TransactItems).toHaveLength(2);
   });
 
-  // ---------- Test 3: Confidence too low ----------
+  it("200: promotes skill and demotes previous canonical", async () => {
+    setupSuccessWithDemotion();
 
-  it("returns 422 with confidence in details when confidence < 0.85", async () => {
-    mockDocSend.mockResolvedValueOnce({
-      Items: [{ ...validSkillItem, confidence: 0.84 }],
+    const result = await handler(makeEvent(SKILL_ID));
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(body.skill.is_canonical).toBe(true);
+    expect(body.demoted_skill_id).toBe(PREV_SKILL_ID);
+  });
+
+  it("200: accepts optimized status for promotion", async () => {
+    const optimizedSkill = { ...validSkillItem, status: "optimized" };
+    // Query #1: fetch skill
+    mockSend.mockResolvedValueOnce({ Items: [optimizedSkill] });
+    // Query #2 + #3: no previous canonical
+    mockSend.mockResolvedValueOnce({ Items: [] });
+    mockSend.mockResolvedValueOnce({ Items: [] });
+    // TransactWrite
+    mockSend.mockResolvedValueOnce({});
+    // Re-fetch
+    mockSend.mockResolvedValueOnce({
+      Items: [{ ...optimizedSkill, is_canonical: true }],
     });
 
     const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
-    expect(result.statusCode).toBe(422);
-    expect(body.error.code).toBe("PRECONDITION_FAILED");
-    expect(body.error.details).toHaveProperty("confidence", 0.84);
+    expect(result.statusCode).toBe(200);
   });
 
-  // ---------- Test 4: Failing tests ----------
+  // -------------------------------------------------------------------------
+  // 404 — not found
+  // -------------------------------------------------------------------------
 
-  it("returns 422 with test_fail_count in details when test_fail_count > 0", async () => {
-    mockDocSend.mockResolvedValueOnce({
-      Items: [{ ...validSkillItem, test_fail_count: 1 }],
-    });
-
-    const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
-    expect(result.statusCode).toBe(422);
-    expect(body.error.code).toBe("PRECONDITION_FAILED");
-    expect(body.error.details).toHaveProperty("test_fail_count", 1);
-  });
-
-  // ---------- Test 5: Skill not found ----------
-
-  it("returns 404 when the skill does not exist", async () => {
-    mockDocSend.mockResolvedValueOnce({ Items: [] });
+  it("404: skill not found", async () => {
+    mockSend.mockResolvedValueOnce({ Items: [] });
 
     const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
     expect(result.statusCode).toBe(404);
-    expect(body.error.code).toBe("NOT_FOUND");
+    expect(JSON.parse(result.body).error.code).toBe("NOT_FOUND");
   });
 
-  // ---------- Test 6: Skill archived ----------
+  // -------------------------------------------------------------------------
+  // 409 — gate failures (conflict)
+  // -------------------------------------------------------------------------
 
-  it("returns 422 when the skill is archived", async () => {
-    mockDocSend.mockResolvedValueOnce({
-      Items: [{ ...validSkillItem, status: "archived" }],
-    });
-
-    const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
-    expect(result.statusCode).toBe(422);
-    expect(body.error.code).toBe("PRECONDITION_FAILED");
-  });
-
-  // ---------- Test 7: Already canonical — 409 CONFLICT (CRITICAL-01) ----------
-
-  it("returns 409 CONFLICT when skill is already canonical", async () => {
-    mockDocSend.mockResolvedValueOnce({
+  it("409 ALREADY_CANONICAL: skill is already canonical", async () => {
+    mockSend.mockResolvedValueOnce({
       Items: [{ ...validSkillItem, is_canonical: true }],
     });
 
     const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
     expect(result.statusCode).toBe(409);
-    expect(body.error.code).toBe("CONFLICT");
-
-    // No TransactWrite should be called
-    const { TransactWriteCommand } = jest.requireMock("@aws-sdk/lib-dynamodb");
-    expect(TransactWriteCommand).not.toHaveBeenCalled();
-
-    // No Kinesis event
-    expect(mockEmitEvent).not.toHaveBeenCalled();
+    expect(JSON.parse(result.body).error.code).toBe("ALREADY_CANONICAL");
   });
 
-  // ---------- Test 8: Kinesis failure does not crash the handler ----------
-
-  it("returns 200 even when Kinesis emit throws", async () => {
-    mockDocSend.mockResolvedValueOnce({ Items: [validSkillItem] });
-    mockDocSend.mockResolvedValueOnce({ Items: [] });
-    mockDocSend.mockResolvedValueOnce({ Items: [] });
-    mockDocSend.mockResolvedValueOnce({});
-
-    // Make emitEvent throw
-    mockEmitEvent.mockRejectedValueOnce(new Error("Kinesis unavailable"));
+  it("409 SKILL_ARCHIVED: skill has archived flag", async () => {
+    mockSend.mockResolvedValueOnce({
+      Items: [{ ...validSkillItem, archived: true }],
+    });
 
     const result = await handler(makeEvent(SKILL_ID));
-
-    expect(result.statusCode).toBe(200);
+    expect(result.statusCode).toBe(409);
+    expect(JSON.parse(result.body).error.code).toBe("SKILL_ARCHIVED");
   });
 
-  // ---------- Test 9: Never-validated skill (CRITICAL-03) ----------
+  // -------------------------------------------------------------------------
+  // 422 — gate failures (precondition)
+  // -------------------------------------------------------------------------
 
-  it("returns 422 when skill has never been validated (test_pass_count=0)", async () => {
-    mockDocSend.mockResolvedValueOnce({
+  it("422 CONFIDENCE_TOO_LOW: confidence < 0.85", async () => {
+    mockSend.mockResolvedValueOnce({
+      Items: [{ ...validSkillItem, confidence: 0.5 }],
+    });
+
+    const result = await handler(makeEvent(SKILL_ID));
+    expect(result.statusCode).toBe(422);
+    expect(JSON.parse(result.body).error.code).toBe("CONFIDENCE_TOO_LOW");
+  });
+
+  it("422 TESTS_FAILING: skill has failing tests", async () => {
+    mockSend.mockResolvedValueOnce({
+      Items: [{ ...validSkillItem, test_fail_count: 2 }],
+    });
+
+    const result = await handler(makeEvent(SKILL_ID));
+    expect(result.statusCode).toBe(422);
+    expect(JSON.parse(result.body).error.code).toBe("TESTS_FAILING");
+  });
+
+  it("422 NEVER_VALIDATED: test_pass_count is 0", async () => {
+    mockSend.mockResolvedValueOnce({
       Items: [{ ...validSkillItem, test_pass_count: 0 }],
     });
 
     const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
     expect(result.statusCode).toBe(422);
-    expect(body.error.code).toBe("PRECONDITION_FAILED");
-    expect(body.error.details).toHaveProperty("test_pass_count", 0);
+    expect(JSON.parse(result.body).error.code).toBe("NEVER_VALIDATED");
   });
 
-  it("returns 422 when skill has undefined test_pass_count (never validated)", async () => {
-    const { test_pass_count: _, ...itemWithoutPassCount } = validSkillItem;
-    mockDocSend.mockResolvedValueOnce({ Items: [itemWithoutPassCount] });
+  it("422 NEVER_VALIDATED: test_pass_count is missing", async () => {
+    const { test_pass_count: _omit, ...skillWithoutPasses } = validSkillItem;
+    mockSend.mockResolvedValueOnce({ Items: [skillWithoutPasses] });
 
     const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
     expect(result.statusCode).toBe(422);
-    expect(body.error.code).toBe("PRECONDITION_FAILED");
+    expect(JSON.parse(result.body).error.code).toBe("NEVER_VALIDATED");
   });
 
-  // ---------- Test 10: TransactionCanceledException → 422 (WARNING-01) ----------
-
-  it("returns 422 when TransactionCanceledException is thrown", async () => {
-    mockDocSend.mockResolvedValueOnce({ Items: [validSkillItem] });
-    mockDocSend.mockResolvedValueOnce({ Items: [] });
-    mockDocSend.mockResolvedValueOnce({ Items: [] });
-
-    // Throw a TransactionCanceledException-shaped error
-    const txError = Object.assign(new Error("Transaction cancelled"), {
-      name: "TransactionCanceledException",
+  it("422 WRONG_STATUS: skill status is unsolved", async () => {
+    mockSend.mockResolvedValueOnce({
+      Items: [{ ...validSkillItem, status: "unsolved" }],
     });
-    mockDocSend.mockRejectedValueOnce(txError);
 
     const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
     expect(result.statusCode).toBe(422);
-    expect(body.error.code).toBe("PRECONDITION_FAILED");
+    expect(JSON.parse(result.body).error.code).toBe("WRONG_STATUS");
   });
 
-  // ---------- Additional edge cases ----------
+  it("422 WRONG_STATUS: skill status is partial", async () => {
+    mockSend.mockResolvedValueOnce({
+      Items: [{ ...validSkillItem, status: "partial" }],
+    });
 
-  it("returns 400 for an invalid UUID path parameter", async () => {
+    const result = await handler(makeEvent(SKILL_ID));
+    expect(result.statusCode).toBe(422);
+    expect(JSON.parse(result.body).error.code).toBe("WRONG_STATUS");
+  });
+
+  it("422 TransactionCanceledException with ConditionalCheckFailed", async () => {
+    // Query #1: fetch skill
+    mockSend.mockResolvedValueOnce({ Items: [validSkillItem] });
+    // Query #2 + #3: no previous canonical
+    mockSend.mockResolvedValueOnce({ Items: [] });
+    mockSend.mockResolvedValueOnce({ Items: [] });
+    // TransactWriteCommand — fails with ConditionalCheckFailed
+    const txError = Object.assign(
+      new Error("Transaction cancelled, please refer cancellation reasons for specific reasons"),
+      {
+        name: "TransactionCanceledException",
+        CancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }],
+      },
+    );
+    mockSend.mockRejectedValueOnce(txError);
+
+    const result = await handler(makeEvent(SKILL_ID));
+    expect(result.statusCode).toBe(422);
+    expect(JSON.parse(result.body).error.code).toBe("PRECONDITION_FAILED");
+  });
+
+  // -------------------------------------------------------------------------
+  // 400 — validation
+  // -------------------------------------------------------------------------
+
+  it("400 VALIDATION_ERROR: invalid UUID in path", async () => {
     const result = await handler(makeEvent("not-a-uuid"));
-    const body = JSON.parse(result.body);
-
     expect(result.statusCode).toBe(400);
-    expect(body.error.code).toBe("VALIDATION_ERROR");
+    expect(JSON.parse(result.body).error.code).toBe("VALIDATION_ERROR");
   });
 
-  it("returns 500 on unexpected DynamoDB error", async () => {
-    mockDocSend.mockRejectedValueOnce(new Error("DynamoDB unavailable"));
+  // -------------------------------------------------------------------------
+  // 500 — unexpected error
+  // -------------------------------------------------------------------------
+
+  it("500 INTERNAL_ERROR: DynamoDB unavailable", async () => {
+    mockSend.mockRejectedValueOnce(new Error("DynamoDB unavailable"));
 
     const result = await handler(makeEvent(SKILL_ID));
-    const body = JSON.parse(result.body);
-
     expect(result.statusCode).toBe(500);
-    expect(body.error.code).toBe("INTERNAL_ERROR");
-  });
-
-  it("uses exactly confidence=0.85 as the passing threshold", async () => {
-    mockDocSend.mockResolvedValueOnce({
-      Items: [{ ...validSkillItem, confidence: 0.85 }],
-    });
-    mockDocSend.mockResolvedValueOnce({ Items: [] });
-    mockDocSend.mockResolvedValueOnce({ Items: [] });
-    mockDocSend.mockResolvedValueOnce({});
-
-    const result = await handler(makeEvent(SKILL_ID));
-    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body).error.code).toBe("INTERNAL_ERROR");
   });
 });

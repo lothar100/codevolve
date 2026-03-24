@@ -1,42 +1,48 @@
 /**
- * Deep equality comparison for arbitrary values.
+ * Recursive deep equality utility.
  *
- * Rules (per §2.6):
- *   - Primitives: strict ===
- *   - null === null is true; undefined is always a mismatch
- *   - Arrays: same length + each element recursively equal at the same index
- *   - Objects (non-null, non-array): same keys (order-independent) + each
- *     value recursively equal
- *   - Number precision: exact (no epsilon tolerance)
+ * Rules:
+ *   - Primitives: compared with ===
+ *   - null / undefined: compared with ===
+ *   - Arrays: order-sensitive element-wise comparison
+ *   - Objects: key-order-independent, all keys from both sides must match
+ *
+ * No JSON.stringify. No external dependencies.
  */
+
 export function deepEqual(a: unknown, b: unknown): boolean {
-  // Strict primitive / reference equality covers: numbers, strings, booleans,
-  // null === null, and same-reference objects.
+  // Identical references or primitives
   if (a === b) return true;
 
-  // At this point a !== b. If either is null or not an object/function,
-  // they can't be structurally equal (primitives are already covered above).
-  if (a === null || b === null) return false;
-  if (typeof a !== "object" || typeof b !== "object") return false;
+  // One is null/undefined, other is not (a !== b already ruled out above)
+  if (a === null || a === undefined || b === null || b === undefined) {
+    return false;
+  }
 
-  // Both are non-null objects. Differentiate arrays from plain objects.
+  // Different types
+  if (typeof a !== typeof b) return false;
+
+  // Non-object primitives that passed === already — cannot be equal
+  if (typeof a !== "object") return false;
+
+  // Both are objects from here on
+
+  // Array check — both must be arrays or both must be plain objects
   const aIsArray = Array.isArray(a);
   const bIsArray = Array.isArray(b);
 
   if (aIsArray !== bIsArray) return false;
 
   if (aIsArray && bIsArray) {
-    // Cast is safe: we checked Array.isArray above.
-    const aArr = a as unknown[];
-    const bArr = b as unknown[];
-    if (aArr.length !== bArr.length) return false;
-    for (let i = 0; i < aArr.length; i++) {
-      if (!deepEqual(aArr[i], bArr[i])) return false;
+    // Both are arrays — order-sensitive
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false;
     }
     return true;
   }
 
-  // Both are plain objects.
+  // Both are plain objects — key-order-independent
   const aObj = a as Record<string, unknown>;
   const bObj = b as Record<string, unknown>;
 
@@ -46,7 +52,6 @@ export function deepEqual(a: unknown, b: unknown): boolean {
   if (aKeys.length !== bKeys.length) return false;
 
   for (const key of aKeys) {
-    // Key must exist in b and values must be recursively equal.
     if (!Object.prototype.hasOwnProperty.call(bObj, key)) return false;
     if (!deepEqual(aObj[key], bObj[key])) return false;
   }

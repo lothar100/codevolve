@@ -1,76 +1,43 @@
 /**
- * ClickHouse client singleton for the analytics consumer.
+ * ClickHouse client singleton for analytics queries.
  *
- * The client is initialized once at cold start by reading credentials from
- * AWS Secrets Manager, then cached in module scope for reuse across warm
- * invocations. `_setClickHouseClientForTesting` allows tests to inject a mock.
+ * Connection configuration is read from environment variables so that
+ * it can differ between stages (dev, staging, prod).
+ *
+ * This module is imported only by analytics read endpoints. It must never
+ * be imported by primary system handlers (registry, router, execution)
+ * because the analytics store must not be a dependency of the hot path.
  */
 
-import { createClient, ClickHouseClient } from "@clickhouse/client";
-import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from "@aws-sdk/client-secrets-manager";
+import { createClient, type ClickHouseClient } from "@clickhouse/client";
 
-export interface ClickHouseSecret {
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  database: string;
-}
+let _client: ClickHouseClient | null = null;
 
-const secretsClient = new SecretsManagerClient({
-  region: process.env.AWS_REGION ?? "us-east-2",
-});
-
-let cachedClient: ClickHouseClient | null = null;
-
-async function loadSecret(): Promise<ClickHouseSecret> {
-  const secretArn = process.env.CLICKHOUSE_SECRET_ARN;
-  if (!secretArn) {
-    throw new Error("CLICKHOUSE_SECRET_ARN env var is not set");
+/**
+ * Return the shared ClickHouse client, creating it on first call.
+ * Uses a module-level singleton to reuse the connection across Lambda
+ * warm invocations.
+ */
+export function getClickHouseClient(): ClickHouseClient {
+  if (_client === null) {
+    _client = createClient({
+      url: process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
+      username: process.env.CLICKHOUSE_USER ?? "default",
+      password: process.env.CLICKHOUSE_PASSWORD ?? "",
+      database: process.env.CLICKHOUSE_DATABASE ?? "default",
+      request_timeout: 10_000, // 10s — dashboards must return fast
+    });
   }
-  const response = await secretsClient.send(
-    new GetSecretValueCommand({ SecretId: secretArn }),
-  );
-  return JSON.parse(response.SecretString ?? "{}") as ClickHouseSecret;
+  return _client;
 }
 
 /**
- * Returns the singleton ClickHouse client. On the first call it fetches
- * credentials from Secrets Manager and creates the client. Subsequent calls
- * return the cached instance.
- *
- * If Secrets Manager is unreachable or the secret is malformed, this function
- * throws. The caller (consumer handler) must catch the error and mark all
- * batch records as failed.
+ * Replace the singleton — intended for use in tests only.
+ * Call with `null` to reset to the real client on the next call.
  */
-export async function getClickHouseClient(): Promise<ClickHouseClient> {
-  if (cachedClient !== null) return cachedClient;
-
-  const secret = await loadSecret();
-
-  cachedClient = createClient({
-    url: `${secret.host}:${secret.port}`,
-    username: secret.username,
-    password: secret.password,
-    database: secret.database,
-    request_timeout: 30_000,
-    compression: { request: true },
-  });
-
-  return cachedClient;
+export function _setClickHouseClientForTest(client: ClickHouseClient | null): void {
+  _client = client;
 }
 
-/**
- * Replaces the cached client with the provided instance. Pass `null` to reset
- * the singleton so the next `getClickHouseClient()` call re-initializes it.
- *
- * ONLY for use in unit tests — never call this in production code.
- */
-export function _setClickHouseClientForTesting(
-  client: ClickHouseClient | null,
-): void {
-  cachedClient = client;
-}
+/** Alias for _setClickHouseClientForTest — matches naming convention used in some test files. */
+export const _setClickHouseClientForTesting = _setClickHouseClientForTest;
