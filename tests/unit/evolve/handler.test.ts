@@ -213,7 +213,7 @@ describe("evolve handler", () => {
     const jobPut = putCalls[0] as { Item: Record<string, unknown> };
     expect(jobPut.Item.status).toBe("running");
     expect(jobPut.Item.intent).toBe(VALID_INTENT);
-    expect(typeof jobPut.Item.job_id).toBe("string");
+    expect(typeof jobPut.Item.evolve_id).toBe("string");
   });
 
   it("writes the new skill to DynamoDB after Claude responds", async () => {

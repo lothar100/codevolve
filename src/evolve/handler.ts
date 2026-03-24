@@ -217,7 +217,7 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
         new PutCommand({
           TableName: EVOLVE_JOBS_TABLE,
           Item: {
-            job_id: jobId,
+            evolve_id: jobId,
             intent: message.intent,
             status: "running",
             skill_id: null,
@@ -226,7 +226,7 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
             updated_at: now,
             expires_at: expiresAt,
           },
-          ConditionExpression: "attribute_not_exists(job_id)",
+          ConditionExpression: "attribute_not_exists(evolve_id)",
         }),
       );
 
@@ -362,7 +362,7 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
       await docClient.send(
         new UpdateCommand({
           TableName: EVOLVE_JOBS_TABLE,
-          Key: { job_id: jobId },
+          Key: { evolve_id: jobId },
           UpdateExpression:
             "SET #status = :status, skill_id = :skillId, updated_at = :now",
           ExpressionAttributeNames: { "#status": "status" },
@@ -403,7 +403,7 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
             await docClient.send(
               new UpdateCommand({
                 TableName: EVOLVE_JOBS_TABLE,
-                Key: { job_id: jobId },
+                Key: { evolve_id: jobId },
                 UpdateExpression:
                   "SET #status = :status, #error = :error, updated_at = :now",
                 ExpressionAttributeNames: {

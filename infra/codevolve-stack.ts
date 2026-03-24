@@ -740,7 +740,7 @@ export class CodevolveStack extends cdk.Stack {
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:codevolve/anthropic-api-key`,
     );
     evolveFn.addEnvironment(
-      "VALIDATE_FUNCTION_NAME",
+      "VALIDATE_LAMBDA_NAME",
       validateFn.functionName,
     );
     evolveFn.addEnvironment(

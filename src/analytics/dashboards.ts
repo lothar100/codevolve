@@ -542,7 +542,7 @@ async function evolutionGapDashboard(
   // 4d: Domain coverage gaps
   const domainCoverageGaps = await queryClickHouse(`
     SELECT
-        extractTextBefore(intent, ':') AS domain,
+        substringIndex(intent, ':', 1) AS domain,
         uniq(intent) AS unique_intents,
         countIf(event_type = 'resolve' AND success = 0) AS unresolved_count,
         countIf(event_type = 'resolve' AND confidence < 0.7) AS low_confidence_count,
