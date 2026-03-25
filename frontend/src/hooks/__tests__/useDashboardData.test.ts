@@ -15,6 +15,8 @@ describe("useDashboardData", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.stubGlobal("fetch", vi.fn());
+    // Default: tab is visible
+    Object.defineProperty(document, "hidden", { value: false, configurable: true, writable: true });
   });
 
   afterEach(() => {
@@ -122,5 +124,75 @@ describe("useDashboardData", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(fetchCallsBefore);
+  });
+
+  it("polls at the given intervalMs", async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(MOCK_DATA),
+    });
+
+    renderHook(() => useDashboardData("resolve-performance", 1000));
+
+    // Wait for the initial fetch.
+    await waitFor(() =>
+      expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(1)
+    );
+
+    const callsAfterInit = (fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // Advance one interval — should trigger one more fetch.
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    await waitFor(() =>
+      expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsAfterInit)
+    );
+  });
+
+  it("skips fetch when document.hidden is true", async () => {
+    Object.defineProperty(document, "hidden", { value: true, configurable: true, writable: true });
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(MOCK_DATA),
+    });
+
+    renderHook(() => useDashboardData("resolve-performance", 1000));
+
+    // Advance past the interval — fetch should not be called because tab is hidden.
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("re-fetches when tab becomes visible after being hidden", async () => {
+    // Start hidden.
+    Object.defineProperty(document, "hidden", { value: true, configurable: true, writable: true });
+
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(MOCK_DATA),
+    });
+
+    renderHook(() => useDashboardData("resolve-performance", 300_000));
+
+    // No fetch while hidden.
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+
+    // Tab becomes visible — visibilitychange fires.
+    Object.defineProperty(document, "hidden", { value: false, configurable: true, writable: true });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    await waitFor(() =>
+      expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(1)
+    );
   });
 });

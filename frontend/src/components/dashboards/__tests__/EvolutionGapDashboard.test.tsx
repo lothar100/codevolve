@@ -106,9 +106,9 @@ describe("EvolutionGapDashboard", () => {
     expect(screen.getByText(/evolution pipeline/i)).toBeInTheDocument();
   });
 
-  it("calls useDashboardData with correct type", () => {
+  it("calls useDashboardData with correct type and 60-minute interval", () => {
     mockUse.mockReturnValue({ data: null, loading: true, error: null, refresh: vi.fn() });
     render(<EvolutionGapDashboard />);
-    expect(mockUse).toHaveBeenCalledWith("evolution-gap");
+    expect(mockUse).toHaveBeenCalledWith("evolution-gap", 3_600_000);
   });
 });

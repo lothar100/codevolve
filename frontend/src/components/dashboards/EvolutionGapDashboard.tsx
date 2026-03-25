@@ -15,7 +15,7 @@ import type { EvolutionGapDashboard as DashboardType } from "../../types/dashboa
 
 export function EvolutionGapDashboard() {
   const { data, loading, error } =
-    useDashboardData<DashboardType>("evolution-gap");
+    useDashboardData<DashboardType>("evolution-gap", 3_600_000);
 
   if (loading) {
     return <div className="dashboard-loading">Loading Evolution / Gap...</div>;

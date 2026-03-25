@@ -80,9 +80,9 @@ describe("ExecutionCachingDashboard", () => {
     expect(cells.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("calls useDashboardData with correct type", () => {
+  it("calls useDashboardData with correct type and 5-minute interval", () => {
     mockUse.mockReturnValue({ data: null, loading: true, error: null, refresh: vi.fn() });
     render(<ExecutionCachingDashboard />);
-    expect(mockUse).toHaveBeenCalledWith("execution-caching");
+    expect(mockUse).toHaveBeenCalledWith("execution-caching", 300_000);
   });
 });

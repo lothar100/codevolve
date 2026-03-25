@@ -15,7 +15,7 @@ import type { SkillQualityDashboard as DashboardType } from "../../types/dashboa
 
 export function SkillQualityDashboard() {
   const { data, loading, error } =
-    useDashboardData<DashboardType>("skill-quality");
+    useDashboardData<DashboardType>("skill-quality", 3_600_000);
 
   if (loading) {
     return <div className="dashboard-loading">Loading Skill Quality...</div>;

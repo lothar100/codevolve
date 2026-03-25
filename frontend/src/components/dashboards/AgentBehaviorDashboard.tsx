@@ -15,7 +15,7 @@ import type { AgentBehaviorDashboard as DashboardType } from "../../types/dashbo
 
 export function AgentBehaviorDashboard() {
   const { data, loading, error } =
-    useDashboardData<DashboardType>("agent-behavior");
+    useDashboardData<DashboardType>("agent-behavior", 3_600_000);
 
   if (loading) {
     return <div className="dashboard-loading">Loading Agent Behavior...</div>;

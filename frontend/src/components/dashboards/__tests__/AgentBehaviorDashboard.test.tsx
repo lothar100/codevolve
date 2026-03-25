@@ -98,9 +98,9 @@ describe("AgentBehaviorDashboard", () => {
     expect(screen.getByText("compute hash")).toBeInTheDocument();
   });
 
-  it("calls useDashboardData with correct type", () => {
+  it("calls useDashboardData with correct type and 60-minute interval", () => {
     mockUse.mockReturnValue({ data: null, loading: true, error: null, refresh: vi.fn() });
     render(<AgentBehaviorDashboard />);
-    expect(mockUse).toHaveBeenCalledWith("agent-behavior");
+    expect(mockUse).toHaveBeenCalledWith("agent-behavior", 3_600_000);
   });
 });

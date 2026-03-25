@@ -84,9 +84,9 @@ describe("SkillQualityDashboard", () => {
     expect(screen.getByText("skill-003")).toBeInTheDocument();
   });
 
-  it("calls useDashboardData with correct type", () => {
+  it("calls useDashboardData with correct type and 60-minute interval", () => {
     mockUse.mockReturnValue({ data: null, loading: true, error: null, refresh: vi.fn() });
     render(<SkillQualityDashboard />);
-    expect(mockUse).toHaveBeenCalledWith("skill-quality");
+    expect(mockUse).toHaveBeenCalledWith("skill-quality", 3_600_000);
   });
 });

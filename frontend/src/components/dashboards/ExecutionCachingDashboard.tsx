@@ -17,7 +17,7 @@ import type { ExecutionCachingDashboard as DashboardType } from "../../types/das
 
 export function ExecutionCachingDashboard() {
   const { data, loading, error } =
-    useDashboardData<DashboardType>("execution-caching");
+    useDashboardData<DashboardType>("execution-caching", 300_000);
 
   if (loading) {
     return (

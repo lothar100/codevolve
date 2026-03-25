@@ -7,10 +7,8 @@ const DEPLOYED_API_URL = "https://hra190v7x6.execute-api.us-east-2.amazonaws.com
 const _meta = import.meta as any;
 const API_BASE_URL: string =
   typeof _meta.env === "object" && _meta.env !== null
-    ? ((_meta.env["VITE_API_URL"] as string | undefined) ?? DEPLOYED_API_URL)
+    ? ((_meta.env["VITE_API_BASE_URL"] as string | undefined) ?? DEPLOYED_API_URL)
     : DEPLOYED_API_URL;
-
-const AUTO_REFRESH_MS = 30_000;
 
 export interface UseDashboardDataResult<T extends DashboardData> {
   data: T | null;
@@ -21,16 +19,23 @@ export interface UseDashboardDataResult<T extends DashboardData> {
 
 /**
  * Fetches dashboard data from GET /analytics/dashboards/{type}.
- * Auto-refreshes every 30 seconds.
+ * Auto-refreshes at the given intervalMs (default 300000ms / 5 minutes).
+ * Pauses polling when the browser tab is hidden; resumes immediately on
+ * visibility restore.
  */
 export function useDashboardData<T extends DashboardData>(
-  type: DashboardType
+  type: DashboardType,
+  intervalMs: number = 300_000
 ): UseDashboardDataResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
+    // Skip fetch when the tab is backgrounded.
+    if (typeof document !== "undefined" && document.hidden) {
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -49,11 +54,29 @@ export function useDashboardData<T extends DashboardData>(
     }
   }, [type]);
 
+  // Initial fetch on mount.
   useEffect(() => {
     void fetchData();
   }, [fetchData]);
 
-  useInterval(fetchData, AUTO_REFRESH_MS);
+  // Re-fetch immediately when the tab becomes visible again.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void fetchData();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [fetchData]);
+
+  // Periodic polling — tick is a no-op when document.hidden (guarded in fetchData).
+  useInterval(fetchData, intervalMs);
 
   return { data, loading, error, refresh: fetchData };
 }

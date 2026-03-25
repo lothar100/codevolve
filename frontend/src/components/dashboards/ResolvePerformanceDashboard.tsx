@@ -37,7 +37,7 @@ function StatCard({
 
 export function ResolvePerformanceDashboard() {
   const { data, loading, error } =
-    useDashboardData<DashboardType>("resolve-performance");
+    useDashboardData<DashboardType>("resolve-performance", 300_000);
 
   if (loading) {
     return <div className="dashboard-loading">Loading Resolve Performance...</div>;

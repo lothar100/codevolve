@@ -80,9 +80,9 @@ describe("ResolvePerformanceDashboard", () => {
     expect(screen.getByText("skill-001")).toBeInTheDocument();
   });
 
-  it("calls useDashboardData with correct type", () => {
+  it("calls useDashboardData with correct type and 5-minute interval", () => {
     mockUse.mockReturnValue({ data: null, loading: true, error: null, refresh: vi.fn() });
     render(<ResolvePerformanceDashboard />);
-    expect(mockUse).toHaveBeenCalledWith("resolve-performance");
+    expect(mockUse).toHaveBeenCalledWith("resolve-performance", 300_000);
   });
 });
