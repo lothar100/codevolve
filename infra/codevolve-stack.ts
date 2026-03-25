@@ -6,6 +6,7 @@
  */
 
 import * as cdk from "aws-cdk-lib";
+import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as kinesis from "aws-cdk-lib/aws-kinesis";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -25,7 +26,9 @@ export class CodevolveStack extends cdk.Stack {
   public readonly cacheTable: dynamodb.Table;
   public readonly archiveTable: dynamodb.Table;
   public readonly evolveJobsTable: dynamodb.Table;
+  public readonly trustedMountainTable: dynamodb.Table;
   public readonly eventsStream: kinesis.Stream;
+  public readonly userPool: cognito.UserPool;
   public readonly api: apigateway.RestApi;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -160,6 +163,48 @@ export class CodevolveStack extends cdk.Stack {
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // 6. codevolve-trusted-mountains (IMPL-16)
+    this.trustedMountainTable = new dynamodb.Table(this, "TrustedMountainTable", {
+      tableName: "codevolve-trusted-mountains",
+      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "skill_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // -----------------------------------------------------------------------
+    // Cognito — Community User Pool (IMPL-16)
+    // -----------------------------------------------------------------------
+
+    this.userPool = new cognito.UserPool(this, "CommunityUserPool", {
+      userPoolName: "codevolve-community",
+      selfSignUpEnabled: true,
+      signInAliases: { email: true },
+      autoVerify: { email: true },
+      standardAttributes: {
+        email: { required: true, mutable: true },
+      },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: false,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    new cognito.UserPoolClient(this, "UserPoolClient", {
+      userPool: this.userPool,
+      userPoolClientName: "codevolve-spa",
+      generateSecret: false,
+      authFlows: {
+        userPassword: true,
+        userSrp: true,
+      },
     });
 
     // -----------------------------------------------------------------------
@@ -504,6 +549,33 @@ export class CodevolveStack extends cdk.Stack {
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
     });
 
+    // Auth: custom JWT authorizer Lambda (IMPL-16 — backup for non-APIGW contexts)
+    const authorizerFn = new NodejsFunction(this, "AuthorizerFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-authorizer",
+      entry: path.join(__dirname, "../src/auth/authorizer.ts"),
+      timeout: cdk.Duration.seconds(5),
+      environment: {
+        COGNITO_USER_POOL_ID: this.userPool.userPoolId,
+        COGNITO_REGION: this.region,
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
+      },
+    });
+
+    // Trusted Mountain: GET/POST/DELETE /users/me/trusted-mountain (IMPL-16)
+    const trustedMountainFn = new NodejsFunction(this, "TrustedMountainFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-trusted-mountain",
+      entry: path.join(__dirname, "../src/registry/trustedMountain.ts"),
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        ...lambdaEnvironment,
+        TRUSTED_MOUNTAIN_TABLE: this.trustedMountainTable.tableName,
+        COGNITO_USER_POOL_ID: this.userPool.userPoolId,
+        COGNITO_REGION: this.region,
+      },
+    });
+
     // -----------------------------------------------------------------------
     // API Gateway
     // -----------------------------------------------------------------------
@@ -527,14 +599,32 @@ export class CodevolveStack extends cdk.Stack {
       },
     });
 
+    // -----------------------------------------------------------------------
+    // Cognito Authorizer (IMPL-16)
+    // -----------------------------------------------------------------------
+
+    const cognitoAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(
+      this,
+      "CognitoAuthorizer",
+      {
+        cognitoUserPools: [this.userPool],
+        authorizerName: "CommunityUserPoolAuthorizer",
+        identitySource: "method.request.header.Authorization",
+      },
+    );
+
+    // Shorthand for methods that require Cognito auth
+    const withAuth: apigateway.MethodOptions = {
+      authorizer: cognitoAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    };
+
     // GET /health
     const healthResource = this.api.root.addResource("health");
     healthResource.addMethod(
       "GET",
       new apigateway.LambdaIntegration(healthFn),
     );
-
-    // Placeholder API resources — methods will be wired in subsequent IMPLs
 
     // /skills
     const skillsResource = this.api.root.addResource("skills");
@@ -545,6 +635,7 @@ export class CodevolveStack extends cdk.Stack {
     skillsResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(createSkillFn),
+      withAuth,
     );
     const skillByIdResource = skillsResource.addResource("{id}");
     skillByIdResource.addMethod(
@@ -561,6 +652,7 @@ export class CodevolveStack extends cdk.Stack {
     promoteCanonicalResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(promoteCanonicalFn),
+      withAuth,
     );
     const archiveResource = skillByIdResource.addResource("archive");
     archiveResource.addMethod(
@@ -578,6 +670,7 @@ export class CodevolveStack extends cdk.Stack {
     problemsResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(createProblemFn),
+      withAuth,
     );
     problemsResource.addMethod(
       "GET",
@@ -632,6 +725,28 @@ export class CodevolveStack extends cdk.Stack {
     // /evolve
     this.api.root.addResource("evolve");
     // POST /evolve
+
+    // /users/me/trusted-mountain (IMPL-16)
+    const usersResource = this.api.root.addResource("users");
+    const meResource = usersResource.addResource("me");
+    const trustedMountainResource = meResource.addResource("trusted-mountain");
+    trustedMountainResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(trustedMountainFn),
+      withAuth,
+    );
+    trustedMountainResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(trustedMountainFn),
+      withAuth,
+    );
+    const trustedMountainSkillResource =
+      trustedMountainResource.addResource("{skill_id}");
+    trustedMountainSkillResource.addMethod(
+      "DELETE",
+      new apigateway.LambdaIntegration(trustedMountainFn),
+      withAuth,
+    );
 
     // -----------------------------------------------------------------------
     // Grant permissions
@@ -779,6 +894,9 @@ export class CodevolveStack extends cdk.Stack {
     clickhouseSecret.grantRead(analyticsConsumerFn);
     this.eventsStream.grantRead(analyticsConsumerFn);
 
+    // Trusted Mountain function permissions (IMPL-16)
+    this.trustedMountainTable.grantReadWriteData(trustedMountainFn);
+
     // -----------------------------------------------------------------------
     // Outputs
     // -----------------------------------------------------------------------
@@ -786,6 +904,11 @@ export class CodevolveStack extends cdk.Stack {
     new cdk.CfnOutput(this, "ApiUrl", {
       value: this.api.url,
       description: "API Gateway endpoint URL",
+    });
+
+    new cdk.CfnOutput(this, "UserPoolId", {
+      value: this.userPool.userPoolId,
+      description: "Cognito Community User Pool ID",
     });
   }
 }
