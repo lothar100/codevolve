@@ -1,105 +1,132 @@
-/**
- * App
- *
- * Root component for the codeVolve mountain visualization.
- *
- * Responsibilities:
- * - Manages active filters
- * - Fetches mountain data via useMountainData (5-min auto-refresh)
- * - Renders FilterSidebar, MountainScene, DetailPanel, LoadingOverlay
- */
+import { useState, useEffect } from "react";
+import { ResolvePerformanceDashboard } from "./components/dashboards/ResolvePerformanceDashboard";
+import { ExecutionCachingDashboard } from "./components/dashboards/ExecutionCachingDashboard";
+import { SkillQualityDashboard } from "./components/dashboards/SkillQualityDashboard";
+import { EvolutionGapDashboard } from "./components/dashboards/EvolutionGapDashboard";
+import { AgentBehaviorDashboard } from "./components/dashboards/AgentBehaviorDashboard";
 
-import { useState, useMemo } from "react";
-import type { MountainProblem, MountainFilters } from "./types/mountain.js";
-import { API_BASE_URL } from "./types/mountain.js";
-import { useMountainData } from "./hooks/useMountainData.js";
-import { FilterSidebar } from "./components/FilterSidebar.js";
-import { MountainScene } from "./components/MountainScene.js";
-import { DetailPanel } from "./components/DetailPanel.js";
-import { LoadingOverlay } from "./components/LoadingOverlay.js";
+type TabId = "mountain" | "analytics";
+type AnalyticsTabId =
+  | "resolve-performance"
+  | "execution-caching"
+  | "skill-quality"
+  | "evolution-gap"
+  | "agent-behavior";
 
-export default function App() {
-  const [filters, setFilters] = useState<MountainFilters>({
-    domain: null,
-    language: null,
-    status: null,
-  });
-  const [selectedProblem, setSelectedProblem] = useState<MountainProblem | null>(null);
+const ANALYTICS_TABS: { id: AnalyticsTabId; label: string }[] = [
+  { id: "resolve-performance", label: "Resolve Performance" },
+  { id: "execution-caching", label: "Execution & Caching" },
+  { id: "skill-quality", label: "Skill Quality" },
+  { id: "evolution-gap", label: "Evolution / Gap" },
+  { id: "agent-behavior", label: "Agent Behavior" },
+];
 
-  const { data, loading, error, refetch } = useMountainData(filters);
+function getTabFromHash(): TabId {
+  const hash = window.location.hash.replace("#", "");
+  if (hash === "analytics") return "analytics";
+  return "mountain";
+}
 
-  // Extract unique domains from current response for filter sidebar
-  const domains = useMemo(() => {
-    if (!data) return [];
-    const domainSet = new Set<string>();
-    for (const problem of data.problems) {
-      for (const d of problem.domain) {
-        domainSet.add(d);
-      }
+function getAnalyticsTabFromHash(): AnalyticsTabId {
+  const hash = window.location.hash.replace("#analytics/", "").replace("#analytics", "");
+  const valid: AnalyticsTabId[] = [
+    "resolve-performance",
+    "execution-caching",
+    "skill-quality",
+    "evolution-gap",
+    "agent-behavior",
+  ];
+  if (valid.includes(hash as AnalyticsTabId)) return hash as AnalyticsTabId;
+  return "execution-caching";
+}
+
+export function App() {
+  const [tab, setTab] = useState<TabId>(getTabFromHash);
+  const [analyticsTab, setAnalyticsTab] = useState<AnalyticsTabId>(
+    getAnalyticsTabFromHash
+  );
+
+  useEffect(() => {
+    const onHashChange = () => {
+      setTab(getTabFromHash());
+      setAnalyticsTab(getAnalyticsTabFromHash());
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const navigateTo = (newTab: TabId, sub?: AnalyticsTabId) => {
+    if (newTab === "analytics") {
+      const subPath = sub ?? analyticsTab;
+      window.location.hash = `analytics/${subPath}`;
+    } else {
+      window.location.hash = newTab;
     }
-    return Array.from(domainSet).sort();
-  }, [data]);
-
-  const handleSelect = (problem: MountainProblem) => {
-    setSelectedProblem(problem);
-  };
-
-  const handleCloseDetail = () => {
-    setSelectedProblem(null);
+    setTab(newTab);
+    if (sub != null) setAnalyticsTab(sub);
   };
 
   return (
-    <div
-      style={{
-        position: "relative",
-        width: "100%",
-        height: "100%",
-        overflow: "hidden",
-        background: "#0f172a",
-      }}
-    >
-      {/* Filter sidebar */}
-      <FilterSidebar
-        filters={filters}
-        domains={domains}
-        onFiltersChange={(f) => {
-          setFilters(f);
-          // Clear selected problem when filters change to avoid stale detail panel
-          setSelectedProblem(null);
-        }}
-        totalProblems={data?.total_problems ?? 0}
-        totalSkills={data?.total_skills ?? 0}
-        generatedAt={data?.generated_at ?? null}
-        cacheHit={data?.cache_hit ?? false}
-      />
+    <div className="app">
+      <header className="app-header">
+        <h1>codeVolve</h1>
+        <nav className="main-nav">
+          <button
+            className={tab === "mountain" ? "active" : ""}
+            onClick={() => navigateTo("mountain")}
+          >
+            Mountain
+          </button>
+          <button
+            className={tab === "analytics" ? "active" : ""}
+            onClick={() => navigateTo("analytics")}
+          >
+            Analytics
+          </button>
+        </nav>
+      </header>
 
-      {/* 3D canvas — offset left to account for sidebar */}
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 240,
-          right: 0,
-          bottom: 0,
-        }}
-      >
-        <MountainScene
-          problems={data?.problems ?? []}
-          onSelect={handleSelect}
-        />
-      </div>
+      <main>
+        {tab === "mountain" && (
+          <section className="mountain-view">
+            <h2>Mountain Visualization</h2>
+            <p>
+              Three.js mountain view — implemented in IMPL-14. This placeholder
+              renders when the <code>#mountain</code> hash is active.
+            </p>
+          </section>
+        )}
 
-      {/* Brick click detail panel */}
-      {selectedProblem && (
-        <DetailPanel
-          problem={selectedProblem}
-          apiBaseUrl={API_BASE_URL}
-          onClose={handleCloseDetail}
-        />
-      )}
+        {tab === "analytics" && (
+          <section className="analytics-view">
+            <nav className="analytics-tabs">
+              {ANALYTICS_TABS.map((t) => (
+                <button
+                  key={t.id}
+                  className={analyticsTab === t.id ? "active" : ""}
+                  onClick={() => navigateTo("analytics", t.id)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </nav>
 
-      {/* Loading / error overlay */}
-      <LoadingOverlay loading={loading && !data} error={error} onRetry={refetch} />
+            <div className="analytics-content">
+              {analyticsTab === "resolve-performance" && (
+                <ResolvePerformanceDashboard />
+              )}
+              {analyticsTab === "execution-caching" && (
+                <ExecutionCachingDashboard />
+              )}
+              {analyticsTab === "skill-quality" && <SkillQualityDashboard />}
+              {analyticsTab === "evolution-gap" && <EvolutionGapDashboard />}
+              {analyticsTab === "agent-behavior" && <AgentBehaviorDashboard />}
+            </div>
+          </section>
+        )}
+      </main>
     </div>
   );
 }
+
+export default App;

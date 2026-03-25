@@ -1,18 +1,17 @@
 /**
- * codeVolve MCP Server — entry point
+ * codeVolve MCP Server entry point.
  *
- * Starts the stdio MCP server. Run via:
- *   node dist/mcp/index.js
+ * Run with: node dist/mcp/server.js
  *
- * Environment variables:
- *   CODEVOLVE_API_URL  — base URL of the codeVolve REST API (default: prod URL)
- *   CODEVOLVE_API_KEY  — optional API key sent as x-api-key header
+ * Required environment variable:
+ *   CODEVOLVE_API_URL — base URL of the codeVolve REST API
+ *
+ * Optional environment variables:
+ *   CODEVOLVE_API_KEY    — forwarded as Authorization: Bearer {key}
+ *   CODEVOLVE_AGENT_ID   — sent as X-Agent-Id header (default: mcp-server)
+ *   CODEVOLVE_TIMEOUT_MS — HTTP request timeout in ms (default: 35000)
  */
 
-import { startServer } from "./server.js";
-
-startServer().catch((err: unknown) => {
-  const message = err instanceof Error ? err.message : String(err);
-  process.stderr.write(`[codevolve-mcp] Fatal error: ${message}\n`);
-  process.exit(1);
-});
+export * from "./client.js";
+export * from "./tools.js";
+export * from "./resources.js";

@@ -2775,3 +2775,818 @@ The mountain endpoint failing silently (returning stale cache without alerting) 
 ---
 
 *Last updated: 2026-03-22 — DESIGN-05 by Amber*
+
+---
+
+## DESIGN-07: Analytics Dashboard Frontend
+
+### Overview
+
+**Experience goal (for human):** A platform operator opens the analytics view from the same frontend app as the mountain visualization and immediately sees the health of the platform across five focused dashboards. Each dashboard auto-refreshes. Date range is adjustable. No external Grafana installation is required — the dashboards are part of the mountain frontend app.
+
+**Experience goal (for agent):** There is no agent-facing surface in this design. The analytics frontend is a human observability tool only. Agents do not call dashboard endpoints directly; they use `/resolve`, `/execute`, and `/skills`.
+
+**Design decision:** Add analytics dashboards as a second view within the existing Vite + React 18 + TypeScript frontend at `frontend/`. Navigation between the mountain view and analytics view is a top-level tab bar. No separate app or build target is needed.
+
+**Rationale:** The frontend already contains a Vite project with React 18, TypeScript strict mode, and @react-three/fiber. Adding dashboards here avoids a second build pipeline, shared type infrastructure, and shared environment variable configuration (`VITE_API_BASE_URL`). The mountain and analytics views are complementary — operators naturally switch between them.
+
+**What behavior this enables:** Operators can observe resolve latency, cache efficiency, skill quality trends, coverage gaps, and agent usage patterns in a single browser tab.
+
+**What behavior this prevents:** This design does not expose raw ClickHouse queries to the browser. All dashboard data is fetched from the existing five `GET /analytics/dashboards/:type` endpoints. The frontend is a display layer only.
+
+---
+
+### 1. Navigation
+
+**Structure:** Top-level tab bar rendered in a fixed header across all views. Two tabs:
+
+| Tab Label | View | Route (hash-based) |
+|-----------|------|--------------------|
+| Mountain | 3D mountain visualization (existing App content) | `#mountain` (default) |
+| Analytics | Analytics dashboard panel | `#analytics` |
+
+**Implementation approach:** Hash-based routing using `window.location.hash` and a `useState` in the root `App.tsx`. No React Router dependency is introduced — this is the only navigation in the app and a full router is unnecessary overhead.
+
+**Active tab indicator:** A 2px bottom border in `#42A5F5` (Optimized blue from `STATUS_COLORS`) on the active tab. Inactive tabs are `#94A3B8` on the dark background.
+
+**Header height:** 48px. The mountain canvas adjusts its top offset from 0 to 48px when the header is present. The analytics view uses the remaining viewport below the header.
+
+**Tab switching behavior:** Switching from Analytics back to Mountain does not re-fetch mountain data if the last fetch was within the 5-minute refresh window. Switching to Analytics triggers an immediate data fetch for the currently-selected dashboard if its data is stale (older than the dashboard's refresh interval).
+
+---
+
+### 2. Layout
+
+**Analytics view layout (full viewport below 48px header):**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Header: [Mountain] [Analytics]                  (48px)     │
+├─────────────────────────────────────────────────────────────┤
+│  Dashboard nav: [D1] [D2] [D3] [D4] [D5]        (48px)     │
+│  Date range picker: [Last 1h] [24h] [7d] [30d] [Custom]     │
+│  Last refreshed: 14:32:05  [Refresh now]                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Dashboard content area (scrollable)                        │
+│  Grid layout: 12-column CSS grid, 16px gutter               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Dashboard nav:** Five labeled buttons, one per dashboard. Active dashboard has the same bottom-border treatment as the main tab. Labels:
+
+| Button | Dashboard |
+|--------|-----------|
+| Resolve | resolve-performance |
+| Caching | execution-caching |
+| Quality | skill-quality |
+| Gaps | evolution-gap |
+| Agents | agent-behavior |
+
+**Date range picker:** Five preset buttons rendered as a button group. Custom opens two `<input type="datetime-local">` fields for `from` and `to`. The selected range is passed as ISO8601 query params to each endpoint.
+
+| Preset | from value | to value |
+|--------|-----------|----------|
+| Last 1h | `now - 1hr` | `now` |
+| Last 24h | `now - 24hr` | `now` |
+| Last 7d | `now - 7d` | `now` |
+| Last 30d | `now - 30d` | `now` |
+| Custom | user input | user input |
+
+Default preset per dashboard:
+
+| Dashboard | Default preset |
+|-----------|---------------|
+| Resolve Performance | Last 1h |
+| Execution & Caching | Last 1h |
+| Skill Quality | Last 24h |
+| Evolution / Gap | Last 7d |
+| Agent Behavior | Last 24h |
+
+**Refresh cadence:** Each dashboard polls at the interval defined in DESIGN-02:
+
+| Dashboard | Poll interval |
+|-----------|--------------|
+| Resolve Performance | 5 minutes |
+| Execution & Caching | 5 minutes |
+| Skill Quality | 1 hour |
+| Evolution / Gap | 1 hour |
+| Agent Behavior | 1 hour |
+
+Polling is implemented via `useInterval` (a simple `setInterval` hook). The dashboard does not poll while its tab is backgrounded (`document.hidden === true`). Polling resumes immediately on tab focus.
+
+**Loading state:** Each dashboard shows a skeleton layout (grey placeholder boxes matching the chart grid positions) while the first fetch is in-flight. Subsequent background refreshes do not show a skeleton — the stale data remains visible until the new data arrives.
+
+**Error state:** A dismissible error banner at the top of the content area: "Failed to load dashboard data. Retrying in Xs." Retry is automatic; no manual action required unless the user clicks "Refresh now."
+
+---
+
+### 3. Chart Library
+
+**Recommendation: Recharts**
+
+The existing `frontend/package.json` contains zero charting dependencies (only `@react-three/fiber`, `three`, `react`, `react-dom`). Recharts is the correct choice for this project for three reasons:
+
+1. **Bundle size:** Recharts is ~130KB gzipped, substantially smaller than Nivo (~350KB) and Chart.js via react-chartjs-2 (~200KB). Victory is comparable to Recharts but has a less idiomatic React API.
+
+2. **React-native API:** Recharts is built entirely in React — every chart element is a React component. This aligns with the existing React 18 + TypeScript pattern in the frontend and avoids the imperative canvas manipulation required by Chart.js.
+
+3. **Required chart types:** All chart types needed by this design (line, bar, area, composed, pie/radial, scatter) are available in Recharts out of the box. No custom plugin system is needed.
+
+4. **TypeScript support:** Recharts ships its own type declarations. No `@types/recharts` package is needed.
+
+**Add to `frontend/package.json` dependencies:**
+```
+"recharts": "^2.13.0"
+```
+
+No other charting library is added. The heatmap panels (Dashboard 5, usage pattern) use a custom CSS grid component rather than a charting library, because Recharts does not have a native heatmap and the data shape (7x24 grid) is simple enough to render with styled `<div>` elements.
+
+---
+
+### 4. Per-Dashboard Component Breakdown
+
+---
+
+#### Dashboard 1: Resolve Performance
+
+**API endpoint:** `GET /analytics/dashboards/resolve-performance`
+
+**Response fields used:**
+- `latency_over_time` — array of `{ minute, p50_ms, p95_ms }`
+- `latency_distribution` — array of `{ bucket_ms, request_count }`
+- `high_confidence_pct` — `{ high_confidence_pct: number | null }`
+- `high_confidence_over_time` — array of `{ minute, high_confidence_pct }`
+- `success_rate` — `{ success_rate_pct: number | null }`
+- `low_confidence_resolves` — array of `{ intent, confidence, skill_id, timestamp }`
+
+**Grid layout (12 columns):**
+
+```
+┌─────────────┬─────────────┬──────────────────────────────┐
+│  StatCard   │  StatCard   │  StatCard                    │
+│  p50 ms     │  p95 ms     │  Success Rate %              │
+│  (4 col)    │  (4 col)    │  (4 col)                     │
+├─────────────┴─────────────┴──────────────────────────────┤
+│  Latency over time — p50 + p95 (ComposedChart, 2 lines)  │
+│  (12 col)                                                 │
+├──────────────────────────────┬───────────────────────────┤
+│  Latency distribution        │  High-confidence % trend  │
+│  (BarChart, bucket_ms x-axis)│  (LineChart)               │
+│  (6 col)                     │  (6 col)                   │
+├──────────────────────────────┴───────────────────────────┤
+│  Low-confidence resolves (DataTable, last 100)           │
+│  Columns: timestamp, intent (truncated 60 chars),        │
+│  skill_id (truncated UUID), confidence (colored badge)   │
+│  (12 col)                                                 │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Key metrics highlighted:** The three stat cards at the top use large typography (32px number, 12px label). p95 > 200ms colors the card red (`#EF5350`). High-confidence % < 80 colors its card amber (`#FFF176` background with dark text).
+
+**Components:**
+- `ResolvePerformanceDashboard` — top-level, fetches data, passes to children
+- `StatCard` — reusable, shared across all dashboards
+- `LatencyLineChart` — wraps Recharts `ComposedChart` with two `Line`s (p50, p95), formatted x-axis timestamps
+- `LatencyHistogram` — wraps Recharts `BarChart` for distribution
+- `HighConfidenceLineChart` — wraps Recharts `LineChart`
+- `LowConfidenceTable` — wraps `DataTable` (shared component)
+
+---
+
+#### Dashboard 2: Execution & Caching (Highest Priority)
+
+**API endpoint:** `GET /analytics/dashboards/execution-caching`
+
+**Response fields used:**
+- `most_executed_skills` — array of `{ skill_id, execution_count }` (top 20)
+- `input_repetition_rate` — array of `{ skill_id, total_executions, unique_inputs, input_repeat_rate }`
+- `cache_hit_over_time` — array of `{ minute, cache_hits, cache_misses, hit_rate_pct }`
+- `cache_hit_rate_pct` — `{ cache_hit_rate_pct: number | null }`
+- `execution_latency_over_time` — array of `{ minute, p50_ms, p95_ms }`
+- `cache_candidates` — array of `{ skill_id, execution_count, unique_inputs, input_repeat_rate, p95_ms }`
+
+**Grid layout (12 columns):**
+
+```
+┌──────────────────────────────────────┬──────────────────┐
+│  StatCard: Cache Hit Rate %          │  StatCard: Total  │
+│  Alert if < 30%                      │  Executions count │
+│  (6 col)                             │  (6 col)          │
+├──────────────────────────────────────┴──────────────────┤
+│  Cache hit/miss over time — StackedAreaChart            │
+│  (area_1: cache hits, area_2: cache misses)             │
+│  (12 col)                                                │
+├──────────────────────────────┬──────────────────────────┤
+│  Top 20 most-executed skills │  Execution latency p50/  │
+│  HorizontalBarChart          │  p95 over time           │
+│  y-axis: skill_id (short)    │  LineChart (2 lines)     │
+│  x-axis: execution_count     │  (6 col)                 │
+│  (6 col)                     │                          │
+├──────────────────────────────┴──────────────────────────┤
+│  Cache candidates table                                  │
+│  Cols: skill_id, executions, repeat rate %, p95 ms,     │
+│  "Cache candidate" badge if repeat_rate > 0.5            │
+│  (12 col)                                                │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Key metrics highlighted:** Cache hit rate stat card: background turns red when < 30% (alert threshold from DESIGN-02). The cache candidates table has a "Candidate" badge (blue) when `input_repeat_rate > 0.3 AND execution_count > 50`.
+
+**Components:**
+- `ExecutionCachingDashboard` — top-level
+- `CacheHitAreaChart` — Recharts `AreaChart` with two stacked areas
+- `TopSkillsBarChart` — Recharts `BarChart` (horizontal layout), y-axis renders truncated `skill_id` (last 8 chars of UUID prefixed with "…")
+- `ExecutionLatencyLineChart` — reuses same pattern as `LatencyLineChart` from D1 (Ada should extract shared component)
+- `CacheCandidatesTable` — wraps `DataTable`
+
+---
+
+#### Dashboard 3: Skill Quality
+
+**API endpoint:** `GET /analytics/dashboards/skill-quality`
+
+**Response fields used:**
+- `test_pass_rate` — array of `{ skill_id, passed, failed, pass_rate_pct }`
+- `confidence_over_time` — array of `{ skill_id, hour, avg_confidence, min_confidence }`
+- `failure_rate_per_skill` — array of `{ skill_id, total_executions, failures, failure_rate_pct }`
+- `failure_rate_over_time` — array of `{ hour, failure_rate_pct }`
+- `competing_implementations` — array of `{ intent, competing_skills, num_competitors, best_confidence, worst_confidence }`
+- `confidence_degradation` — array of `{ skill_id, prior_conf, recent_conf, confidence_delta }`
+
+**Grid layout (12 columns):**
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Test pass rate per skill — HorizontalBarChart           │
+│  Sorted ascending (worst first). Red bar if < 50%.       │
+│  (12 col)                                                 │
+├────────────────────────┬─────────────────────────────────┤
+│  Failure rate over time│  Confidence degradation table   │
+│  LineChart             │  Cols: skill_id, prior, recent, │
+│  (6 col)               │  delta (red if < -0.1)          │
+│                        │  (6 col)                        │
+├────────────────────────┴─────────────────────────────────┤
+│  Real-world failure rate per skill — DataTable           │
+│  Cols: skill_id, executions, failures, failure_rate %    │
+│  (12 col)                                                 │
+├──────────────────────────────────────────────────────────┤
+│  Competing implementations — DataTable                   │
+│  Cols: intent (truncated), # competitors,                │
+│  best_confidence, worst_confidence                        │
+│  (12 col)                                                 │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Key metrics highlighted:** Any bar in the test pass rate chart below 50% renders in `#EF5350` (red). Confidence delta in the degradation table renders in red if `delta < -0.1`, amber if `-0.1 <= delta < 0`, green if `delta >= 0`.
+
+**Components:**
+- `SkillQualityDashboard` — top-level
+- `TestPassRateBarChart` — Recharts `BarChart` (horizontal), per-bar color via `Cell` component
+- `FailureRateLineChart` — Recharts `LineChart`
+- `ConfidenceDegradationTable` — wraps `DataTable`, custom cell renderer for delta column
+- `FailureRateTable` — wraps `DataTable`
+- `CompetingImplementationsTable` — wraps `DataTable`
+
+---
+
+#### Dashboard 4: Evolution / Gap
+
+**API endpoint:** `GET /analytics/dashboards/evolution-gap`
+
+**Response fields used:**
+- `unresolved_intents` — array of `{ intent, occurrences, first_seen, last_seen }`
+- `low_confidence_intents` — array of `{ intent, skill_id, occurrences, avg_confidence }`
+- `low_confidence_over_time` — array of `{ hour, low_confidence_count, total_resolves, low_confidence_pct }`
+- `failed_executions` — array of `{ skill_id, total_executions, failures, failure_rate_pct }`
+- `domain_coverage_gaps` — array of `{ domain, unique_intents, unresolved_count, low_confidence_count, execution_failures }`
+- `evolution_pipeline_status` — array of `{ intent, fail_count, first_failure, latest_failure }`
+
+**Grid layout (12 columns):**
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Low-confidence % over time — AreaChart                  │
+│  area: low_confidence_pct, reference line at 20%         │
+│  (12 col)                                                 │
+├───────────────────────────┬──────────────────────────────┤
+│  Domain coverage gaps     │  Unresolved intents table    │
+│  HorizontalBarChart       │  Cols: intent, occurrences,  │
+│  y: domain                │  first_seen, last_seen       │
+│  x: unresolved_count      │  (6 col)                     │
+│  (stacked: unresolved,    │                              │
+│  low_conf, exec_failures) │                              │
+│  (6 col)                  │                              │
+├───────────────────────────┴──────────────────────────────┤
+│  Low-confidence intents — DataTable                      │
+│  Cols: intent, skill_id, occurrences, avg_confidence     │
+│  (12 col)                                                 │
+├──────────────────────────────────────────────────────────┤
+│  Evolution pipeline status — DataTable                   │
+│  Cols: intent, fail_count, first_failure, latest_failure │
+│  (12 col)                                                 │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Key metrics highlighted:** A reference line at 20% on the low-confidence area chart (the alert threshold from DESIGN-02). Domain bars are stacked with three colors: unresolved (#EF5350), low confidence (#FFF176), execution failures (#FF7043). Domains with combined score > 20 receive a "Gap" badge in the chart label.
+
+**Components:**
+- `EvolutionGapDashboard` — top-level
+- `LowConfidenceAreaChart` — Recharts `AreaChart` with `ReferenceLine` at 20%
+- `DomainCoverageBarChart` — Recharts `BarChart` (horizontal, stacked)
+- `UnresolvedIntentsTable` — wraps `DataTable`
+- `LowConfidenceIntentsTable` — wraps `DataTable`
+- `EvolutionPipelineTable` — wraps `DataTable`
+
+---
+
+#### Dashboard 5: Agent Behavior
+
+**API endpoint:** `GET /analytics/dashboards/agent-behavior`
+
+**Response fields used:**
+- `conversion_rate` — `{ total_resolves, total_executes, conversion_rate_pct }`
+- `conversion_over_time` — array of `{ hour, resolves, executes, conversion_rate_pct }`
+- `repeated_resolves` — array of `{ intent, resolve_count, distinct_skills_returned, avg_confidence }`
+- `abandoned_executions` — array of `{ intent, resolve_count }`
+- `chaining_patterns` — array of `{ skill_id, chain_executions, unique_chain_inputs }`
+
+**Grid layout (12 columns):**
+
+```
+┌──────────────┬──────────────┬────────────────────────────┐
+│  StatCard    │  StatCard    │  StatCard                  │
+│  Total       │  Total       │  Conversion Rate %         │
+│  Resolves    │  Executes    │  Alert if < 50%            │
+│  (4 col)     │  (4 col)     │  (4 col)                   │
+├──────────────┴──────────────┴────────────────────────────┤
+│  Conversion over time — ComposedChart                    │
+│  Bar: resolves, Bar: executes, Line: conversion_rate_pct │
+│  (12 col)                                                 │
+├────────────────────────────┬─────────────────────────────┤
+│  Repeated resolves table   │  Abandoned executions table │
+│  Cols: intent, count,      │  Cols: intent,              │
+│  distinct_skills,          │  resolve_count              │
+│  avg_confidence            │  (6 col)                    │
+│  (6 col)                   │                             │
+├────────────────────────────┴─────────────────────────────┤
+│  Skill chaining — HorizontalBarChart                     │
+│  y: skill_id, x: chain_executions                        │
+│  (12 col)                                                 │
+├──────────────────────────────────────────────────────────┤
+│  Usage heatmap — custom CSS grid (7 days x 24 hours)     │
+│  NOTE: This is a placeholder panel. The                  │
+│  agent-behavior endpoint does not currently return       │
+│  hourly heatmap data. Ada must render this panel         │
+│  as "Coming soon" until the backend is extended.         │
+│  (12 col)                                                 │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Key metrics highlighted:** Conversion rate stat card turns red when < 50%. The repeated resolves table highlights rows where `distinct_skills_returned > 1` (agent received different skills across repeated resolves — routing instability signal).
+
+**Components:**
+- `AgentBehaviorDashboard` — top-level
+- `ConversionComposedChart` — Recharts `ComposedChart` with two `Bar`s and one `Line`
+- `RepeatedResolvesTable` — wraps `DataTable`
+- `AbandonedExecutionsTable` — wraps `DataTable`
+- `ChainingBarChart` — Recharts `BarChart` (horizontal)
+- `UsageHeatmapPlaceholder` — static "Coming soon" panel
+
+---
+
+### 5. Data Fetching
+
+**Hook:** Each dashboard has its own `useDashboardData(type, from, to)` hook in `frontend/src/hooks/`. The hook:
+1. Fetches `GET ${API_BASE_URL}/analytics/dashboards/${type}?from=${from}&to=${to}` on mount and when `from`, `to`, or `type` change.
+2. Polls at the dashboard's defined refresh interval using a `useInterval` hook.
+3. Returns `{ data, loading, error, lastFetchedAt, refetch }`.
+4. Does not poll when `document.hidden === true`.
+
+**Shared `useInterval` hook:** `frontend/src/hooks/useInterval.ts` — standard `setInterval` in a `useEffect` with cleanup. Already idiomatic React; do not introduce a library for this.
+
+**Date range state:** Managed in `AnalyticsDashboardView` (the parent component of all 5 dashboards). The active dashboard's `from`/`to` values are passed to `useDashboardData`. When the user changes the date range, `refetch` is called immediately (do not wait for the next poll interval).
+
+**Error handling:** On HTTP error or network failure, the hook sets `error` and clears on the next successful fetch. A `INVALID_DATE_RANGE` (400) error from the backend surfaces as a user-visible inline error under the date range picker: "Invalid date range. 'from' must be earlier than 'to'."
+
+---
+
+### 6. Component Tree
+
+All new components live under `frontend/src/components/dashboards/`. The complete file list Ada must create:
+
+```
+frontend/src/
+  components/
+    dashboards/
+      AnalyticsDashboardView.tsx        # top-level view, contains nav + date picker
+      DashboardNav.tsx                  # 5-button dashboard selector
+      DateRangePicker.tsx               # preset buttons + custom date inputs
+      shared/
+        StatCard.tsx                    # large-number stat card with alert coloring
+        DataTable.tsx                   # sortable table, accepts columns[] + rows[]
+        LoadingState.tsx                # skeleton layout placeholder
+        ErrorBanner.tsx                 # dismissible error message
+        SectionHeader.tsx               # dashboard section label + optional subtitle
+      resolve/
+        ResolvePerformanceDashboard.tsx
+        LatencyLineChart.tsx
+        LatencyHistogram.tsx
+        HighConfidenceLineChart.tsx
+        LowConfidenceTable.tsx
+      caching/
+        ExecutionCachingDashboard.tsx
+        CacheHitAreaChart.tsx
+        TopSkillsBarChart.tsx
+        CacheCandidatesTable.tsx
+      quality/
+        SkillQualityDashboard.tsx
+        TestPassRateBarChart.tsx
+        FailureRateLineChart.tsx
+        ConfidenceDegradationTable.tsx
+        FailureRateTable.tsx
+        CompetingImplementationsTable.tsx
+      gap/
+        EvolutionGapDashboard.tsx
+        LowConfidenceAreaChart.tsx
+        DomainCoverageBarChart.tsx
+        UnresolvedIntentsTable.tsx
+        LowConfidenceIntentsTable.tsx
+        EvolutionPipelineTable.tsx
+      agents/
+        AgentBehaviorDashboard.tsx
+        ConversionComposedChart.tsx
+        RepeatedResolvesTable.tsx
+        AbandonedExecutionsTable.tsx
+        ChainingBarChart.tsx
+        UsageHeatmapPlaceholder.tsx
+  hooks/
+    useDashboardData.ts                 # generic fetch + poll hook
+    useInterval.ts                      # setInterval hook
+  types/
+    dashboards.ts                       # TypeScript types for all 5 dashboard response shapes
+```
+
+**Existing file modified:**
+- `frontend/src/App.tsx` — add `activeView` state, render `TopNav`, conditionally render `MountainView` or `AnalyticsDashboardView`
+
+New component for the header:
+- `frontend/src/components/TopNav.tsx` — the 48px tab bar with Mountain / Analytics tabs
+
+---
+
+### 7. Shared TypeScript Types
+
+Add `frontend/src/types/dashboards.ts` with the following interfaces, derived directly from the endpoint response shapes in `src/analytics/dashboards.ts`:
+
+```typescript
+// Shared
+export interface TimeRange {
+  from: string; // ISO8601
+  to: string;   // ISO8601
+}
+
+// Dashboard 1: Resolve Performance
+export interface LatencyDataPoint {
+  minute: string;
+  p50_ms: number;
+  p95_ms: number;
+}
+
+export interface LatencyBucket {
+  bucket_ms: number;
+  request_count: number;
+}
+
+export interface HighConfidenceDataPoint {
+  minute: string;
+  high_confidence_pct: number;
+}
+
+export interface LowConfidenceResolve {
+  intent: string;
+  confidence: number;
+  skill_id: string;
+  timestamp: string;
+}
+
+export interface ResolvePerformanceData {
+  dashboard: "resolve-performance";
+  time_range: TimeRange;
+  latency_over_time: LatencyDataPoint[];
+  latency_distribution: LatencyBucket[];
+  high_confidence_pct: { high_confidence_pct: number | null };
+  high_confidence_over_time: HighConfidenceDataPoint[];
+  success_rate: { success_rate_pct: number | null };
+  low_confidence_resolves: LowConfidenceResolve[];
+}
+
+// Dashboard 2: Execution & Caching
+export interface MostExecutedSkill {
+  skill_id: string;
+  execution_count: number;
+}
+
+export interface InputRepetitionRow {
+  skill_id: string;
+  total_executions: number;
+  unique_inputs: number;
+  input_repeat_rate: number;
+}
+
+export interface CacheHitDataPoint {
+  minute: string;
+  cache_hits: number;
+  cache_misses: number;
+  hit_rate_pct: number;
+}
+
+export interface ExecutionLatencyDataPoint {
+  minute: string;
+  p50_ms: number;
+  p95_ms: number;
+}
+
+export interface CacheCandidate {
+  skill_id: string;
+  execution_count: number;
+  unique_inputs: number;
+  input_repeat_rate: number;
+  p95_ms: number;
+}
+
+export interface ExecutionCachingData {
+  dashboard: "execution-caching";
+  time_range: TimeRange;
+  most_executed_skills: MostExecutedSkill[];
+  input_repetition_rate: InputRepetitionRow[];
+  cache_hit_over_time: CacheHitDataPoint[];
+  cache_hit_rate_pct: { cache_hit_rate_pct: number | null };
+  execution_latency_over_time: ExecutionLatencyDataPoint[];
+  cache_candidates: CacheCandidate[];
+}
+
+// Dashboard 3: Skill Quality
+export interface TestPassRateRow {
+  skill_id: string;
+  passed: number;
+  failed: number;
+  pass_rate_pct: number;
+}
+
+export interface ConfidenceDataPoint {
+  skill_id: string;
+  hour: string;
+  avg_confidence: number;
+  min_confidence: number;
+}
+
+export interface FailureRateRow {
+  skill_id: string;
+  total_executions: number;
+  failures: number;
+  failure_rate_pct: number;
+}
+
+export interface FailureRateDataPoint {
+  hour: string;
+  failure_rate_pct: number;
+}
+
+export interface CompetingImplementationRow {
+  intent: string;
+  competing_skills: string[];
+  num_competitors: number;
+  best_confidence: number;
+  worst_confidence: number;
+}
+
+export interface ConfidenceDegradationRow {
+  skill_id: string;
+  prior_conf: number;
+  recent_conf: number;
+  confidence_delta: number;
+}
+
+export interface SkillQualityData {
+  dashboard: "skill-quality";
+  time_range: TimeRange;
+  test_pass_rate: TestPassRateRow[];
+  confidence_over_time: ConfidenceDataPoint[];
+  failure_rate_per_skill: FailureRateRow[];
+  failure_rate_over_time: FailureRateDataPoint[];
+  competing_implementations: CompetingImplementationRow[];
+  confidence_degradation: ConfidenceDegradationRow[];
+}
+
+// Dashboard 4: Evolution / Gap
+export interface UnresolvedIntentRow {
+  intent: string;
+  occurrences: number;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface LowConfidenceIntentRow {
+  intent: string;
+  skill_id: string;
+  occurrences: number;
+  avg_confidence: number;
+}
+
+export interface LowConfidenceDataPoint {
+  hour: string;
+  low_confidence_count: number;
+  total_resolves: number;
+  low_confidence_pct: number;
+}
+
+export interface FailedExecutionRow {
+  skill_id: string;
+  total_executions: number;
+  failures: number;
+  failure_rate_pct: number;
+}
+
+export interface DomainCoverageRow {
+  domain: string;
+  unique_intents: number;
+  unresolved_count: number;
+  low_confidence_count: number;
+  execution_failures: number;
+}
+
+export interface EvolutionPipelineRow {
+  intent: string;
+  fail_count: number;
+  first_failure: string;
+  latest_failure: string;
+}
+
+export interface EvolutionGapData {
+  dashboard: "evolution-gap";
+  time_range: TimeRange;
+  unresolved_intents: UnresolvedIntentRow[];
+  low_confidence_intents: LowConfidenceIntentRow[];
+  low_confidence_over_time: LowConfidenceDataPoint[];
+  failed_executions: FailedExecutionRow[];
+  domain_coverage_gaps: DomainCoverageRow[];
+  evolution_pipeline_status: EvolutionPipelineRow[];
+}
+
+// Dashboard 5: Agent Behavior
+export interface ConversionRate {
+  total_resolves: number;
+  total_executes: number;
+  conversion_rate_pct: number;
+}
+
+export interface ConversionDataPoint {
+  hour: string;
+  resolves: number;
+  executes: number;
+  conversion_rate_pct: number;
+}
+
+export interface RepeatedResolveRow {
+  intent: string;
+  resolve_count: number;
+  distinct_skills_returned: number;
+  avg_confidence: number;
+}
+
+export interface AbandonedExecutionRow {
+  intent: string;
+  resolve_count: number;
+}
+
+export interface ChainingPatternRow {
+  skill_id: string;
+  chain_executions: number;
+  unique_chain_inputs: number;
+}
+
+export interface AgentBehaviorData {
+  dashboard: "agent-behavior";
+  time_range: TimeRange;
+  conversion_rate: ConversionRate;
+  conversion_over_time: ConversionDataPoint[];
+  repeated_resolves: RepeatedResolveRow[];
+  abandoned_executions: AbandonedExecutionRow[];
+  chaining_patterns: ChainingPatternRow[];
+}
+
+// Union type for useDashboardData hook
+export type DashboardData =
+  | ResolvePerformanceData
+  | ExecutionCachingData
+  | SkillQualityData
+  | EvolutionGapData
+  | AgentBehaviorData;
+
+export type DashboardType =
+  | "resolve-performance"
+  | "execution-caching"
+  | "skill-quality"
+  | "evolution-gap"
+  | "agent-behavior";
+```
+
+---
+
+### 8. Edge Cases Considered
+
+| Scenario | Behavior |
+|----------|----------|
+| Dashboard endpoint returns empty arrays (no data yet) | Charts render empty state: "No data for this time range." No chart elements shown. |
+| `high_confidence_pct.high_confidence_pct` is `null` | StatCard shows "—" instead of a number. No color alert. |
+| `from` >= `to` in custom date range picker | Client-side validation before fetch: inline error under the inputs, fetch not issued. |
+| Window is hidden (browser tab in background) | `useInterval` paused. On focus restore, `refetch()` called immediately if data is older than 2x the refresh interval. |
+| skill_id values are full UUIDs in bar chart labels | Truncated to last 8 characters prefixed with "…" in chart y-axis. Full UUID shown in tooltip on hover. |
+| `competing_skills` array in competing implementations | Not rendered as a column directly (too wide). Count shown as `num_competitors`. Clicking a row expands to show the full array inline. |
+| API returns 400 INVALID_DATE_RANGE | Error banner shown. Date range picker highlights the offending input in red. |
+| Recharts responsive container in flex layout | All charts wrapped in `<ResponsiveContainer width="100%" height={300}>`. Height is fixed per chart type to avoid zero-height collapse. |
+| First load with no cached data | Skeleton layout shown per section while loading. Skeleton height matches expected chart height to prevent layout shift. |
+
+---
+
+### 9. Acceptance Criteria
+
+Ada must implement and verify all of the following before IMPL-18 can be reviewed:
+
+**Navigation:**
+- [ ] `#mountain` hash shows the existing mountain visualization. `#analytics` shows the analytics view. Browser back/forward navigates between them.
+- [ ] The 48px `TopNav` renders above the mountain canvas without overlapping it.
+- [ ] The mountain canvas area shrinks by 48px to accommodate the header — no content is clipped.
+
+**Analytics view:**
+- [ ] Dashboard nav renders 5 buttons. Clicking each loads the correct dashboard.
+- [ ] Date range presets (Last 1h, 24h, 7d, 30d) update `from`/`to` and trigger an immediate refetch.
+- [ ] Custom date range picker accepts ISO8601 datetime-local input values.
+- [ ] "Last refreshed" timestamp updates after each successful fetch.
+- [ ] "Refresh now" button triggers an immediate refetch regardless of poll interval.
+
+**Data fetching:**
+- [ ] `useDashboardData` issues `GET /analytics/dashboards/:type?from=...&to=...` with correct query params.
+- [ ] Polling stops when `document.hidden === true`. Resumes on focus.
+- [ ] Loading skeleton shown on initial load. Not shown on background refresh.
+- [ ] Error banner shown on network failure. Auto-retries after the poll interval. Dismissed on successful fetch.
+- [ ] `INVALID_DATE_RANGE` (400) surfaces as a date range picker error, not a generic error banner.
+
+**Dashboard 1 — Resolve Performance:**
+- [ ] Latency line chart renders p50 and p95 lines with distinct colors and a legend.
+- [ ] p95 StatCard turns red when value > 200.
+- [ ] High-confidence StatCard turns amber when value < 80.
+- [ ] Low-confidence table shows the 100 most recent low-confidence resolves, newest first.
+
+**Dashboard 2 — Execution & Caching:**
+- [ ] Cache hit rate StatCard turns red when value < 30.
+- [ ] Top 20 skills bar chart renders with truncated skill_id labels. Full UUID shown in tooltip.
+- [ ] Cache candidates table shows "Candidate" badge when `input_repeat_rate > 0.3 AND execution_count > 50`.
+- [ ] Stacked area chart shows cache hits and misses in distinct colors with a legend.
+
+**Dashboard 3 — Skill Quality:**
+- [ ] Test pass rate bar chart sorts ascending (worst skill first).
+- [ ] Any bar with pass_rate_pct < 50 renders in red (`#EF5350`).
+- [ ] Confidence delta column in degradation table: red if < -0.1, amber if -0.1 to 0, green if >= 0.
+- [ ] Competing implementations table: clicking a row expands to show the `competing_skills` array.
+
+**Dashboard 4 — Evolution / Gap:**
+- [ ] Reference line at 20% on the low-confidence area chart.
+- [ ] Domain coverage bar chart uses three stacked colors: unresolved, low-confidence, execution failures.
+- [ ] "Gap" badge on domains where combined count > 20.
+
+**Dashboard 5 — Agent Behavior:**
+- [ ] Conversion rate StatCard turns red when value < 50.
+- [ ] Repeated resolves table highlights rows where `distinct_skills_returned > 1`.
+- [ ] Usage heatmap renders "Coming soon" placeholder — no broken chart.
+- [ ] Conversion composed chart shows bars for resolves/executes and a line for conversion rate.
+
+**Types:**
+- [ ] `frontend/src/types/dashboards.ts` exists and all types match the endpoint response shapes in `src/analytics/dashboards.ts`.
+- [ ] `npx tsc --noEmit` in `frontend/` exits 0 after all changes.
+
+**Tests:**
+- [ ] Unit tests for `useDashboardData`: verifies fetch URL construction, polling behavior, error state, and document.hidden pause. Minimum 8 test cases.
+- [ ] Unit tests for `DateRangePicker`: verifies preset buttons produce correct `from`/`to` values. Minimum 5 test cases.
+- [ ] Unit tests for `StatCard`: verifies alert color thresholds. Minimum 3 test cases per threshold type.
+- [ ] `npx vitest run` in `frontend/` exits 0.
+
+**Recharts dependency:**
+- [ ] `recharts` is added to `frontend/package.json` `dependencies`.
+- [ ] `npm install` runs without errors.
+
+---
+
+### Open Questions
+
+1. **Skill name resolution in charts:** Bar charts use `skill_id` (UUID) as labels because the dashboard endpoints return only `skill_id`. A `GET /skills?ids=...` batch endpoint does not currently exist. Options: (a) accept UUID labels with truncation and tooltips, (b) add a batch skill name resolver as a follow-up IMPL. Decision: accept UUID labels for IMPL-18; batch resolver deferred.
+
+2. **Dashboard-specific refresh for quality/gap (1h):** The 1-hour refresh on Dashboards 3 and 4 means they may show stale data when first opened. Should these dashboards display a "Data as of X" warning when the last fetch is > 5 minutes old? Decision: defer to Ada's implementation judgment — a "last refreshed" label per dashboard is sufficient.
+
+3. **Mobile breakpoint:** The grid layout assumes a minimum viewport of 1024px. Below this, charts will be too narrow to read. Decision: analytics dashboards are desktop-only for IMPL-18. No responsive breakpoints required.
+
+---
+
+*Last updated: 2026-03-23 — DESIGN-07 by Amber*

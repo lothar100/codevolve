@@ -2,9 +2,12 @@
   "mcpServers": {
     "codevolve": {
       "command": "node",
-      "args": ["dist/mcp/index.js"],
+      "args": ["dist/mcp/server.js"],
       "env": {
-        "CODEVOLVE_API_URL": "https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1"
+        "CODEVOLVE_API_URL": "https://your-api-gateway-url.execute-api.us-east-2.amazonaws.com/prod",
+        "CODEVOLVE_API_KEY": "",
+        "CODEVOLVE_AGENT_ID": "claude-code",
+        "CODEVOLVE_TIMEOUT_MS": "35000"
       }
     }
   }

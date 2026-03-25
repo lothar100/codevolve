@@ -465,7 +465,14 @@ export class CodevolveStack extends cdk.Stack {
         timeout: cdk.Duration.seconds(60),
         environment: {
           ...lambdaEnvironment,
-          CLICKHOUSE_SECRET_ARN: clickhouseSecret.secretArn,
+          // CRITICAL fix (REVIEW-08-IMPL08-RECHECK): clickhouseClient.ts reads these
+          // 4 env vars directly. Secret fields: url, username, password, database.
+          // unsafeUnwrap() is acceptable here — these are injected as Lambda env vars
+          // (CloudFormation SecureString resolution); rotate via secret rotation.
+          CLICKHOUSE_URL: clickhouseSecret.secretValueFromJson("url").unsafeUnwrap(),
+          CLICKHOUSE_USER: clickhouseSecret.secretValueFromJson("username").unsafeUnwrap(),
+          CLICKHOUSE_PASSWORD: clickhouseSecret.secretValueFromJson("password").unsafeUnwrap(),
+          CLICKHOUSE_DATABASE: clickhouseSecret.secretValueFromJson("database").unsafeUnwrap(),
         },
       },
     );
