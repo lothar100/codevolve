@@ -17,6 +17,8 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as events from "aws-cdk-lib/aws-events";
+import * as eventsTargets from "aws-cdk-lib/aws-events-targets";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -174,6 +176,26 @@ export class CodevolveStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    // 7. codevolve-gap-log (Decision Engine Rule 3 — ARCH-07 §4.3.1)
+    // Tracks unresolved resolve attempts for gap detection.
+    // Written by /resolve Lambda, read by Decision Engine.
+    const gapLogTable = new dynamodb.Table(this, "GapLogTable", {
+      tableName: "codevolve-gap-log",
+      partitionKey: { name: "intent_hash", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: "ttl",
+    });
+
+    // 8. codevolve-config (Decision Engine archive gate + feature flags — ARCH-07 §8.2)
+    // Key–value configuration store for runtime Decision Engine parameters.
+    const configTable = new dynamodb.Table(this, "ConfigTable", {
+      tableName: "codevolve-config",
+      partitionKey: { name: "config_key", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
     // -----------------------------------------------------------------------
     // Cognito — Community User Pool (IMPL-16)
     // -----------------------------------------------------------------------
@@ -206,7 +228,6 @@ export class CodevolveStack extends cdk.Stack {
         userSrp: true,
       },
     });
-
     // -----------------------------------------------------------------------
     // Kinesis Data Stream
     // -----------------------------------------------------------------------
@@ -584,6 +605,51 @@ export class CodevolveStack extends cdk.Stack {
     });
 
     // -----------------------------------------------------------------------
+    // Decision Engine Lambda (IMPL-10 — ARCH-07)
+    // -----------------------------------------------------------------------
+
+    // DecisionEngineFn — scheduled Lambda that evaluates four rules:
+    //   Rule 1: auto-cache trigger
+    //   Rule 2: optimization flag
+    //   Rule 3: gap detection → evolveGapQueue
+    //   Rule 4: archive evaluation → archiveQueue
+    //
+    // reservedConcurrentExecutions: 1 prevents overlapping invocations.
+    // Timeout 240s (4 min) gives a 1-min gap before the next 5-min schedule.
+    const decisionEngineFn = new NodejsFunction(this, "DecisionEngineFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-decision-engine",
+      entry: path.join(__dirname, "../src/decision-engine/handler.ts"),
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(240),
+      reservedConcurrentExecutions: 1,
+      environment: {
+        ...lambdaEnvironment,
+        SKILLS_TABLE: this.skillsTable.tableName,
+        GAP_LOG_TABLE: gapLogTable.tableName,
+        CONFIG_TABLE: configTable.tableName,
+        GAP_QUEUE_URL: evolveGapQueue.queueUrl,
+        ARCHIVE_QUEUE_URL: archiveQueue.queueUrl,
+      },
+    });
+
+    // EventBridge rule: fire every 5 minutes (ARCH-07 §2.1)
+    const decisionEngineSchedule = new events.Rule(
+      this,
+      "DecisionEngineSchedule",
+      {
+        ruleName: "codevolve-decision-engine-schedule",
+        schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      },
+    );
+
+    decisionEngineSchedule.addTarget(
+      new eventsTargets.LambdaFunction(decisionEngineFn, {
+        retryAttempts: 2,
+      }),
+    );
+
+    // -----------------------------------------------------------------------
     // API Gateway
     // -----------------------------------------------------------------------
 
@@ -904,6 +970,14 @@ export class CodevolveStack extends cdk.Stack {
     // Trusted Mountain function permissions (IMPL-16)
     this.trustedMountainTable.grantReadWriteData(trustedMountainFn);
 
+    // Decision Engine function permissions (IMPL-10 — ARCH-07 §6.5)
+    this.skillsTable.grantReadWriteData(decisionEngineFn);
+    gapLogTable.grantReadWriteData(decisionEngineFn);
+    configTable.grantReadWriteData(decisionEngineFn);
+    this.problemsTable.grantReadWriteData(decisionEngineFn);
+    this.eventsStream.grantWrite(decisionEngineFn);
+    archiveQueue.grantSendMessages(decisionEngineFn);
+    evolveGapQueue.grantSendMessages(decisionEngineFn);
 
     // -----------------------------------------------------------------------
     // Outputs

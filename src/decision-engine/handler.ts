@@ -1,29 +1,26 @@
-import { Handler } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { SQSClient } from '@aws-sdk/client-sqs';
-import { KinesisClient } from '@aws-sdk/client-kinesis';
-import { evaluateAutoCache } from './rules/autoCache.js';
-import { evaluateOptimizationFlag } from './rules/optimizationFlag.js';
-import { evaluateGapDetection } from './rules/gapDetection.js';
-import { evaluateArchive } from './rules/archiveEvaluation.js';
+/**
+ * Decision Engine Lambda handler.
+ *
+ * Scheduled via EventBridge (rate: 5 minutes). Evaluates four rules in
+ * sequence: auto-cache trigger, optimization flag, gap detection, and archive
+ * evaluation.
+ *
+ * Rules are implemented in IMPL-10 sub-tasks B–E:
+ *   - Rule 1 (auto-cache): src/decision-engine/rules/autoCache.ts
+ *   - Rule 2 (optimization flag): src/decision-engine/rules/optimizationFlag.ts
+ *   - Rule 3 (gap detection): src/decision-engine/rules/gapDetection.ts
+ *   - Rule 4 (archive evaluation): src/decision-engine/rules/archiveEvaluation.ts
+ *
+ * This stub logs the invocation and returns without side effects.
+ * Populated in IMPL-10 sub-tasks B–E.
+ *
+ * Architecture: ARCH-07 / docs/decision-engine.md
+ * CDK construct: DecisionEngineFn (infra/codevolve-stack.ts)
+ */
 
-const dynamoClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const sqsClient = new SQSClient({});
-const kinesisClient = new KinesisClient({});
+import { ScheduledEvent } from "aws-lambda";
 
-export const handler: Handler = async (event) => {
-  console.log('Decision Engine invoked', JSON.stringify(event));
-
-  // Rule 1: Auto-Cache Trigger
-  await evaluateAutoCache(dynamoClient);
-
-  // Rule 2: Optimization Flag
-  await evaluateOptimizationFlag(dynamoClient);
-
-  // Rule 3: Gap Detection → GapQueue
-  await evaluateGapDetection(dynamoClient, sqsClient);
-
-  // Rule 4: Archive Evaluation → ArchiveQueue
-  await evaluateArchive(dynamoClient, sqsClient, kinesisClient);
+export const handler = async (event: ScheduledEvent): Promise<void> => {
+  console.log("[decision-engine] invoked", JSON.stringify(event));
+  // Rule implementations will be added in IMPL-10 sub-tasks B–E.
 };
