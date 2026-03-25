@@ -1,36 +1,34 @@
-/**
- * Resource handlers for the codeVolve MCP server.
- *
- * Resources:
- *   codevolve://skills/{skill_id}     → GET /skills/:id
- *   codevolve://problems/{problem_id} → GET /problems/:id
- */
+import type { CodevolveClient } from "./client.js";
 
-import { CodevolveClient } from "./client.js";
+// ---------------------------------------------------------------------------
+// Resource handlers for codeVolve MCP server
+//
+// Three resources:
+//   codevolve://skills/{skill_id}        → GET /skills/:id
+//   codevolve://problems/{problem_id}    → GET /problems/:id
+//   codevolve://skills                   → GET /skills (with query params)
+// ---------------------------------------------------------------------------
 
-export interface ResourceContent {
+export type ResourceContent = {
   uri: string;
   mimeType: string;
   text: string;
-}
+};
 
-/**
- * Parse a codevolve:// URI and extract the entity ID.
- * URI format: codevolve://<entity>/<id>
- * e.g. codevolve://skills/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
- */
-function extractIdFromUri(uri: string): string {
-  const url = new URL(uri);
-  // pathname after host: for codevolve://skills/123, host=skills pathname=/123
-  const rawPath = url.pathname.replace(/^\/+/, "");
-  return rawPath;
+function parseUri(uri: string): URL {
+  try {
+    return new URL(uri);
+  } catch {
+    throw new Error(`Invalid resource URI: ${uri}`);
+  }
 }
 
 export async function readSkillResource(
   client: CodevolveClient,
   uri: string
 ): Promise<ResourceContent> {
-  const skillId = extractIdFromUri(uri);
+  const url = parseUri(uri);
+  const skillId = url.pathname.replace(/^\//, "");
   const result = await client.request("GET", `/skills/${skillId}`);
   return {
     uri,
@@ -43,7 +41,8 @@ export async function readProblemResource(
   client: CodevolveClient,
   uri: string
 ): Promise<ResourceContent> {
-  const problemId = extractIdFromUri(uri);
+  const url = parseUri(uri);
+  const problemId = url.pathname.replace(/^\//, "");
   const result = await client.request("GET", `/problems/${problemId}`);
   return {
     uri,
@@ -52,22 +51,16 @@ export async function readProblemResource(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Resource definitions (MCP metadata)
-// ---------------------------------------------------------------------------
-
-export const RESOURCE_DEFINITIONS = [
-  {
-    uriTemplate: "codevolve://skills/{skill_id}",
-    name: "Skill",
-    description:
-      "Full details of a codeVolve skill including implementation, tests, examples, and confidence metrics.",
+export async function readSkillsListResource(
+  client: CodevolveClient,
+  uri: string
+): Promise<ResourceContent> {
+  const url = parseUri(uri);
+  const qs = url.search;
+  const result = await client.request("GET", `/skills${qs}`);
+  return {
+    uri,
     mimeType: "application/json",
-  },
-  {
-    uriTemplate: "codevolve://problems/{problem_id}",
-    name: "Problem",
-    description: "A codeVolve problem with all associated skill implementations.",
-    mimeType: "application/json",
-  },
-] as const;
+    text: JSON.stringify(result, null, 2),
+  };
+}

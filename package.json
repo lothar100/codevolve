@@ -1,7 +1,9 @@
 {
   "name": "codevolve",
   "version": "0.1.0",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "description": "AI-native registry of programming problems and solutions",
   "private": true,
   "scripts": {
@@ -16,15 +18,16 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@aws-sdk/client-dynamodb": "^3.700.0",
-    "@aws-sdk/lib-dynamodb": "^3.700.0",
-    "@aws-sdk/client-kinesis": "^3.700.0",
     "@aws-sdk/client-bedrock-runtime": "^3.700.0",
-    "@aws-sdk/client-lambda": "^3.700.0",
     "@aws-sdk/client-cloudfront": "^3.700.0",
-    "@aws-sdk/client-sqs": "^3.700.0",
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/client-kinesis": "^3.700.0",
+    "@aws-sdk/client-lambda": "^3.700.0",
     "@aws-sdk/client-secrets-manager": "^3.1015.0",
+    "@aws-sdk/client-sqs": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
     "@clickhouse/client": "^1.18.2",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "aws-cdk-lib": "^2.170.0",
     "constructs": "^10.4.2",
     "uuid": "^11.0.0",
