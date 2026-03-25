@@ -17,8 +17,6 @@ import type { APIGatewayProxyEvent } from "aws-lambda";
 // Mock the ClickHouse client
 // ---------------------------------------------------------------------------
 
-const mockQueryFn = jest.fn();
-
 jest.mock("../../../src/analytics/clickhouseClient.js", () => ({
   getClickHouseClient: jest.fn().mockReturnValue({
     query: jest.fn().mockImplementation(() =>

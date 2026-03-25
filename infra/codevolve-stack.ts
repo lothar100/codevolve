@@ -390,7 +390,83 @@ export class CodevolveStack extends cdk.Stack {
     });
 
     // GET /analytics/dashboards/:type
-    // TODO: IMPL-09 — implement dashboard handler
+    // TODO: IMPL-09 — wire up dashboards Lambda once implemented
+
+    // Evolve: POST /evolve
+    // TODO: IMPL-12 — implement evolve handler
+
+    // -----------------------------------------------------------------------
+    // Analytics Consumer (IMPL-08-B)
+    // -----------------------------------------------------------------------
+
+    // Import ClickHouse credentials secret (managed outside CDK).
+    // The secret must contain JSON with keys: url, username, password, database.
+    const clickhouseSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "ClickHouseSecret",
+      "codevolve/clickhouse-credentials",
+    );
+
+    // DLQ for failed analytics consumer batches
+    const analyticsConsumerDlq = new sqs.Queue(this, "AnalyticsConsumerDlq", {
+      queueName: "codevolve-analytics-consumer-dlq",
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    // Analytics consumer Lambda — reads from Kinesis, writes to ClickHouse.
+    // CRITICAL fix (REVIEW-08-IMPL08-RECHECK): inject the four env vars that
+    // clickhouseClient.ts reads at runtime. The old CLICKHOUSE_SECRET_ARN env
+    // var has been removed — it was dead after the client was rewritten to use
+    // direct env vars. Secret fields are resolved at CloudFormation deploy time
+    // via secretValueFromJson / unsafeUnwrap (acceptable for Lambda env vars;
+    // rotate via Secrets Manager rotation rather than re-deploying).
+    const analyticsConsumerFn = new NodejsFunction(
+      this,
+      "AnalyticsConsumerFn",
+      {
+        ...commonNodejsProps,
+        functionName: "codevolve-analytics-consumer",
+        entry: path.join(__dirname, "../src/analytics/consumer.ts"),
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(60), // W-01 fix: spec §3.2 requires 60s, not 300s
+        environment: {
+          ...lambdaEnvironment,
+          // Four env vars read by clickhouseClient.ts. Values are resolved at
+          // synth/deploy time from the Secrets Manager secret JSON fields.
+          CLICKHOUSE_URL: clickhouseSecret.secretValueFromJson("url").unsafeUnwrap(),
+          CLICKHOUSE_USER: clickhouseSecret.secretValueFromJson("username").unsafeUnwrap(),
+          CLICKHOUSE_PASSWORD: clickhouseSecret.secretValueFromJson("password").unsafeUnwrap(),
+          CLICKHOUSE_DATABASE: clickhouseSecret.secretValueFromJson("database").unsafeUnwrap(),
+        },
+      },
+    );
+
+    // Wire Kinesis stream to analytics consumer
+    analyticsConsumerFn.addEventSource(
+      new lambdaEventSources.KinesisEventSource(this.eventsStream, {
+        batchSize: 100,
+        maxBatchingWindow: cdk.Duration.seconds(5),
+        reportBatchItemFailures: true,
+        retryAttempts: 3,
+        onFailure: new lambdaEventSources.SqsDlq(analyticsConsumerDlq),
+        startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+        bisectBatchOnError: true,
+      }),
+    );
+
+    // CloudWatch alarm: sustained backlog in analytics DLQ.
+    // W-02 fix: metricApproximateNumberOfMessagesVisible stays elevated while
+    // unprocessed messages remain; metricNumberOfMessagesSent would reset each period.
+    new cloudwatch.Alarm(this, "AnalyticsConsumerDlqAlarm", {
+      alarmName: "codevolve-analytics-consumer-dlq-nonempty",
+      metric: analyticsConsumerDlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    });
 
     // -----------------------------------------------------------------------
     // SQS Queues (IMPL-04 — Archive Mechanism, IMPL-12 — Evolve Gap Queue)
@@ -479,75 +555,6 @@ export class CodevolveStack extends cdk.Stack {
         reportBatchItemFailures: true,
       }),
     );
-
-    // -----------------------------------------------------------------------
-    // Analytics Consumer (IMPL-08-B)
-    // -----------------------------------------------------------------------
-
-    // Import ClickHouse credentials secret (managed outside CDK)
-    const clickhouseSecret = secretsmanager.Secret.fromSecretNameV2(
-      this,
-      "ClickHouseSecret",
-      "codevolve/clickhouse-credentials",
-    );
-
-    // DLQ for failed analytics consumer batches
-    const analyticsConsumerDlq = new sqs.Queue(this, "AnalyticsConsumerDlq", {
-      queueName: "codevolve-analytics-consumer-dlq",
-      retentionPeriod: cdk.Duration.days(14),
-    });
-
-    // Analytics consumer Lambda — reads from Kinesis, writes to ClickHouse
-    // W-01 fix: timeout is 60s (spec: docs/analytics-consumer.md §3.2), not 300s
-    const analyticsConsumerFn = new NodejsFunction(
-      this,
-      "AnalyticsConsumerFn",
-      {
-        ...commonNodejsProps,
-        functionName: "codevolve-analytics-consumer",
-        entry: path.join(__dirname, "../src/analytics/consumer.ts"),
-        memorySize: 512,
-        timeout: cdk.Duration.seconds(60),
-        environment: {
-          ...lambdaEnvironment,
-          // CRITICAL fix (REVIEW-08-IMPL08-RECHECK): clickhouseClient.ts reads these
-          // 4 env vars directly. Secret fields: url, username, password, database.
-          // unsafeUnwrap() is acceptable here — these are injected as Lambda env vars
-          // (CloudFormation SecureString resolution); rotate via secret rotation.
-          CLICKHOUSE_URL: clickhouseSecret.secretValueFromJson("url").unsafeUnwrap(),
-          CLICKHOUSE_USER: clickhouseSecret.secretValueFromJson("username").unsafeUnwrap(),
-          CLICKHOUSE_PASSWORD: clickhouseSecret.secretValueFromJson("password").unsafeUnwrap(),
-          CLICKHOUSE_DATABASE: clickhouseSecret.secretValueFromJson("database").unsafeUnwrap(),
-        },
-      },
-    );
-
-    // Wire Kinesis stream to analytics consumer
-    analyticsConsumerFn.addEventSource(
-      new lambdaEventSources.KinesisEventSource(this.eventsStream, {
-        batchSize: 100,
-        maxBatchingWindow: cdk.Duration.seconds(5),
-        reportBatchItemFailures: true,
-        retryAttempts: 3,
-        onFailure: new lambdaEventSources.SqsDlq(analyticsConsumerDlq),
-        startingPosition: lambda.StartingPosition.TRIM_HORIZON,
-        bisectBatchOnError: true,
-      }),
-    );
-
-    // CloudWatch alarm: sustained backlog in analytics DLQ
-    // W-02 fix: metricApproximateNumberOfMessagesVisible stays elevated while
-    // unprocessed messages remain; metricNumberOfMessagesSent would reset each period.
-    new cloudwatch.Alarm(this, "AnalyticsConsumerDlqAlarm", {
-      alarmName: "codevolve-analytics-consumer-dlq-nonempty",
-      metric: analyticsConsumerDlq.metricApproximateNumberOfMessagesVisible({
-        period: cdk.Duration.minutes(1),
-      }),
-      threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-    });
 
     // Auth: custom JWT authorizer Lambda (IMPL-16 — backup for non-APIGW contexts)
     const authorizerFn = new NodejsFunction(this, "AuthorizerFn", {
@@ -896,6 +903,7 @@ export class CodevolveStack extends cdk.Stack {
 
     // Trusted Mountain function permissions (IMPL-16)
     this.trustedMountainTable.grantReadWriteData(trustedMountainFn);
+
 
     // -----------------------------------------------------------------------
     // Outputs

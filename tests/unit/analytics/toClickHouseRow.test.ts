@@ -1,4 +1,4 @@
-import { toClickHouseRow } from "../../../src/analytics/toClickHouseRow.js";
+import { toClickHouseRow, CONFIDENCE_NULL_SENTINEL } from "../../../src/analytics/toClickHouseRow.js";
 import type { AnalyticsEvent } from "../../../src/shared/types.js";
 
 const FULL_EVENT: AnalyticsEvent = {
@@ -40,11 +40,22 @@ describe("toClickHouseRow", () => {
     expect(row.skill_id).toBe("");
   });
 
-  it("keeps confidence as null when null on the event", () => {
+  // W-01 fix: confidence null must produce -1.0 sentinel (Float64 non-nullable column),
+  // NOT TypeScript null. Inserting null into a non-nullable Float64 column causes
+  // CANNOT_PARSE_INPUT_EXCEPTION in ClickHouse.
+  it("maps null confidence to -1.0 sentinel (W-01 fix — Float64 column is non-nullable)", () => {
     const event: AnalyticsEvent = { ...FULL_EVENT, confidence: null };
     const row = toClickHouseRow(event, EVENT_ID);
 
-    expect(row.confidence).toBeNull();
+    expect(row.confidence).toBe(-1.0);
+    expect(row.confidence).toBe(CONFIDENCE_NULL_SENTINEL);
+  });
+
+  it("preserves a real confidence value unchanged", () => {
+    const event: AnalyticsEvent = { ...FULL_EVENT, confidence: 0.72 };
+    const row = toClickHouseRow(event, EVENT_ID);
+
+    expect(row.confidence).toBe(0.72);
   });
 
   it("maps cache_hit: true to 1", () => {
@@ -87,5 +98,9 @@ describe("toClickHouseRow", () => {
     const row = toClickHouseRow(event, EVENT_ID);
 
     expect(row.input_hash).toBe("");
+  });
+
+  it("CONFIDENCE_NULL_SENTINEL is -1.0", () => {
+    expect(CONFIDENCE_NULL_SENTINEL).toBe(-1.0);
   });
 });
