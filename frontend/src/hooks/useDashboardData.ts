@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import type { DashboardType, DashboardData } from "../types/dashboards";
 import { useInterval } from "./useInterval";
 
-const DEPLOYED_API_URL = "https://hra190v7x6.execute-api.us-east-2.amazonaws.com/v1";
+const DEPLOYED_API_URL = "https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const _meta = import.meta as any;
 const API_BASE_URL: string =

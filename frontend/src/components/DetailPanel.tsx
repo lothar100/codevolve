@@ -14,6 +14,7 @@ interface DetailPanelProps {
   problem: MountainProblem;
   apiBaseUrl: string;
   onClose: () => void;
+  onViewFullProblem: () => void;
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -143,7 +144,7 @@ const STATUS_TEXT: Record<string, string> = {
   optimized: "#6ee7b7",
 };
 
-export function DetailPanel({ problem, apiBaseUrl, onClose }: DetailPanelProps) {
+export function DetailPanel({ problem, apiBaseUrl: _apiBaseUrl, onClose, onViewFullProblem }: DetailPanelProps) {
   const dist = problem.skill_status_distribution;
   const total =
     dist.unsolved + dist.partial + dist.verified + dist.optimized;
@@ -284,14 +285,12 @@ export function DetailPanel({ problem, apiBaseUrl, onClose }: DetailPanelProps) 
       )}
 
       {/* View full problem */}
-      <a
-        href={`${apiBaseUrl}/problems/${problem.problem_id}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={styles.viewLink}
+      <button
+        onClick={onViewFullProblem}
+        style={{ ...styles.viewLink, border: "none", cursor: "pointer" }}
       >
         View full problem
-      </a>
+      </button>
     </div>
   );
 }

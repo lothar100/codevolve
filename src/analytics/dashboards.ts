@@ -19,10 +19,12 @@
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { z } from "zod";
+import { ScanCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { getClickHouseClient } from "./clickhouseClient.js";
 import { success, error } from "../shared/response.js";
 import { validate } from "../shared/validation.js";
 import { DashboardTypeSchema } from "../shared/validation.js";
+import { docClient, PROBLEMS_TABLE, SKILLS_TABLE } from "../shared/dynamo.js";
 
 // ---------------------------------------------------------------------------
 // ISO8601 date range validation (W-04)
@@ -119,6 +121,11 @@ export async function handler(
 
     const { from, to } = dateRange;
 
+    // Mountain uses DynamoDB, not ClickHouse — route before date range validation
+    if (type === "mountain") {
+      return await mountainDashboard(event.queryStringParameters ?? {});
+    }
+
     // Route to the appropriate dashboard query
     switch (type) {
       case "resolve-performance":
@@ -171,7 +178,7 @@ async function resolvePerformanceDashboard(
         quantile(0.95)(latency_ms) AS p95_ms
     FROM analytics_events
     WHERE event_type = 'resolve'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY minute
     ORDER BY minute
   `);
@@ -183,7 +190,7 @@ async function resolvePerformanceDashboard(
         count() AS request_count
     FROM analytics_events
     WHERE event_type = 'resolve'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY bucket_ms
     ORDER BY bucket_ms
   `);
@@ -194,7 +201,7 @@ async function resolvePerformanceDashboard(
         countIf(confidence > 0.9) * 100.0 / count() AS high_confidence_pct
     FROM analytics_events
     WHERE event_type = 'resolve'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
   `);
 
   // 1c: High-confidence over time
@@ -204,7 +211,7 @@ async function resolvePerformanceDashboard(
         countIf(confidence > 0.9) * 100.0 / count() AS high_confidence_pct
     FROM analytics_events
     WHERE event_type = 'resolve'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY minute
     ORDER BY minute
   `);
@@ -215,7 +222,7 @@ async function resolvePerformanceDashboard(
         countIf(success = 1) * 100.0 / count() AS success_rate_pct
     FROM analytics_events
     WHERE event_type = 'resolve'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
   `);
 
   // 1e: Low-confidence resolves (intent + confidence table)
@@ -228,7 +235,7 @@ async function resolvePerformanceDashboard(
     FROM analytics_events
     WHERE event_type = 'resolve'
       AND confidence < 0.7
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     ORDER BY timestamp DESC
     LIMIT 100
   `);
@@ -237,10 +244,10 @@ async function resolvePerformanceDashboard(
     dashboard: "resolve-performance",
     time_range: { from, to },
     latency_over_time: latencyOverTime,
-    latency_distribution: latencyDistribution,
-    high_confidence_pct: highConfidenceAgg ?? { high_confidence_pct: null },
+    latency_histogram: latencyDistribution,
+    high_confidence_pct: (highConfidenceAgg as Record<string, number> | undefined)?.high_confidence_pct ?? 0,
     high_confidence_over_time: highConfidenceOverTime,
-    success_rate: successRate ?? { success_rate_pct: null },
+    success_rate_pct: (successRate as Record<string, number> | undefined)?.success_rate_pct ?? 0,
     low_confidence_resolves: lowConfidenceResolves,
   });
 }
@@ -260,7 +267,7 @@ async function executionCachingDashboard(
         count() AS execution_count
     FROM analytics_events
     WHERE event_type = 'execute'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id
     ORDER BY execution_count DESC
     LIMIT 20
@@ -275,7 +282,7 @@ async function executionCachingDashboard(
         1.0 - (uniq(input_hash) / count()) AS input_repeat_rate
     FROM analytics_events
     WHERE event_type = 'execute'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id
     HAVING total_executions >= 10
     ORDER BY input_repeat_rate DESC
@@ -290,7 +297,7 @@ async function executionCachingDashboard(
         countIf(cache_hit = 1) * 100.0 / count() AS hit_rate_pct
     FROM analytics_events
     WHERE event_type = 'execute'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY minute
     ORDER BY minute
   `);
@@ -301,7 +308,7 @@ async function executionCachingDashboard(
         countIf(cache_hit = 1) * 100.0 / count() AS cache_hit_rate_pct
     FROM analytics_events
     WHERE event_type = 'execute'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
   `);
 
   // 2e: Global execution latency p50/p95 over time
@@ -312,7 +319,7 @@ async function executionCachingDashboard(
         quantile(0.95)(latency_ms) AS p95_ms
     FROM analytics_events
     WHERE event_type = 'execute'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY minute
     ORDER BY minute
   `);
@@ -327,7 +334,7 @@ async function executionCachingDashboard(
         quantile(0.95)(latency_ms) AS p95_ms
     FROM analytics_events
     WHERE event_type = 'execute'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id
     HAVING execution_count > 50
        AND input_repeat_rate > 0.3
@@ -338,10 +345,10 @@ async function executionCachingDashboard(
   return success(200, {
     dashboard: "execution-caching",
     time_range: { from, to },
-    most_executed_skills: mostExecuted,
-    input_repetition_rate: inputRepetitionRate,
-    cache_hit_over_time: cacheHitOverTime,
-    cache_hit_rate_pct: cacheHitAgg ?? { cache_hit_rate_pct: null },
+    top_skills: mostExecuted,
+    repetition_rates: inputRepetitionRate,
+    cache_rate_over_time: cacheHitOverTime,
+    cache_hit_rate_pct: (cacheHitAgg as Record<string, number> | undefined)?.cache_hit_rate_pct ?? 0,
     execution_latency_over_time: executionLatencyOverTime,
     cache_candidates: cacheCandidates,
   });
@@ -364,7 +371,7 @@ async function skillQualityDashboard(
         countIf(success = 1) * 100.0 / count() AS pass_rate_pct
     FROM analytics_events
     WHERE event_type = 'validate'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id
     ORDER BY pass_rate_pct ASC
   `);
@@ -378,7 +385,7 @@ async function skillQualityDashboard(
         min(confidence) AS min_confidence
     FROM analytics_events
     WHERE event_type = 'validate'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id, hour
     ORDER BY hour
   `);
@@ -392,7 +399,7 @@ async function skillQualityDashboard(
         countIf(success = 0) * 100.0 / count() AS failure_rate_pct
     FROM analytics_events
     WHERE event_type = 'execute'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id
     HAVING total_executions >= 5
     ORDER BY failure_rate_pct DESC
@@ -405,7 +412,7 @@ async function skillQualityDashboard(
         countIf(success = 0) * 100.0 / count() AS failure_rate_pct
     FROM analytics_events
     WHERE event_type = 'execute'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY hour
     ORDER BY hour
   `);
@@ -421,7 +428,7 @@ async function skillQualityDashboard(
     FROM analytics_events
     WHERE event_type = 'resolve'
       AND success = 1
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY intent
     HAVING num_competitors > 1
     ORDER BY num_competitors DESC
@@ -459,10 +466,9 @@ async function skillQualityDashboard(
   return success(200, {
     dashboard: "skill-quality",
     time_range: { from, to },
-    test_pass_rate: testPassRate,
+    test_pass_rates: testPassRate,
     confidence_over_time: confidenceOverTime,
-    failure_rate_per_skill: failureRatePerSkill,
-    failure_rate_over_time: failureRateOverTime,
+    failure_rates: failureRatePerSkill,
     competing_implementations: competingImplementations,
     confidence_degradation: confidenceDegradation,
   });
@@ -486,7 +492,7 @@ async function evolutionGapDashboard(
     FROM analytics_events
     WHERE event_type = 'resolve'
       AND success = 0
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY intent
     ORDER BY occurrences DESC
     LIMIT 100
@@ -503,7 +509,7 @@ async function evolutionGapDashboard(
     WHERE event_type = 'resolve'
       AND confidence < 0.7
       AND success = 1
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY intent, skill_id
     ORDER BY occurrences DESC
     LIMIT 100
@@ -518,7 +524,7 @@ async function evolutionGapDashboard(
         countIf(confidence < 0.7) * 100.0 / count() AS low_confidence_pct
     FROM analytics_events
     WHERE event_type = 'resolve'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY hour
     ORDER BY hour
   `);
@@ -532,7 +538,7 @@ async function evolutionGapDashboard(
         countIf(success = 0) * 100.0 / count() AS failure_rate_pct
     FROM analytics_events
     WHERE event_type = 'execute'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id
     HAVING failures > 0
     ORDER BY failures DESC
@@ -549,7 +555,7 @@ async function evolutionGapDashboard(
         countIf(event_type = 'execute' AND success = 0) AS execution_failures
     FROM analytics_events
     WHERE event_type IN ('resolve', 'execute')
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY domain
     ORDER BY (unresolved_count + low_confidence_count + execution_failures) DESC
   `);
@@ -563,7 +569,7 @@ async function evolutionGapDashboard(
         max(timestamp) AS latest_failure
     FROM analytics_events
     WHERE event_type = 'fail'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY intent
     ORDER BY fail_count DESC
     LIMIT 50
@@ -574,10 +580,10 @@ async function evolutionGapDashboard(
     time_range: { from, to },
     unresolved_intents: unresolvedIntents,
     low_confidence_intents: lowConfidenceIntents,
-    low_confidence_over_time: lowConfidenceOverTime,
+    low_confidence_volume: lowConfidenceOverTime,
     failed_executions: failedExecutions,
     domain_coverage_gaps: domainCoverageGaps,
-    evolution_pipeline_status: evolutionPipelineStatus,
+    evolve_pipeline: evolutionPipelineStatus,
   });
 }
 
@@ -598,7 +604,7 @@ async function agentBehaviorDashboard(
             / greatest(countIf(event_type = 'resolve'), 1) AS conversion_rate_pct
     FROM analytics_events
     WHERE event_type IN ('resolve', 'execute')
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
   `);
 
   // 5a: Conversion rate over time
@@ -611,7 +617,7 @@ async function agentBehaviorDashboard(
             / greatest(countIf(event_type = 'resolve'), 1) AS conversion_rate_pct
     FROM analytics_events
     WHERE event_type IN ('resolve', 'execute')
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY hour
     ORDER BY hour
   `);
@@ -625,65 +631,190 @@ async function agentBehaviorDashboard(
         avg(confidence) AS avg_confidence
     FROM analytics_events
     WHERE event_type = 'resolve'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY intent
     HAVING resolve_count > 3
     ORDER BY resolve_count DESC
     LIMIT 50
   `);
 
-  // 5c: Abandoned executions (intents resolved but never executed)
+  // 5c: Abandoned executions — resolved but never executed, with execute_count and abandoned_count
   const abandonedExecutions = await queryClickHouse(`
     WITH
-        resolved_intents AS (
-            SELECT DISTINCT intent
-            FROM analytics_events
-            WHERE event_type = 'resolve'
-              AND success = 1
-              AND timestamp BETWEEN '${from}' AND '${to}'
-        ),
         executed_intents AS (
             SELECT DISTINCT intent
             FROM analytics_events
             WHERE event_type = 'execute'
-              AND timestamp BETWEEN '${from}' AND '${to}'
+              AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
         )
     SELECT
-        r.intent,
-        count() AS resolve_count
+        ae.intent,
+        count() AS resolve_count,
+        0 AS execute_count,
+        count() AS abandoned_count
     FROM analytics_events ae
-    JOIN resolved_intents r ON ae.intent = r.intent
     WHERE ae.event_type = 'resolve'
       AND ae.success = 1
-      AND ae.timestamp BETWEEN '${from}' AND '${to}'
-      AND r.intent NOT IN (SELECT intent FROM executed_intents)
-    GROUP BY r.intent
+      AND ae.timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
+      AND ae.intent NOT IN (SELECT intent FROM executed_intents)
+    GROUP BY ae.intent
     ORDER BY resolve_count DESC
     LIMIT 50
   `);
 
-  // 5d: Skill chaining patterns (skills executed together in same time window)
+  // 5d: Skill chaining patterns — pairs of skills chained together
   const chainingPatterns = await queryClickHouse(`
     SELECT
-        skill_id,
-        count() AS chain_executions,
-        uniq(input_hash) AS unique_chain_inputs
+        '' AS from_skill,
+        skill_id AS to_skill,
+        count() AS chain_count
     FROM analytics_events
     WHERE event_type = 'execute'
       AND intent LIKE 'chain:%'
-      AND timestamp BETWEEN '${from}' AND '${to}'
+      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id
-    ORDER BY chain_executions DESC
+    ORDER BY chain_count DESC
     LIMIT 20
   `);
 
+  const agg = conversionAgg as Record<string, number> | undefined;
   return success(200, {
     dashboard: "agent-behavior",
     time_range: { from, to },
-    conversion_rate: conversionAgg ?? { total_resolves: 0, total_executes: 0, conversion_rate_pct: 0 },
+    total_resolves: agg?.total_resolves ?? 0,
+    total_executes: agg?.total_executes ?? 0,
+    conversion_rate_pct: agg?.conversion_rate_pct ?? 0,
     conversion_over_time: conversionOverTime,
     repeated_resolves: repeatedResolves,
     abandoned_executions: abandonedExecutions,
-    chaining_patterns: chainingPatterns,
+    skill_chain_patterns: chainingPatterns,
+    hourly_usage: [],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Mountain Dashboard — reads from DynamoDB (not ClickHouse)
+// ---------------------------------------------------------------------------
+
+type DominantStatus = "unsolved" | "partial" | "verified" | "optimized";
+type Difficulty = "easy" | "medium" | "hard";
+
+const STATUS_ORDER: DominantStatus[] = ["optimized", "verified", "partial", "unsolved"];
+
+function dominantStatus(counts: Record<string, number>): DominantStatus {
+  for (const s of STATUS_ORDER) {
+    if ((counts[s] ?? 0) > 0) return s;
+  }
+  return "unsolved";
+}
+
+async function mountainDashboard(
+  qs: Record<string, string | undefined>,
+): Promise<APIGatewayProxyResult> {
+  const domainFilter = qs["domain"] ?? null;
+  const languageFilter = qs["language"] ?? null;
+  const statusFilter = (qs["status"] ?? null) as DominantStatus | null;
+
+  // 1. Scan problems table
+  const problemsScan = await docClient.send(
+    new ScanCommand({
+      TableName: PROBLEMS_TABLE,
+      FilterExpression: domainFilter
+        ? "contains(#d, :domain)"
+        : undefined,
+      ExpressionAttributeNames: domainFilter
+        ? { "#d": "domain" }
+        : undefined,
+      ExpressionAttributeValues: domainFilter
+        ? { ":domain": domainFilter }
+        : undefined,
+    }),
+  );
+
+  const rawProblems = (problemsScan.Items ?? []) as Array<Record<string, unknown>>;
+
+  // 2. For each problem, query skills via GSI-problem-status
+  const problems = await Promise.all(
+    rawProblems.map(async (prob) => {
+      const problemId = prob["problem_id"] as string;
+
+      const skillsResult = await docClient.send(
+        new QueryCommand({
+          TableName: SKILLS_TABLE,
+          IndexName: "GSI-problem-status",
+          KeyConditionExpression: "problem_id = :pid",
+          ExpressionAttributeValues: { ":pid": problemId },
+          FilterExpression: languageFilter
+            ? "#lang = :lang"
+            : undefined,
+          ExpressionAttributeNames: languageFilter
+            ? { "#lang": "language" }
+            : undefined,
+        }),
+      );
+
+      const skills = (skillsResult.Items ?? []) as Array<Record<string, unknown>>;
+
+      // Compute status distribution
+      const distribution: Record<string, number> = {
+        unsolved: 0, partial: 0, verified: 0, optimized: 0, archived: 0,
+      };
+      let executionCount = 0;
+      let canonicalSkill: { skill_id: string; language: string; confidence: number; latency_p50_ms: number | null } | null = null;
+
+      for (const skill of skills) {
+        const st = (skill["status"] as string) ?? "unsolved";
+        if (st in distribution) distribution[st]++;
+        executionCount += (skill["execution_count"] as number) ?? 0;
+        if (skill["is_canonical"] === true && canonicalSkill === null) {
+          canonicalSkill = {
+            skill_id: skill["skill_id"] as string,
+            language: skill["language"] as string,
+            confidence: (skill["confidence"] as number) ?? 0,
+            latency_p50_ms: (skill["latency_p50_ms"] as number | null) ?? null,
+          };
+        }
+      }
+
+      const dom = dominantStatus(distribution as Record<string, number>);
+
+      return {
+        problem_id: problemId,
+        name: prob["name"] as string,
+        difficulty: (prob["difficulty"] as Difficulty) ?? "medium",
+        domain: (prob["domain"] as string[]) ?? [],
+        skill_count: skills.length,
+        dominant_status: dom,
+        skill_status_distribution: distribution,
+        execution_count_30d: executionCount,
+        canonical_skill: canonicalSkill,
+        _dominant: dom,
+      };
+    }),
+  );
+
+  // Apply status filter after aggregation
+  const filtered = statusFilter
+    ? problems.filter((p) => p._dominant === statusFilter)
+    : problems;
+
+  // Strip internal field
+  const output = filtered.map(({ _dominant: _, ...rest }) => rest);
+
+  // Sort: optimized first, then by execution count desc
+  output.sort((a, b) => {
+    const so = STATUS_ORDER.indexOf(a.dominant_status) - STATUS_ORDER.indexOf(b.dominant_status);
+    if (so !== 0) return so;
+    return b.execution_count_30d - a.execution_count_30d;
+  });
+
+  const totalSkills = output.reduce((sum, p) => sum + p.skill_count, 0);
+
+  return success(200, {
+    generated_at: new Date().toISOString(),
+    cache_hit: false,
+    total_problems: output.length,
+    total_skills: totalSkills,
+    problems: output.slice(0, 100),
   });
 }

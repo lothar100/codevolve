@@ -39,6 +39,7 @@ export const DashboardTypeSchema = z.enum([
   "skill-quality",
   "evolution-gap",
   "agent-behavior",
+  "mountain",
 ]);
 
 export const SupportedLanguageSchema = z.enum([

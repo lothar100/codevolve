@@ -410,9 +410,6 @@ export class CodevolveStack extends cdk.Stack {
       entry: path.join(__dirname, "../src/analytics/emitEvents.ts"),
     });
 
-    // GET /analytics/dashboards/:type
-    // TODO: IMPL-09 — wire up dashboards Lambda once implemented
-
     // Evolve: POST /evolve
     // TODO: IMPL-12 — implement evolve handler
 
@@ -428,6 +425,31 @@ export class CodevolveStack extends cdk.Stack {
       "codevolve/clickhouse-credentials",
     );
 
+    // Shared ClickHouse env vars — injected into every Lambda that queries ClickHouse.
+    // Secret format: { host, port, database, username, password }
+    // Values are resolved at synth/deploy time from Secrets Manager JSON fields.
+    // Rotate credentials via Secrets Manager rotation (no re-deploy required).
+    const clickhouseEnv = {
+      CLICKHOUSE_HOST: clickhouseSecret.secretValueFromJson("host").unsafeUnwrap(),
+      CLICKHOUSE_PORT: clickhouseSecret.secretValueFromJson("port").unsafeUnwrap(),
+      CLICKHOUSE_USER: clickhouseSecret.secretValueFromJson("username").unsafeUnwrap(),
+      CLICKHOUSE_PASSWORD: clickhouseSecret.secretValueFromJson("password").unsafeUnwrap(),
+      CLICKHOUSE_DATABASE: clickhouseSecret.secretValueFromJson("database").unsafeUnwrap(),
+    };
+
+    // GET /analytics/dashboards/:type (IMPL-09)
+    const dashboardsFn = new NodejsFunction(this, "DashboardsFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-dashboards",
+      entry: path.join(__dirname, "../src/analytics/dashboards.ts"),
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(60), // 5 concurrent ClickHouse queries per dashboard; match analyticsConsumerFn
+      environment: {
+        ...lambdaEnvironment,
+        ...clickhouseEnv,
+      },
+    });
+
     // DLQ for failed analytics consumer batches
     const analyticsConsumerDlq = new sqs.Queue(this, "AnalyticsConsumerDlq", {
       queueName: "codevolve-analytics-consumer-dlq",
@@ -438,9 +460,7 @@ export class CodevolveStack extends cdk.Stack {
     // CRITICAL fix (REVIEW-08-IMPL08-RECHECK): inject the four env vars that
     // clickhouseClient.ts reads at runtime. The old CLICKHOUSE_SECRET_ARN env
     // var has been removed — it was dead after the client was rewritten to use
-    // direct env vars. Secret fields are resolved at CloudFormation deploy time
-    // via secretValueFromJson / unsafeUnwrap (acceptable for Lambda env vars;
-    // rotate via Secrets Manager rotation rather than re-deploying).
+    // direct env vars.
     const analyticsConsumerFn = new NodejsFunction(
       this,
       "AnalyticsConsumerFn",
@@ -452,12 +472,7 @@ export class CodevolveStack extends cdk.Stack {
         timeout: cdk.Duration.seconds(60), // W-01 fix: spec §3.2 requires 60s, not 300s
         environment: {
           ...lambdaEnvironment,
-          // Four env vars read by clickhouseClient.ts. Values are resolved at
-          // synth/deploy time from the Secrets Manager secret JSON fields.
-          CLICKHOUSE_URL: clickhouseSecret.secretValueFromJson("url").unsafeUnwrap(),
-          CLICKHOUSE_USER: clickhouseSecret.secretValueFromJson("username").unsafeUnwrap(),
-          CLICKHOUSE_PASSWORD: clickhouseSecret.secretValueFromJson("password").unsafeUnwrap(),
-          CLICKHOUSE_DATABASE: clickhouseSecret.secretValueFromJson("database").unsafeUnwrap(),
+          ...clickhouseEnv,
         },
       },
     );
@@ -501,7 +516,7 @@ export class CodevolveStack extends cdk.Stack {
     });
 
     const evolveGapQueue = new sqs.Queue(this, "EvolveGapQueue", {
-      queueName: "codevolve-gap-queue.fifo",
+      queueName: "codevolve-evolve-gap-queue.fifo",
       fifo: true,
       contentBasedDeduplication: true,
       visibilityTimeout: cdk.Duration.seconds(300), // matches EvolveFn timeout
@@ -622,7 +637,6 @@ export class CodevolveStack extends cdk.Stack {
       entry: path.join(__dirname, "../src/decision-engine/handler.ts"),
       memorySize: 512,
       timeout: cdk.Duration.seconds(240),
-      reservedConcurrentExecutions: 1,
       environment: {
         ...lambdaEnvironment,
         SKILLS_TABLE: this.skillsTable.tableName,
@@ -792,8 +806,11 @@ export class CodevolveStack extends cdk.Stack {
     // /analytics
     const analyticsResource = this.api.root.addResource("analytics");
     const dashboardsResource = analyticsResource.addResource("dashboards");
-    dashboardsResource.addResource("{type}");
-    // GET /analytics/dashboards/:type
+    const dashboardsByTypeResource = dashboardsResource.addResource("{type}");
+    dashboardsByTypeResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(dashboardsFn),
+    );
 
     // /evolve
     this.api.root.addResource("evolve");
@@ -966,6 +983,11 @@ export class CodevolveStack extends cdk.Stack {
     // Analytics consumer permissions (IMPL-08-B, W-01/W-02 fixes applied)
     clickhouseSecret.grantRead(analyticsConsumerFn);
     this.eventsStream.grantRead(analyticsConsumerFn);
+
+    // Dashboards Lambda permissions (IMPL-09)
+    clickhouseSecret.grantRead(dashboardsFn);
+    this.problemsTable.grantReadData(dashboardsFn);
+    this.skillsTable.grantReadData(dashboardsFn);
 
     // Trusted Mountain function permissions (IMPL-16)
     this.trustedMountainTable.grantReadWriteData(trustedMountainFn);

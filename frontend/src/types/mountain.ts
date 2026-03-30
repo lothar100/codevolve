@@ -79,7 +79,7 @@ export const BRICK_HEIGHT = 0.45;
  */
 export const API_BASE_URL: string =
   (import.meta.env as Record<string, string | undefined>)["VITE_API_BASE_URL"] ??
-  "http://localhost:3000";
+  "https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1";
 
 /**
  * Auto-refresh cadence: 5 minutes in milliseconds (per DESIGN-04).
