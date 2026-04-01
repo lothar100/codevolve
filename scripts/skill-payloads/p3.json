@@ -1,0 +1,21 @@
+{
+  "problem_id": "b5df977a-5b70-42df-a636-953033e5d90c",
+  "name": "extract-urls-from-text",
+  "description": "Extracts all unique HTTP/HTTPS URLs from a block of text using regex. Returns each URL once even if it appears multiple times. Trailing punctuation is stripped. O(n) time.",
+  "language": "typescript",
+  "domain": ["string"],
+  "inputs": [{"name": "text", "type": "string"}],
+  "outputs": [{"name": "urls", "type": "string[]"}],
+  "examples": [
+    {"input": {"text": "Visit https://example.com and http://foo.bar/path?q=1 for more."}, "output": {"urls": ["https://example.com", "http://foo.bar/path?q=1"]}}
+  ],
+  "tests": [
+    {"input": {"text": "Go to https://example.com now."}, "expected": {"urls": ["https://example.com"]}},
+    {"input": {"text": "https://a.com appears twice: https://a.com and also http://b.org/page"}, "expected": {"urls": ["https://a.com", "http://b.org/page"]}},
+    {"input": {"text": "No URLs here."}, "expected": {"urls": []}},
+    {"input": {"text": "ftp://notaurl.com and https://valid.com"}, "expected": {"urls": ["https://valid.com"]}}
+  ],
+  "implementation": "function extractUrls(text: string): string[] {\n  const urlRegex = /https?:\\/\\/[^\\s<>\"'\\)\\]]+/g;\n  const matches = text.match(urlRegex) || [];\n  const cleaned = matches.map(url => url.replace(/[.,;:!?]+$/, ''));\n  const seen = new Set<string>();\n  const result: string[] = [];\n  for (const url of cleaned) {\n    if (!seen.has(url)) {\n      seen.add(url);\n      result.push(url);\n    }\n  }\n  return result;\n}",
+  "tags": ["string", "url", "regex", "extraction"],
+  "status": "verified"
+}

@@ -45,13 +45,23 @@ function sortForPyramid(problems: MountainProblem[]): MountainProblem[] {
   });
 }
 
+const PAGE_SIZE = 500;
+
+// Brick dimensions and row decrement step scale with problem count.
+function getBrickConfig(count: number): { w: number; h: number; gap: number; step: number } {
+  if (count <= 100) return { w: 44, h: 22, gap: 3, step: 2 };
+  if (count <= 200) return { w: 28, h: 14, gap: 2, step: 3 };
+  if (count <= 350) return { w: 18, h: 10, gap: 2, step: 4 };
+  return { w: 12, h: 8, gap: 1, step: 5 }; // up to 500
+}
+
 // Compute row widths (widest first = bottom) to contain `total` bricks.
-// Each row is 2 bricks narrower than the one below.
-function computeRowWidths(total: number): number[] {
-  for (let base = 2; base <= 80; base += 2) {
+// Row decrement step scales with count for a proportional mountain shape.
+function computeRowWidths(total: number, step: number): number[] {
+  for (let base = step; base <= 200; base += step) {
     const rows: number[] = [];
     let sum = 0;
-    for (let w = base; w >= 1; w -= 2) {
+    for (let w = base; w >= 1; w -= step) {
       rows.push(w);
       sum += w;
       if (sum >= total) return rows; // rows[0] = widest (bottom)
@@ -66,28 +76,29 @@ interface Tooltip {
   y: number;
 }
 
-const BRICK_W = 44;
-const BRICK_H = 22;
-const GAP = 3;
-
 export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<Tooltip | null>(null);
+  const [page, setPage] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const { rows } = useMemo(() => {
+  const { rows, brickConfig, totalPages, pageProblems } = useMemo(() => {
     const sorted = sortForPyramid(problems);
-    const widths = computeRowWidths(sorted.length);
+    const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
+    const pageProblems = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+    const brickConfig = getBrickConfig(pageProblems.length);
+    const widths = computeRowWidths(pageProblems.length, brickConfig.step);
 
-    // Assign problems to rows, bottom to top
     const rows: MountainProblem[][] = [];
     let idx = 0;
     for (const width of widths) {
-      rows.push(sorted.slice(idx, idx + width));
+      rows.push(pageProblems.slice(idx, idx + width));
       idx += width;
     }
-    return { rows };
-  }, [problems]);
+    return { rows, brickConfig, totalPages, pageProblems };
+  }, [problems, page]);
+
+  const { w: BRICK_W, h: BRICK_H, gap: GAP } = brickConfig;
 
   // rows[0] = bottom (widest), rows[last] = top (narrowest)
   // Render top-to-bottom in DOM but visually bottom-anchored via column-reverse
@@ -221,7 +232,7 @@ export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
         ))}
       </div>
 
-      {/* Stats */}
+      {/* Stats + pagination */}
       <div
         style={{
           position: "absolute",
@@ -233,8 +244,46 @@ export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
           lineHeight: 1.7,
         }}
       >
-        <div>{problems.length} problems</div>
+        <div>
+          {totalPages > 1
+            ? `${pageProblems.length} of ${problems.length} problems (page ${page + 1}/${totalPages})`
+            : `${problems.length} problems`}
+        </div>
         <div style={{ color: "#1e293b" }}>base → peak: optimized → unsolved</div>
+        {totalPages > 1 && (
+          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 }}>
+            <button
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={page === 0}
+              style={{
+                padding: "2px 8px",
+                borderRadius: 4,
+                border: "1px solid #334155",
+                background: "transparent",
+                color: page === 0 ? "#334155" : "#94a3b8",
+                cursor: page === 0 ? "default" : "pointer",
+                fontSize: 11,
+              }}
+            >
+              ← prev
+            </button>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              disabled={page === totalPages - 1}
+              style={{
+                padding: "2px 8px",
+                borderRadius: 4,
+                border: "1px solid #334155",
+                background: "transparent",
+                color: page === totalPages - 1 ? "#334155" : "#94a3b8",
+                cursor: page === totalPages - 1 ? "default" : "pointer",
+                fontSize: 11,
+              }}
+            >
+              next →
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Hover tooltip */}

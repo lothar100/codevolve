@@ -1,0 +1,21 @@
+{
+  "problem_id": "80a60e84-1616-45d2-afec-4ec69ec8687f",
+  "name": "word-frequency-map",
+  "description": "Counts occurrences of each word in a string. Case-insensitive, ignores punctuation. Returns entries sorted by count descending then alphabetically. O(n log n) time.",
+  "language": "typescript",
+  "domain": ["string"],
+  "inputs": [{"name": "text", "type": "string"}],
+  "outputs": [{"name": "frequency", "type": "Record<string, number>"}],
+  "examples": [
+    {"input": {"text": "the cat sat on the mat the cat"}, "output": {"frequency": {"the": 3, "cat": 2, "mat": 1, "on": 1, "sat": 1}}}
+  ],
+  "tests": [
+    {"input": {"text": "hello world hello"}, "expected": {"frequency": {"hello": 2, "world": 1}}},
+    {"input": {"text": "Hello, hello! HELLO."}, "expected": {"frequency": {"hello": 3}}},
+    {"input": {"text": "one two three two three three"}, "expected": {"frequency": {"three": 3, "two": 2, "one": 1}}},
+    {"input": {"text": ""}, "expected": {"frequency": {}}}
+  ],
+  "implementation": "function wordFrequency(text: string): Record<string, number> {\n  if (!text.trim()) return {};\n  const words = text.toLowerCase().replace(/[^a-z0-9\\s]/g, '').split(/\\s+/).filter(Boolean);\n  const freq: Record<string, number> = {};\n  for (const word of words) {\n    freq[word] = (freq[word] || 0) + 1;\n  }\n  const sorted = Object.entries(freq).sort(([aKey, aCount], [bKey, bCount]) => {\n    if (bCount !== aCount) return bCount - aCount;\n    return aKey.localeCompare(bKey);\n  });\n  return Object.fromEntries(sorted);\n}",
+  "tags": ["string", "frequency", "word-count", "map"],
+  "status": "verified"
+}

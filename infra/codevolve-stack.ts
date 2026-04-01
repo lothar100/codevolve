@@ -21,6 +21,8 @@ import * as events from "aws-cdk-lib/aws-events";
 import * as eventsTargets from "aws-cdk-lib/aws-events-targets";
 import { Construct } from "constructs";
 import * as path from "path";
+import { execSync } from "child_process";
+import * as fs from "fs";
 
 export class CodevolveStack extends cdk.Stack {
   public readonly problemsTable: dynamodb.Table;
@@ -378,15 +380,33 @@ export class CodevolveStack extends cdk.Stack {
       ),
     });
 
+    const runnerNode22Dir = path.join(__dirname, "../src/runners/node22");
     const runnerNode22Fn = new lambda.Function(this, "RunnerNode22Fn", {
       functionName: "codevolve-runner-node22",
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: "handler.handler",
       memorySize: 512,
       timeout: cdk.Duration.seconds(10),
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/runners/node22"),
-      ),
+      code: lambda.Code.fromAsset(runnerNode22Dir, {
+        bundling: {
+          image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+          local: {
+            tryBundle(outputDir: string): boolean {
+              try {
+                fs.cpSync(runnerNode22Dir, outputDir, { recursive: true });
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          },
+          command: [
+            "bash",
+            "-c",
+            "npm install --production && cp -rT /asset-input /asset-output",
+          ],
+        },
+      }),
     });
 
     // Validation: POST /validate/{skill_id} (IMPL-11-B)

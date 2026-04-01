@@ -20,8 +20,12 @@ let _client: ClickHouseClient | null = null;
  */
 export function getClickHouseClient(): ClickHouseClient {
   if (_client === null) {
+    const host = process.env.CLICKHOUSE_HOST ?? "localhost";
+    const port = process.env.CLICKHOUSE_PORT ?? "8123";
+    const protocol = port === "8443" ? "https" : "http";
+    const url = `${protocol}://${host}:${port}`;
     _client = createClient({
-      url: process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
+      url,
       username: process.env.CLICKHOUSE_USER ?? "default",
       password: process.env.CLICKHOUSE_PASSWORD ?? "",
       database: process.env.CLICKHOUSE_DATABASE ?? "default",

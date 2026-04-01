@@ -1,0 +1,24 @@
+{
+  "problem_id": "9644a204-3d44-49e9-93d3-693166788797",
+  "name": "wrap-text-at-column",
+  "description": "Wraps text so no line exceeds the given column width. Breaks at word boundaries where possible; breaks within a word only if longer than the width. O(n) time.",
+  "language": "typescript",
+  "domain": ["string"],
+  "inputs": [
+    {"name": "text", "type": "string"},
+    {"name": "columnWidth", "type": "number"}
+  ],
+  "outputs": [{"name": "wrapped", "type": "string"}],
+  "examples": [
+    {"input": {"text": "The quick brown fox jumps over the lazy dog", "columnWidth": 15}, "output": {"wrapped": "The quick brown\nfox jumps over\nthe lazy dog"}}
+  ],
+  "tests": [
+    {"input": {"text": "Hello world", "columnWidth": 5}, "expected": {"wrapped": "Hello\nworld"}},
+    {"input": {"text": "superlongwordthatexceedswidth", "columnWidth": 10}, "expected": {"wrapped": "superlongw\nordthatexc\needswidth"}},
+    {"input": {"text": "short", "columnWidth": 20}, "expected": {"wrapped": "short"}},
+    {"input": {"text": "a b c d e f", "columnWidth": 3}, "expected": {"wrapped": "a b\nc d\ne f"}}
+  ],
+  "implementation": "function wrapText(text: string, columnWidth: number): string {\n  const words = text.split(' ');\n  const lines: string[] = [];\n  let currentLine = '';\n\n  for (const word of words) {\n    if (word.length > columnWidth) {\n      // Break long word across lines\n      if (currentLine) {\n        lines.push(currentLine);\n        currentLine = '';\n      }\n      let remaining = word;\n      while (remaining.length > columnWidth) {\n        lines.push(remaining.slice(0, columnWidth));\n        remaining = remaining.slice(columnWidth);\n      }\n      currentLine = remaining;\n    } else if (!currentLine) {\n      currentLine = word;\n    } else if (currentLine.length + 1 + word.length <= columnWidth) {\n      currentLine += ' ' + word;\n    } else {\n      lines.push(currentLine);\n      currentLine = word;\n    }\n  }\n  if (currentLine) lines.push(currentLine);\n  return lines.join('\\n');\n}",
+  "tags": ["string", "word-wrap", "text-formatting", "utility"],
+  "status": "verified"
+}

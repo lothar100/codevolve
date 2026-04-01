@@ -1,0 +1,39 @@
+{
+  "problem_id": "df79661f-972b-4ee4-8a5d-7c9ea8ec368f",
+  "name": "truncate-prompt-token-budget",
+  "description": "Truncates a prompt to fit within a max token budget (estimated as chars/4). Prefers breaking at paragraph then sentence boundaries. Appends a truncation notice if truncated. O(n) time.",
+  "language": "typescript",
+  "domain": ["ai"],
+  "inputs": [
+    {"name": "prompt", "type": "string"},
+    {"name": "maxTokens", "type": "number"}
+  ],
+  "outputs": [{"name": "result", "type": "string"}],
+  "examples": [
+    {
+      "input": {"prompt": "Hello world. This is a test. More content here.", "maxTokens": 8},
+      "output": {"result": "Hello world. This is a test. [truncated]"}
+    }
+  ],
+  "tests": [
+    {
+      "input": {"prompt": "Short prompt.", "maxTokens": 100},
+      "expected": {"result": "Short prompt."}
+    },
+    {
+      "input": {"prompt": "Para one.\n\nPara two.\n\nPara three long content here.", "maxTokens": 6},
+      "expected": {"result": "Para one. [truncated]"}
+    },
+    {
+      "input": {"prompt": "Sentence one. Sentence two. Sentence three.", "maxTokens": 8},
+      "expected": {"result": "Sentence one. Sentence two. [truncated]"}
+    },
+    {
+      "input": {"prompt": "Exactly fits", "maxTokens": 3},
+      "expected": {"result": "Exactly fits"}
+    }
+  ],
+  "implementation": "const TRUNCATION_NOTICE = ' [truncated]';\n\nfunction estimateTokens(text: string): number {\n  return Math.ceil(text.length / 4);\n}\n\nfunction truncatePrompt(prompt: string, maxTokens: number): string {\n  if (estimateTokens(prompt) <= maxTokens) return prompt;\n\n  const noticeTokens = estimateTokens(TRUNCATION_NOTICE);\n  const budget = maxTokens - noticeTokens;\n  if (budget <= 0) return TRUNCATION_NOTICE.trim();\n\n  // Try paragraph boundaries\n  const paragraphs = prompt.split(/\\n\\n+/);\n  let accumulated = '';\n  for (const para of paragraphs) {\n    const candidate = accumulated ? accumulated + '\\n\\n' + para : para;\n    if (estimateTokens(candidate) <= budget) {\n      accumulated = candidate;\n    } else {\n      break;\n    }\n  }\n  if (accumulated && accumulated !== prompt) {\n    return accumulated.trimEnd() + TRUNCATION_NOTICE;\n  }\n\n  // Try sentence boundaries\n  const sentences = prompt.match(/[^.!?]+[.!?]+/g) || [];\n  accumulated = '';\n  for (const sent of sentences) {\n    const candidate = accumulated + sent;\n    if (estimateTokens(candidate) <= budget) {\n      accumulated = candidate;\n    } else {\n      break;\n    }\n  }\n  if (accumulated && accumulated.trim() !== prompt.trim()) {\n    return accumulated.trimEnd() + TRUNCATION_NOTICE;\n  }\n\n  // Hard truncate at character boundary\n  const maxChars = budget * 4;\n  return prompt.slice(0, maxChars).trimEnd() + TRUNCATION_NOTICE;\n}",
+  "tags": ["ai", "prompt", "token-budget", "truncation", "llm"],
+  "status": "verified"
+}

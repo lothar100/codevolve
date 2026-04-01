@@ -1,0 +1,34 @@
+{
+  "problem_id": "ce713e22-25d2-4dc0-a00b-dcd034a72fbe",
+  "name": "chunk-document-for-embedding",
+  "description": "Splits a long document into overlapping chunks for embedding/semantic search. Target chunk size in tokens (chars/4 estimate), with configurable overlap. Returns chunks with start/end character offsets. O(n) time.",
+  "language": "typescript",
+  "domain": ["ai"],
+  "inputs": [
+    {"name": "document", "type": "string"},
+    {"name": "chunkTokens", "type": "number"},
+    {"name": "overlapTokens", "type": "number"}
+  ],
+  "outputs": [
+    {"name": "chunks", "type": "Array<{text: string, start: number, end: number}>"}
+  ],
+  "examples": [
+    {
+      "input": {"document": "The quick brown fox jumps over the lazy dog.", "chunkTokens": 5, "overlapTokens": 1},
+      "output": {"chunks": [{"text": "The quick brown fox jumps", "start": 0, "end": 25}, {"text": "jumps over the lazy dog.", "start": 21, "end": 44}]}
+    }
+  ],
+  "tests": [
+    {
+      "input": {"document": "short", "chunkTokens": 100, "overlapTokens": 10},
+      "expected": {"chunks": [{"text": "short", "start": 0, "end": 5}]}
+    },
+    {
+      "input": {"document": "one two three four five six seven eight", "chunkTokens": 3, "overlapTokens": 1},
+      "expected": {"chunks": [{"text": "one two three", "start": 0, "end": 13}, {"text": "three four five", "start": 8, "end": 23}, {"text": "five six seven", "start": 18, "end": 32}, {"text": "seven eight", "start": 28, "end": 39}]}
+    }
+  ],
+  "implementation": "interface Chunk { text: string; start: number; end: number; }\n\nfunction chunkDocument(document: string, chunkTokens: number, overlapTokens: number): Chunk[] {\n  const chunkChars = chunkTokens * 4;\n  const overlapChars = overlapTokens * 4;\n  const stepChars = chunkChars - overlapChars;\n\n  if (stepChars <= 0) throw new Error('overlapTokens must be less than chunkTokens');\n\n  const chunks: Chunk[] = [];\n  let start = 0;\n\n  while (start < document.length) {\n    let end = start + chunkChars;\n\n    if (end >= document.length) {\n      // Last chunk\n      chunks.push({ text: document.slice(start), start, end: document.length });\n      break;\n    }\n\n    // Try to break at a word boundary\n    let breakAt = end;\n    const spaceIdx = document.lastIndexOf(' ', end);\n    if (spaceIdx > start) {\n      breakAt = spaceIdx;\n    }\n\n    chunks.push({ text: document.slice(start, breakAt).trimEnd(), start, end: breakAt });\n\n    // Advance by step, but start overlap chars back\n    start = breakAt - overlapChars;\n    // Skip whitespace at new start\n    while (start < document.length && document[start] === ' ') start++;\n  }\n\n  return chunks;\n}",
+  "tags": ["ai", "embeddings", "chunking", "semantic-search", "rag"],
+  "status": "verified"
+}

@@ -142,7 +142,7 @@ export function FilterSidebar({
     <div style={styles.sidebar}>
       <div>
         <div style={styles.heading}>codeVolve</div>
-        <div style={styles.meta}>Mountain View</div>
+        <div style={styles.meta}>Registry</div>
       </div>
 
       {/* Stats */}

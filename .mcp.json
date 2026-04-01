@@ -4,7 +4,8 @@
       "command": "node",
       "args": ["C:\\Users\\pgl49\\source\\repos\\codevolve\\packages\\mcp-server\\dist\\index.js"],
       "env": {
-        "CODEVOLVE_API_URL": "https://hra190v7x6.execute-api.us-east-2.amazonaws.com/v1",
+        "CODEVOLVE_API_URL": "https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1",
+        "CODEVOLVE_API_KEY": "eyJraWQiOiIwQncyNkI4SzVHOERyXC94N1BCbDUxR0pRUThoUWRlTkZUVUZTQ3hiaGJETT0iLCJhbGciOiJSUzI1NiJ9.eyJzdWIiOiI0MTZiMzUwMC0xMGQxLTcwMTYtNTI5YS04MGQyNTdmN2UwODciLCJlbWFpbF92ZXJpZmllZCI6ZmFsc2UsImlzcyI6Imh0dHBzOlwvXC9jb2duaXRvLWlkcC51cy1lYXN0LTIuYW1hem9uYXdzLmNvbVwvdXMtZWFzdC0yX0FOek1LTms1ayIsImNvZ25pdG86dXNlcm5hbWUiOiI0MTZiMzUwMC0xMGQxLTcwMTYtNTI5YS04MGQyNTdmN2UwODciLCJvcmlnaW5fanRpIjoiZjU5OTU0MjctNTJjNS00MTc3LTk3ZjQtMTRhZDE2NTlkODFlIiwiYXVkIjoiMmFsajNxb2M4a2pybnNhYzJkNW9rcTdxdDAiLCJldmVudF9pZCI6ImI1NjdjYmIwLTBlZDEtNDQwNS05MDBiLWJmN2Y3MWY4YWZlYSIsInRva2VuX3VzZSI6ImlkIiwiYXV0aF90aW1lIjoxNzc0OTIwMDMyLCJleHAiOjE3NzQ5MjM2MzIsImlhdCI6MTc3NDkyMDAzMiwianRpIjoiYjllYTc3ZmYtNGZlZS00M2YyLTg1ZjItODVkODVhMjY4ZmE3IiwiZW1haWwiOiJhZ2VudEBjb2Rldm9sdmUuYWkifQ.KVYec87DBODtA8reI8dNgumlHalkf4MJsr6RVNb58kU7GJv7ZZWNSsc4MWqP9wvSxPDnjO9WsGgkAoK285A9EIknFgRBnxm7AIngzUQq1t20d-ksB_mDI2IrPc4yWDmeJrOySjSm_SBhmi-XKahqvOzbSJ5pmAY6Zid54qhlaP-hSBhH-LorPt1Ui7fo-gLE2aWMVYWaIhk-Z6H4EuKHZZR8HE1AWqwB4Mh_GUfQkWVlLrqZsdVW0-0dA0_I2TH0skffQGn7rzDv6UK6Vlkt-psYag5WKz_NmRAozcDNQKwGjl9ANfbExNYSKo886C7YEb_ftZFu0mEX9bsHTyXwhg",
         "CODEVOLVE_AGENT_ID": "claude-code-local"
       }
     }

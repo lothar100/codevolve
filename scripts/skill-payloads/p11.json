@@ -1,0 +1,39 @@
+{
+  "problem_id": "ee03ef48-651f-4ab6-a9f7-33c874308f0f",
+  "name": "extract-json-from-llm-response",
+  "description": "Extracts and parses a JSON block from an LLM response string. Looks for ```json ... ``` fences first, then bare JSON objects/arrays. Falls back to a provided default on parse failure. O(n) time.",
+  "language": "typescript",
+  "domain": ["ai"],
+  "inputs": [
+    {"name": "response", "type": "string"},
+    {"name": "defaultValue", "type": "unknown"}
+  ],
+  "outputs": [{"name": "data", "type": "unknown"}],
+  "examples": [
+    {
+      "input": {"response": "Here is the result:\n```json\n{\"status\": \"ok\", \"count\": 3}\n```", "defaultValue": null},
+      "output": {"data": {"status": "ok", "count": 3}}
+    }
+  ],
+  "tests": [
+    {
+      "input": {"response": "```json\n{\"key\": \"value\"}\n```", "defaultValue": null},
+      "expected": {"data": {"key": "value"}}
+    },
+    {
+      "input": {"response": "The answer is {\"x\": 1, \"y\": 2}", "defaultValue": null},
+      "expected": {"data": {"x": 1, "y": 2}}
+    },
+    {
+      "input": {"response": "No JSON here at all.", "defaultValue": {"fallback": true}},
+      "expected": {"data": {"fallback": true}}
+    },
+    {
+      "input": {"response": "```json\n{broken json\n```", "defaultValue": []},
+      "expected": {"data": []}
+    }
+  ],
+  "implementation": "function extractJsonFromLlmResponse(response: string, defaultValue: unknown): unknown {\n  // Try ```json ... ``` fence\n  const fenceMatch = response.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n  if (fenceMatch) {\n    try { return JSON.parse(fenceMatch[1].trim()); } catch {}\n  }\n\n  // Try bare JSON object or array\n  const objMatch = response.match(/\\{[\\s\\S]*\\}/);\n  if (objMatch) {\n    try { return JSON.parse(objMatch[0]); } catch {}\n  }\n  const arrMatch = response.match(/\\[[\\s\\S]*\\]/);\n  if (arrMatch) {\n    try { return JSON.parse(arrMatch[0]); } catch {}\n  }\n\n  return defaultValue;\n}",
+  "tags": ["ai", "llm", "json-extraction", "parsing", "structured-output"],
+  "status": "verified"
+}

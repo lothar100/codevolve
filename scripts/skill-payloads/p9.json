@@ -1,0 +1,50 @@
+{
+  "problem_id": "8ec67b90-b837-4eea-a716-81e50338f355",
+  "name": "topk-cosine-similarity",
+  "description": "Returns the top K candidates sorted by cosine similarity to a query embedding. Uses dot-product divided by magnitudes. O(n*d) time where n is candidates and d is embedding dimension.",
+  "language": "typescript",
+  "domain": ["ai"],
+  "inputs": [
+    {"name": "query", "type": "number[]"},
+    {"name": "candidates", "type": "Array<{id: string, embedding: number[]}>"},
+    {"name": "k", "type": "number"}
+  ],
+  "outputs": [
+    {"name": "results", "type": "Array<{id: string, score: number}>"}
+  ],
+  "examples": [
+    {
+      "input": {
+        "query": [1, 0, 0],
+        "candidates": [
+          {"id": "a", "embedding": [1, 0, 0]},
+          {"id": "b", "embedding": [0, 1, 0]},
+          {"id": "c", "embedding": [0.9, 0.1, 0]}
+        ],
+        "k": 2
+      },
+      "output": {"results": [{"id": "a", "score": 1}, {"id": "c", "score": 0.994}]}
+    }
+  ],
+  "tests": [
+    {
+      "input": {
+        "query": [1, 0],
+        "candidates": [{"id": "x", "embedding": [1, 0]}, {"id": "y", "embedding": [0, 1]}],
+        "k": 1
+      },
+      "expected": {"results": [{"id": "x", "score": 1}]}
+    },
+    {
+      "input": {
+        "query": [1, 1],
+        "candidates": [{"id": "a", "embedding": [1, 0]}, {"id": "b", "embedding": [0, 1]}, {"id": "c", "embedding": [1, 1]}],
+        "k": 2
+      },
+      "expected": {"results": [{"id": "c", "score": 1}, {"id": "a", "score": 0.707}]}
+    }
+  ],
+  "implementation": "interface Candidate { id: string; embedding: number[]; }\ninterface ScoredCandidate { id: string; score: number; }\n\nfunction cosineSimilarity(a: number[], b: number[]): number {\n  let dot = 0, magA = 0, magB = 0;\n  for (let i = 0; i < a.length; i++) {\n    dot += a[i] * b[i];\n    magA += a[i] * a[i];\n    magB += b[i] * b[i];\n  }\n  const denom = Math.sqrt(magA) * Math.sqrt(magB);\n  if (denom === 0) return 0;\n  return dot / denom;\n}\n\nfunction topKNearest(query: number[], candidates: Candidate[], k: number): ScoredCandidate[] {\n  const scored = candidates.map(c => ({\n    id: c.id,\n    score: Math.round(cosineSimilarity(query, c.embedding) * 1000) / 1000\n  }));\n  scored.sort((a, b) => b.score - a.score);\n  return scored.slice(0, k);\n}",
+  "tags": ["ai", "embeddings", "cosine-similarity", "nearest-neighbor", "vector-search"],
+  "status": "verified"
+}

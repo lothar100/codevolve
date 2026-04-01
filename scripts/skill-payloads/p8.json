@@ -1,0 +1,21 @@
+{
+  "problem_id": "9e8f7ae8-2df4-4b00-b546-b441e1bdf870",
+  "name": "parse-key-value-string",
+  "description": "Parses a shell-style key=value string into an object. Handles spaces around =, double/single quoted values with escape sequences, and comment lines starting with #. O(n) time.",
+  "language": "typescript",
+  "domain": ["string"],
+  "inputs": [{"name": "input", "type": "string"}],
+  "outputs": [{"name": "result", "type": "Record<string, string>"}],
+  "examples": [
+    {"input": {"input": "NAME=Alice\nAGE=30\n# this is a comment\nCITY=\"New York\""}, "output": {"result": {"NAME": "Alice", "AGE": "30", "CITY": "New York"}}}
+  ],
+  "tests": [
+    {"input": {"input": "KEY=value"}, "expected": {"result": {"KEY": "value"}}},
+    {"input": {"input": "# comment\nA=1\nB=2"}, "expected": {"result": {"A": "1", "B": "2"}}},
+    {"input": {"input": "QUOTED=\"hello world\"\nSINGLE='it\\'s fine'"}, "expected": {"result": {"QUOTED": "hello world", "SINGLE": "it's fine"}}},
+    {"input": {"input": "SPACED = yes\nEMPTY="}, "expected": {"result": {"SPACED": "yes", "EMPTY": ""}}}
+  ],
+  "implementation": "function parseKeyValue(input: string): Record<string, string> {\n  const result: Record<string, string> = {};\n  const lines = input.split(/\\r?\\n/);\n  for (const line of lines) {\n    const trimmed = line.trim();\n    if (!trimmed || trimmed.startsWith('#')) continue;\n    const eqIdx = trimmed.indexOf('=');\n    if (eqIdx === -1) continue;\n    const key = trimmed.slice(0, eqIdx).trim();\n    let val = trimmed.slice(eqIdx + 1).trim();\n    if ((val.startsWith('\"') && val.endsWith('\"')) ||\n        (val.startsWith(\"'\") && val.endsWith(\"'\"))) {\n      const quote = val[0];\n      val = val.slice(1, -1);\n      // Process escape sequences\n      if (quote === '\"') {\n        val = val.replace(/\\\\n/g, '\\n').replace(/\\\\t/g, '\\t').replace(/\\\\\\\\/g, '\\\\').replace(/\\\\\"/g, '\"');\n      } else {\n        val = val.replace(/\\\\'/g, \"'\");\n      }\n    }\n    if (key) result[key] = val;\n  }\n  return result;\n}",
+  "tags": ["string", "parsing", "key-value", "env", "config"],
+  "status": "verified"
+}

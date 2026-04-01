@@ -1,0 +1,21 @@
+{
+  "problem_id": "c928a021-9def-4496-8746-bc410876b658",
+  "name": "strip-html-tags",
+  "description": "Removes all HTML tags from a string using a state-machine parser. Handles self-closing tags, attribute values containing angle brackets, and nested structures. O(n) time.",
+  "language": "typescript",
+  "domain": ["string"],
+  "inputs": [{"name": "html", "type": "string"}],
+  "outputs": [{"name": "text", "type": "string"}],
+  "examples": [
+    {"input": {"html": "<p>Hello <b>World</b>!</p>"}, "output": {"text": "Hello World!"}}
+  ],
+  "tests": [
+    {"input": {"html": "<p>Hello <b>World</b>!</p>"}, "expected": {"text": "Hello World!"}},
+    {"input": {"html": "<img src=\"x\" alt=\"img\"/> Text"}, "expected": {"text": " Text"}},
+    {"input": {"html": "<a href=\"http://example.com?a=1&b=2\">link</a>"}, "expected": {"text": "link"}},
+    {"input": {"html": "No tags here"}, "expected": {"text": "No tags here"}}
+  ],
+  "implementation": "function stripHtmlTags(html: string): string {\n  let result = '';\n  let i = 0;\n  while (i < html.length) {\n    if (html[i] === '<') {\n      i++;\n      while (i < html.length && html[i] !== '>') {\n        if (html[i] === '\"') {\n          i++;\n          while (i < html.length && html[i] !== '\"') i++;\n          if (i < html.length) i++;\n        } else if (html[i] === \"'\") {\n          i++;\n          while (i < html.length && html[i] !== \"'\") i++;\n          if (i < html.length) i++;\n        } else {\n          i++;\n        }\n      }\n      i++;\n    } else {\n      result += html[i];\n      i++;\n    }\n  }\n  return result;\n}",
+  "tags": ["string", "html", "sanitize", "parsing"],
+  "status": "verified"
+}

@@ -1,0 +1,21 @@
+{
+  "problem_id": "28d60d79-256e-41ab-acd5-8ebdac0ee530",
+  "name": "slugify-string",
+  "description": "Converts an arbitrary string into a URL-safe slug: lowercase, spaces and special characters replaced with hyphens, multiple hyphens collapsed, leading/trailing hyphens stripped. O(n) time.",
+  "language": "typescript",
+  "domain": ["string"],
+  "inputs": [{"name": "str", "type": "string"}],
+  "outputs": [{"name": "slug", "type": "string"}],
+  "examples": [
+    {"input": {"str": "Hello, World! This is a Test."}, "output": {"slug": "hello-world-this-is-a-test"}}
+  ],
+  "tests": [
+    {"input": {"str": "Hello, World!"}, "expected": {"slug": "hello-world"}},
+    {"input": {"str": "  --Multiple---Hyphens--  "}, "expected": {"slug": "multiple-hyphens"}},
+    {"input": {"str": "TypeScript & Node.js 100%"}, "expected": {"slug": "typescript-node-js-100"}},
+    {"input": {"str": "already-a-slug"}, "expected": {"slug": "already-a-slug"}}
+  ],
+  "implementation": "function slugify(str: string): string {\n  return str\n    .toLowerCase()\n    .replace(/[^a-z0-9\\s-]/g, ' ')\n    .replace(/[\\s-]+/g, '-')\n    .replace(/^-+|-+$/g, '');\n}",
+  "tags": ["string", "slug", "url", "utility"],
+  "status": "verified"
+}

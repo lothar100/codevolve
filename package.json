@@ -30,6 +30,7 @@
     "@modelcontextprotocol/sdk": "^1.27.1",
     "aws-cdk-lib": "^2.170.0",
     "constructs": "^10.4.2",
+    "sucrase": "^3.35.1",
     "uuid": "^11.0.0",
     "zod": "^3.24.0"
   },

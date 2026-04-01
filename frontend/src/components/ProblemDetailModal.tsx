@@ -2,7 +2,7 @@
  * ProblemDetailModal
  *
  * Full-screen overlay that fetches and renders a complete problem record
- * from GET /problems/:id, including skills list.
+ * from GET /problems/:id, including skills list with expandable code view.
  */
 
 import { useEffect, useState } from "react";
@@ -106,7 +106,7 @@ export function ProblemDetailModal({ problemId, problemName, onClose }: Props) {
           border: "1px solid #1e293b",
           borderRadius: 12,
           width: "100%",
-          maxWidth: 720,
+          maxWidth: 800,
           maxHeight: "90vh",
           display: "flex",
           flexDirection: "column",
@@ -216,9 +216,7 @@ export function ProblemDetailModal({ problemId, problemName, onClose }: Props) {
               {/* Skills */}
               {data!.skills.length > 0 && (
                 <Section label={`Skills (${data!.skills.length})`}>
-                  <div
-                    style={{ display: "flex", flexDirection: "column", gap: 8 }}
-                  >
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {data!.skills.map((skill) => (
                       <SkillRow
                         key={skill.skill_id}
@@ -313,93 +311,208 @@ function StatCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+interface SkillDetail {
+  implementation: string;
+  tests: Array<{ input: Record<string, unknown>; expected: Record<string, unknown> }>;
+  description: string;
+}
+
 function SkillRow({ skill, isCanonical }: { skill: Skill; isCanonical: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const [detail, setDetail] = useState<SkillDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const confidencePct = skill.confidence > 0
+    ? `${(skill.confidence * 100).toFixed(0)}%`
+    : skill.status === "unsolved"
+    ? "0%"
+    : "–";
+
+  function toggle() {
+    setExpanded((prev) => !prev);
+    if (!detail && !detailLoading) {
+      setDetailLoading(true);
+      fetch(`${API_BASE_URL}/skills/${skill.skill_id}`)
+        .then((r) => r.json())
+        .then((data: { skill: SkillDetail }) => setDetail(data.skill))
+        .catch(() => null)
+        .finally(() => setDetailLoading(false));
+    }
+  }
+
   return (
     <div
       style={{
         background: "#1a1d27",
         border: `1px solid ${isCanonical ? "#1e40af" : "#1e293b"}`,
         borderRadius: 8,
-        padding: "10px 14px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
+        overflow: "hidden",
       }}
     >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-          <span style={{ fontWeight: 600, color: "#f1f5f9", fontSize: 13 }}>
-            {skill.name}
-          </span>
-          {isCanonical && (
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 700,
-                background: "#1e3a8a",
-                color: "#93c5fd",
-                padding: "1px 6px",
-                borderRadius: 3,
-                letterSpacing: "0.05em",
-              }}
-            >
-              CANONICAL
+      {/* Row header — clickable */}
+      <div
+        onClick={toggle}
+        style={{
+          padding: "10px 14px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          cursor: "pointer",
+          userSelect: "none",
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+            <span style={{ fontWeight: 600, color: "#f1f5f9", fontSize: 13 }}>
+              {skill.name}
             </span>
-          )}
-        </div>
-        <div style={{ fontSize: 11, color: "#64748b" }}>
-          {skill.language}
-          {skill.version_label ? ` · v${skill.version_label}` : ""}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
-        {/* Status badge */}
-        <span
-          style={{
-            fontSize: 11,
-            fontWeight: 600,
-            color: STATUS_COLOR[skill.status] ?? "#6b7280",
-            textTransform: "capitalize",
-          }}
-        >
-          {skill.status}
-        </span>
-
-        {/* Confidence bar */}
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#f1f5f9" }}>
-            {(skill.confidence * 100).toFixed(0)}%
+            {isCanonical && (
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  background: "#1e3a8a",
+                  color: "#93c5fd",
+                  padding: "1px 6px",
+                  borderRadius: 3,
+                  letterSpacing: "0.05em",
+                }}
+              >
+                CANONICAL
+              </span>
+            )}
           </div>
-          <div
+          <div style={{ fontSize: 11, color: "#64748b" }}>
+            {skill.language}
+            {skill.version_label ? ` · v${skill.version_label}` : ""}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+          {/* Status badge */}
+          <span
             style={{
-              width: 60,
-              height: 4,
-              background: "#1e293b",
-              borderRadius: 2,
-              marginTop: 2,
+              fontSize: 11,
+              fontWeight: 600,
+              color: STATUS_COLOR[skill.status] ?? "#6b7280",
+              textTransform: "capitalize",
             }}
           >
+            {skill.status}
+          </span>
+
+          {/* Confidence */}
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#f1f5f9" }}>
+              {confidencePct}
+            </div>
             <div
               style={{
-                width: `${skill.confidence * 100}%`,
-                height: "100%",
-                background: STATUS_COLOR[skill.status] ?? "#6b7280",
+                width: 60,
+                height: 4,
+                background: "#1e293b",
                 borderRadius: 2,
+                marginTop: 2,
               }}
-            />
+            >
+              <div
+                style={{
+                  width: `${skill.confidence * 100}%`,
+                  height: "100%",
+                  background: STATUS_COLOR[skill.status] ?? "#6b7280",
+                  borderRadius: 2,
+                }}
+              />
+            </div>
           </div>
-        </div>
 
-        {/* Latency */}
-        {skill.latency_p50_ms !== null && (
-          <div style={{ fontSize: 11, color: "#64748b", textAlign: "right" }}>
-            <div style={{ color: "#94a3b8" }}>{skill.latency_p50_ms}ms</div>
-            <div>p50</div>
-          </div>
-        )}
+          {/* Latency */}
+          {skill.latency_p50_ms !== null && (
+            <div style={{ fontSize: 11, color: "#64748b", textAlign: "right" }}>
+              <div style={{ color: "#94a3b8" }}>{skill.latency_p50_ms}ms</div>
+              <div>p50</div>
+            </div>
+          )}
+
+          {/* Expand toggle */}
+          <span style={{ color: "#475569", fontSize: 12 }}>
+            {expanded ? "▲" : "▼"}
+          </span>
+        </div>
       </div>
+
+      {/* Expanded code view */}
+      {expanded && (
+        <div style={{ borderTop: "1px solid #1e293b" }}>
+          {detailLoading && (
+            <p style={{ color: "#475569", padding: "12px 14px", margin: 0, fontSize: 12 }}>
+              Loading…
+            </p>
+          )}
+          {detail && (
+            <>
+              {detail.description && (
+                <p style={{ color: "#94a3b8", padding: "10px 14px 0", margin: 0, fontSize: 12, lineHeight: 1.5 }}>
+                  {detail.description}
+                </p>
+              )}
+              <pre
+                style={{
+                  margin: 0,
+                  padding: "12px 14px",
+                  background: "#0a0d14",
+                  color: "#e2e8f0",
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                  overflowX: "auto",
+                  fontFamily: "'Fira Code', 'Cascadia Code', 'Consolas', monospace",
+                  whiteSpace: "pre",
+                }}
+              >
+                <code>{detail.implementation}</code>
+              </pre>
+              {detail.tests.length > 0 && (
+                <div style={{ padding: "0 14px 12px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: "#475569", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+                    Tests ({detail.tests.length})
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {detail.tests.slice(0, 3).map((t, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          fontSize: 11,
+                          fontFamily: "monospace",
+                          color: "#64748b",
+                        }}
+                      >
+                        <span style={{ color: "#475569", minWidth: 16 }}>{i + 1}.</span>
+                        <span>
+                          <span style={{ color: "#94a3b8" }}>in:</span>{" "}
+                          {JSON.stringify(t.input)}
+                        </span>
+                        <span>→</span>
+                        <span>
+                          <span style={{ color: "#94a3b8" }}>out:</span>{" "}
+                          {JSON.stringify(t.expected)}
+                        </span>
+                      </div>
+                    ))}
+                    {detail.tests.length > 3 && (
+                      <div style={{ fontSize: 11, color: "#475569" }}>
+                        +{detail.tests.length - 3} more
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

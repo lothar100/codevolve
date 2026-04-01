@@ -1,0 +1,24 @@
+{
+  "problem_id": "34ae7cf6-9dc3-4702-99e7-3e4d20973e07",
+  "name": "template-string-interpolation",
+  "description": "Replaces {{variable}} placeholders in a template string with values from a data object. Missing keys are left as-is. O(n*m) time where n is template length and m is number of keys.",
+  "language": "typescript",
+  "domain": ["string"],
+  "inputs": [
+    {"name": "template", "type": "string"},
+    {"name": "data", "type": "Record<string, string>"}
+  ],
+  "outputs": [{"name": "result", "type": "string"}],
+  "examples": [
+    {"input": {"template": "Hello, {{name}}! You are {{age}} years old.", "data": {"name": "Alice", "age": "30"}}, "output": {"result": "Hello, Alice! You are 30 years old."}}
+  ],
+  "tests": [
+    {"input": {"template": "Hello, {{name}}!", "data": {"name": "Bob"}}, "expected": {"result": "Hello, Bob!"}},
+    {"input": {"template": "{{missing}} key stays", "data": {}}, "expected": {"result": "{{missing}} key stays"}},
+    {"input": {"template": "{{a}} and {{b}} and {{a}}", "data": {"a": "X", "b": "Y"}}, "expected": {"result": "X and Y and X"}},
+    {"input": {"template": "No placeholders", "data": {"x": "1"}}, "expected": {"result": "No placeholders"}}
+  ],
+  "implementation": "function interpolate(template: string, data: Record<string, string>): string {\n  return template.replace(/\\{\\{([^}]+)\\}\\}/g, (match, key) => {\n    const trimmed = key.trim();\n    return Object.prototype.hasOwnProperty.call(data, trimmed) ? data[trimmed] : match;\n  });\n}",
+  "tags": ["string", "template", "interpolation", "utility"],
+  "status": "verified"
+}

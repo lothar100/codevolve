@@ -815,6 +815,6 @@ async function mountainDashboard(
     cache_hit: false,
     total_problems: output.length,
     total_skills: totalSkills,
-    problems: output.slice(0, 100),
+    problems: output,
   });
 }

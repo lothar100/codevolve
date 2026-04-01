@@ -12,7 +12,7 @@ import { useMountainData } from "./hooks/useMountainData";
 import type { MountainProblem, MountainFilters } from "./types/mountain";
 import { API_BASE_URL } from "./types/mountain";
 
-type TabId = "mountain" | "analytics";
+type TabId = "registry" | "analytics";
 type AnalyticsTabId =
   | "resolve-performance"
   | "execution-caching"
@@ -31,7 +31,7 @@ const ANALYTICS_TABS: { id: AnalyticsTabId; label: string }[] = [
 function getTabFromHash(): TabId {
   const hash = window.location.hash.replace("#", "");
   if (hash === "analytics" || hash.startsWith("analytics/")) return "analytics";
-  return "mountain";
+  return "registry";
 }
 
 function getAnalyticsTabFromHash(): AnalyticsTabId {
@@ -79,7 +79,7 @@ function MountainView() {
 
       <div style={{ position: "absolute", inset: 0, left: 220, overflow: "hidden" }}>
         {loading && (
-          <div className="dashboard-loading">Loading mountain…</div>
+          <div className="dashboard-loading">Loading registry…</div>
         )}
         {error != null && !loading && (
           <div className="dashboard-error">{error}</div>
@@ -146,10 +146,10 @@ export function App() {
         <h1>codeVolve</h1>
         <nav className="main-nav">
           <button
-            className={tab === "mountain" ? "active" : ""}
-            onClick={() => navigateTo("mountain")}
+            className={tab === "registry" ? "active" : ""}
+            onClick={() => navigateTo("registry")}
           >
-            Mountain
+            Registry
           </button>
           <button
             className={tab === "analytics" ? "active" : ""}
@@ -161,7 +161,7 @@ export function App() {
       </header>
 
       <main>
-        {tab === "mountain" && (
+        {tab === "registry" && (
           <section style={{ height: "100%", overflow: "hidden" }}>
             <MountainView />
           </section>

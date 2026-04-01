@@ -18,6 +18,7 @@ import {
 const RUNNER_MAP: Record<string, string | undefined> = {
   python: process.env.RUNNER_LAMBDA_PYTHON,
   javascript: process.env.RUNNER_LAMBDA_NODE,
+  typescript: process.env.RUNNER_LAMBDA_NODE,
 };
 
 // ---------------------------------------------------------------------------
