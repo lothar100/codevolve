@@ -134,6 +134,7 @@ main {
 .analytics-content {
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 24px;
 }
 
@@ -149,16 +150,20 @@ main {
 }
 
 .dashboard section {
-  margin-top: 28px;
+  margin-top: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
 }
 
 .dashboard section h3 {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 
 /* ── Stat cards ───────────────────────────────────────────── */
@@ -255,3 +260,15 @@ main {
 }
 .recharts-tooltip-label { color: var(--text) !important; }
 .recharts-legend-item-text { color: var(--text-muted) !important; font-size: 12px; }
+
+/* Dim the bar-chart hover cursor — default white overlay is jarring on dark bg */
+.recharts-rectangle.recharts-tooltip-cursor {
+  fill: rgba(255, 255, 255, 0.05);
+}
+
+/* ── Section empty state ──────────────────────────────────── */
+.section-empty {
+  padding: 20px 0 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}

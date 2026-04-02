@@ -11,7 +11,7 @@
  * challenges forming the grey summit.
  */
 
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo } from "react";
 import type { MountainProblem, DominantStatus } from "../types/mountain.js";
 import { STATUS_COLORS } from "../types/mountain.js";
 
@@ -80,7 +80,6 @@ export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<Tooltip | null>(null);
   const [page, setPage] = useState(0);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   const { rows, brickConfig, totalPages, pageProblems } = useMemo(() => {
     const sorted = sortForPyramid(problems);
@@ -109,24 +108,22 @@ export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
     problem: MountainProblem,
     e: React.MouseEvent<HTMLDivElement>
   ) => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
     setHovered(problem.problem_id);
     setTooltip({
       problem,
-      x: e.clientX - rect.left + 12,
-      y: e.clientY - rect.top - 8,
+      x: e.clientX + 14,
+      y: e.clientY - 8,
     });
   };
 
   return (
     <div
-      ref={containerRef}
       style={{
         position: "relative",
         width: "100%",
         height: "100%",
         overflow: "auto",
+        scrollbarGutter: "stable",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -290,7 +287,7 @@ export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
       {tooltip && (
         <div
           style={{
-            position: "absolute",
+            position: "fixed",
             left: tooltip.x,
             top: tooltip.y,
             background: "rgba(15,23,42,0.97)",

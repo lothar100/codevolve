@@ -33,7 +33,6 @@ export function AgentBehaviorDashboard() {
     return <div className="dashboard-empty">No data available.</div>;
   }
 
-  /* Funnel: resolves vs executes as two horizontal bars */
   const funnelData = [
     { stage: "Resolves", count: data.total_resolves },
     { stage: "Executes", count: data.total_executes },
@@ -65,109 +64,129 @@ export function AgentBehaviorDashboard() {
       {/* 5a: Funnel chart (horizontal bar chart) */}
       <section>
         <h3>Resolve &rarr; Execute Funnel</h3>
-        <ResponsiveContainer width="100%" height={160}>
-          <BarChart layout="vertical" data={funnelData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis type="number" />
-            <YAxis type="category" dataKey="stage" width={80} />
-            <Tooltip />
-            <Bar dataKey="count" name="Count" fill="#3B82F6" />
-          </BarChart>
-        </ResponsiveContainer>
+        {data.total_resolves === 0 ? (
+          <p className="section-empty">No agent activity recorded yet.</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart layout="vertical" data={funnelData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis type="number" />
+              <YAxis type="category" dataKey="stage" width={80} />
+              <Tooltip />
+              <Bar dataKey="count" name="Count" fill="#3B82F6" />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </section>
 
       {/* 5a: Conversion rate over time */}
       <section>
         <h3>Conversion Rate Over Time</h3>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={data.conversion_over_time}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="hour" />
-            <YAxis unit="%" domain={[0, 100]} />
-            <Tooltip />
-            <Legend />
-            <Line
-              type="monotone"
-              dataKey="conversion_rate_pct"
-              name="Conversion Rate %"
-              stroke="#10B981"
-              dot={false}
-            />
-          </LineChart>
-        </ResponsiveContainer>
+        {data.conversion_over_time.length === 0 ? (
+          <p className="section-empty">No agent activity recorded yet.</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={data.conversion_over_time}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="hour" />
+              <YAxis unit="%" domain={[0, 100]} />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="conversion_rate_pct"
+                name="Conversion Rate %"
+                stroke="#10B981"
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
       </section>
 
       {/* 5b: Repeated resolves */}
       <section>
         <h3>Repeated Resolves (Agent Confusion Signals)</h3>
-        <table className="dashboard-table">
-          <thead>
-            <tr>
-              <th>Intent</th>
-              <th>Resolve Count</th>
-              <th>Distinct Skills</th>
-              <th>Avg Confidence</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.repeated_resolves.map((row, i) => (
-              <tr key={i}>
-                <td>{row.intent}</td>
-                <td>{row.resolve_count}</td>
-                <td>{row.distinct_skills_returned}</td>
-                <td>{row.avg_confidence.toFixed(3)}</td>
+        {data.repeated_resolves.length === 0 ? (
+          <p className="section-empty">No repeated resolves detected yet.</p>
+        ) : (
+          <table className="dashboard-table">
+            <thead>
+              <tr>
+                <th>Intent</th>
+                <th>Resolve Count</th>
+                <th>Distinct Skills</th>
+                <th>Avg Confidence</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.repeated_resolves.map((row, i) => (
+                <tr key={i}>
+                  <td>{row.intent}</td>
+                  <td>{row.resolve_count}</td>
+                  <td>{row.distinct_skills_returned}</td>
+                  <td>{row.avg_confidence.toFixed(3)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       {/* 5c: Abandoned executions */}
       <section>
         <h3>Abandoned Executions</h3>
-        <table className="dashboard-table">
-          <thead>
-            <tr>
-              <th>Intent</th>
-              <th>Resolves</th>
-              <th>Executes</th>
-              <th>Abandoned</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.abandoned_executions.map((row, i) => (
-              <tr key={i}>
-                <td>{row.intent}</td>
-                <td>{row.resolve_count}</td>
-                <td>{row.execute_count}</td>
-                <td>{row.abandoned_count}</td>
+        {data.abandoned_executions.length === 0 ? (
+          <p className="section-empty">No abandoned executions detected yet.</p>
+        ) : (
+          <table className="dashboard-table">
+            <thead>
+              <tr>
+                <th>Intent</th>
+                <th>Resolves</th>
+                <th>Executes</th>
+                <th>Abandoned</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.abandoned_executions.map((row, i) => (
+                <tr key={i}>
+                  <td>{row.intent}</td>
+                  <td>{row.resolve_count}</td>
+                  <td>{row.execute_count}</td>
+                  <td>{row.abandoned_count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       {/* 5d: Skill chaining patterns */}
       <section>
         <h3>Skill Chaining Patterns</h3>
-        <table className="dashboard-table">
-          <thead>
-            <tr>
-              <th>From Skill</th>
-              <th>To Skill</th>
-              <th>Chain Count</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.skill_chain_patterns.map((row, i) => (
-              <tr key={i}>
-                <td>{row.from_skill}</td>
-                <td>{row.to_skill}</td>
-                <td>{row.chain_count}</td>
+        {data.skill_chain_patterns.length === 0 ? (
+          <p className="section-empty">No skill chains recorded yet.</p>
+        ) : (
+          <table className="dashboard-table">
+            <thead>
+              <tr>
+                <th>From Skill</th>
+                <th>To Skill</th>
+                <th>Chain Count</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.skill_chain_patterns.map((row, i) => (
+                <tr key={i}>
+                  <td>{row.from_skill}</td>
+                  <td>{row.to_skill}</td>
+                  <td>{row.chain_count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
     </div>
   );

@@ -1,0 +1,8 @@
+{
+  "TrustedMountainTable160BEEDA": {
+    "TableName": "codevolve-trusted-mountains"
+  },
+  "EvolveJobsTable3DB27CE7": {
+    "TableName": "codevolve-evolve-jobs"
+  }
+}
