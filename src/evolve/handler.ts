@@ -35,7 +35,6 @@ import type {
 } from "aws-lambda";
 import { z } from "zod";
 import { PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { v4 as uuidv4 } from "uuid";
 import {
   docClient,
@@ -56,22 +55,11 @@ import type Anthropic from "@anthropic-ai/sdk";
 // Constants
 // ---------------------------------------------------------------------------
 
-const VALIDATE_LAMBDA_NAME =
-  process.env.VALIDATE_LAMBDA_NAME ?? "codevolve-validation-handler";
-
 /** Maximum number of similar skills to pull for the prompt. */
 const MAX_SIMILAR_SKILLS = 3;
 
 /** TTL for evolve-job records: 30 days from creation. */
 const JOB_TTL_SECONDS = 30 * 24 * 60 * 60;
-
-// ---------------------------------------------------------------------------
-// Lambda client singleton
-// ---------------------------------------------------------------------------
-
-const lambdaClient = new LambdaClient({
-  region: process.env.AWS_REGION ?? "us-east-2",
-});
 
 // ---------------------------------------------------------------------------
 // GapQueueMessage schema — matches the message shape sent by the Decision Engine
@@ -334,29 +322,7 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
       console.log(`[evolve] Created skill ${skillId} for intent "${message.intent}"`);
 
       // -----------------------------------------------------------------
-      // 8. Invoke validation Lambda asynchronously (fire-and-forget)
-      // -----------------------------------------------------------------
-      try {
-        await lambdaClient.send(
-          new InvokeCommand({
-            FunctionName: VALIDATE_LAMBDA_NAME,
-            InvocationType: "Event",
-            Payload: Buffer.from(
-              JSON.stringify({ pathParameters: { skill_id: skillId } }),
-            ),
-          }),
-        );
-        console.log(`[evolve] Validation Lambda invoked for skill ${skillId}`);
-      } catch (invokeErr) {
-        // Non-fatal: skill is written; validation can be triggered manually.
-        console.error(
-          `[evolve] Failed to invoke validation Lambda for skill ${skillId}:`,
-          invokeErr,
-        );
-      }
-
-      // -----------------------------------------------------------------
-      // 9. Update evolve-job to "complete"
+      // 8. Update evolve-job to "complete"
       // -----------------------------------------------------------------
       const completeNow = new Date().toISOString();
       await docClient.send(

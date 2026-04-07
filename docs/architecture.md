@@ -99,7 +99,7 @@ tasks/            ← Task tracker and lessons
 
 1. Analytics events → Kinesis only. Never write analytics to DynamoDB primary tables.
 2. LLM calls (Claude API) → `src/evolve/` only. Never in `/resolve` or `/execute` paths.
-3. Skill execution → sandboxed Lambda only. No network access, no filesystem writes.
+3. Skill execution → sandboxed Lambda only. No network access, no filesystem writes. `fetch`, `WebSocket`, `XMLHttpRequest`, `FormData`, and all other network globals are shadowed to a throwing stub via named parameters to `new Function()`. `process.env` is replaced with an empty object. `eval` and `globalThis` are shadowed to `undefined`. Only `require('crypto')` and `require('path')` are permitted. See `src/runners/node22/handler.js` and BETA-01.
 4. Archive → `status: "archived"` flag only. Never hard-delete records.
 5. ClickHouse/BigQuery → append-only. No analytics record deletion, even for archived skills.
 6. Canonical promotion → requires `confidence >= 0.85` AND all tests passing.
@@ -570,7 +570,7 @@ At high agent traffic (100M GET requests/month), CloudFront costs scale to ~$75/
 
 1. Analytics events → Kinesis only. Never write analytics to DynamoDB primary tables.
 2. LLM calls (Claude API) → `src/evolve/` only. Never in `/resolve` or `/execute` paths.
-3. Skill execution → sandboxed Lambda only. No network access, no filesystem writes.
+3. Skill execution → sandboxed Lambda only. No network access, no filesystem writes. `fetch`, `WebSocket`, `XMLHttpRequest`, `FormData`, and all other network globals are shadowed to a throwing stub via named parameters to `new Function()`. `process.env` is replaced with an empty object. `eval` and `globalThis` are shadowed to `undefined`. Only `require('crypto')` and `require('path')` are permitted. See `src/runners/node22/handler.js` and BETA-01.
 4. Archive → `status: "archived"` flag only. Never hard-delete records.
 5. ClickHouse/BigQuery → append-only. No analytics record deletion, even for archived skills.
 6. Canonical promotion → requires `confidence >= 0.85` AND all tests passing.

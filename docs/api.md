@@ -1201,10 +1201,44 @@ const EvolveResponse = z.object({
 
 ---
 
+## GET /
+
+Discovery document. Returns the full endpoint index, auth schemes, rate limits, and pointers to docs. Designed for AI agents arriving at the API without prior context. No authentication required.
+
+### Response
+
+**200 OK**
+
+```typescript
+const DiscoveryResponse = z.object({
+  service: z.literal("codevolve"),
+  version: z.string(),
+  description: z.string(),
+  base_url: z.string(),
+  docs_url: z.string(),     // https://codevolve.dev/docs
+  openapi_url: z.string(),  // future: https://api.codevolve.dev/v1/openapi.json
+  auth_schemes: z.record(z.string()),
+  rate_limits: z.record(z.string()),
+  endpoints: z.array(z.object({
+    method: z.string(),
+    path: z.string(),
+    auth: z.enum(["none", "api_key", "cognito"]),
+    description: z.string(),
+  })),
+});
+```
+
+### Side Effects
+
+None.
+
+---
+
 ## Appendix: Full Endpoint Summary
 
 | Method | Path | Success | Auth | Emits Event |
 |--------|------|---------|------|-------------|
+| GET | `/` | 200 | No | No |
 | POST | `/skills` | 201 | Yes | No (embedding async) |
 | GET | `/skills/:id` | 200 | Yes | No |
 | GET | `/skills/:id/versions` | 200 | Yes | No |

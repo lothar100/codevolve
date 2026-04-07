@@ -19,6 +19,8 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as events from "aws-cdk-lib/aws-events";
 import * as eventsTargets from "aws-cdk-lib/aws-events-targets";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import { Construct } from "constructs";
 import * as path from "path";
 import { execSync } from "child_process";
@@ -31,6 +33,7 @@ export class CodevolveStack extends cdk.Stack {
   public readonly archiveTable: dynamodb.Table;
   public readonly evolveJobsTable: dynamodb.Table;
   public readonly trustedMountainTable: dynamodb.Table;
+  public readonly apiKeysTable: dynamodb.Table;
   public readonly eventsStream: kinesis.Stream;
   public readonly userPool: cognito.UserPool;
   public readonly api: apigateway.RestApi;
@@ -198,6 +201,30 @@ export class CodevolveStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    // 9. codevolve-api-keys (BETA-03 — agent-friendly API key system)
+    // Stores SHA-256 hashes of API keys. Raw keys are NEVER stored.
+    // gsi-key-hash enables O(1) lookup by key hash in the authorizer.
+    // gsi-owner enables listing all keys for a given owner.
+    this.apiKeysTable = new dynamodb.Table(this, "ApiKeysTable", {
+      tableName: "codevolve-api-keys",
+      partitionKey: { name: "key_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    this.apiKeysTable.addGlobalSecondaryIndex({
+      indexName: "gsi-key-hash",
+      partitionKey: { name: "api_key_hash", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    this.apiKeysTable.addGlobalSecondaryIndex({
+      indexName: "gsi-owner",
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // -----------------------------------------------------------------------
     // Cognito — Community User Pool (IMPL-16)
     // -----------------------------------------------------------------------
@@ -247,10 +274,10 @@ export class CodevolveStack extends cdk.Stack {
     const lambdaEnvironment: Record<string, string> = {
       PROBLEMS_TABLE: this.problemsTable.tableName,
       SKILLS_TABLE: this.skillsTable.tableName,
-      CACHE_TABLE: this.cacheTable.tableName,
       ARCHIVE_TABLE: this.archiveTable.tableName,
       EVENTS_STREAM: this.eventsStream.streamName,
       KINESIS_STREAM_NAME: this.eventsStream.streamName,
+      API_KEYS_TABLE: this.apiKeysTable.tableName,
       AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
     };
 
@@ -273,6 +300,13 @@ export class CodevolveStack extends cdk.Stack {
       ...commonNodejsProps,
       functionName: "codevolve-health",
       entry: path.join(__dirname, "../src/shared/health.ts"),
+    });
+
+    // Discovery: GET /
+    const discoveryFn = new NodejsFunction(this, "DiscoveryFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-discovery",
+      entry: path.join(__dirname, "../src/registry/discovery.ts"),
     });
 
     // --- Registry Lambda functions (IMPL-02) ---
@@ -345,82 +379,22 @@ export class CodevolveStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
-    // Execution: POST /execute, POST /execute/chain (IMPL-06)
+    // Execution: POST /execute — logs local execution for analytics (IMPL-06)
     const executeFn = new NodejsFunction(this, "ExecuteFn", {
       ...commonNodejsProps,
       functionName: "codevolve-execute",
       entry: path.join(__dirname, "../src/execution/execute.ts"),
-      memorySize: 256,
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        ...lambdaEnvironment,
-        RUNNER_LAMBDA_PYTHON: "codevolve-runner-python312",
-        RUNNER_LAMBDA_NODE: "codevolve-runner-node22",
-        SKILLS_TABLE_NAME: this.skillsTable.tableName,
-        CACHE_TABLE_NAME: this.cacheTable.tableName,
-        KINESIS_STREAM_NAME: this.eventsStream.streamName,
-      },
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(5),
     });
 
-    const executeChainFn = new NodejsFunction(this, "ExecuteChainFn", {
-      ...commonNodejsProps,
-      functionName: "codevolve-execute-chain",
-      entry: path.join(__dirname, "../src/execution/executeChain.ts"),
-    });
-
-    // Runner Lambdas — CloudWatch Logs only (no AWS service access)
-    const runnerPython312Fn = new lambda.Function(this, "RunnerPython312Fn", {
-      functionName: "codevolve-runner-python312",
-      runtime: lambda.Runtime.PYTHON_3_12,
-      handler: "handler.handler",
-      memorySize: 512,
-      timeout: cdk.Duration.seconds(10),
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, "../src/runners/python312"),
-      ),
-    });
-
-    const runnerNode22Dir = path.join(__dirname, "../src/runners/node22");
-    const runnerNode22Fn = new lambda.Function(this, "RunnerNode22Fn", {
-      functionName: "codevolve-runner-node22",
-      runtime: lambda.Runtime.NODEJS_22_X,
-      handler: "handler.handler",
-      memorySize: 512,
-      timeout: cdk.Duration.seconds(10),
-      code: lambda.Code.fromAsset(runnerNode22Dir, {
-        bundling: {
-          image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-          local: {
-            tryBundle(outputDir: string): boolean {
-              try {
-                fs.cpSync(runnerNode22Dir, outputDir, { recursive: true });
-                return true;
-              } catch {
-                return false;
-              }
-            },
-          },
-          command: [
-            "bash",
-            "-c",
-            "npm install --production && cp -rT /asset-input /asset-output",
-          ],
-        },
-      }),
-    });
-
-    // Validation: POST /validate/{skill_id} (IMPL-11-B)
+    // Validation: POST /validate/{skill_id} — accepts caller-provided test results (IMPL-11-B)
     const validateFn = new NodejsFunction(this, "ValidateFn", {
       ...commonNodejsProps,
       functionName: "codevolve-validate",
       entry: path.join(__dirname, "../src/validation/handler.ts"),
       memorySize: 256,
-      timeout: cdk.Duration.seconds(300), // 5 min — full test suite may span many runner invocations
-      environment: {
-        ...lambdaEnvironment,
-        RUNNER_LAMBDA_PYTHON: "codevolve-runner-python312",
-        RUNNER_LAMBDA_NODE: "codevolve-runner-node22",
-      },
+      timeout: cdk.Duration.seconds(10),
     });
 
     // Analytics: POST /events
@@ -625,6 +599,38 @@ export class CodevolveStack extends cdk.Stack {
       },
     });
 
+    // API Key Authorizer (BETA-03 — TOKEN-type custom authorizer)
+    // Validates X-Api-Key header against codevolve-api-keys table via gsi-key-hash.
+    const apiKeyAuthorizerFn = new NodejsFunction(this, "ApiKeyAuthorizerFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-api-key-authorizer",
+      entry: path.join(__dirname, "../src/auth/apiKeyAuthorizer.ts"),
+      timeout: cdk.Duration.seconds(10),
+      environment: {
+        API_KEYS_TABLE: this.apiKeysTable.tableName,
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
+      },
+    });
+
+    // API Key management handlers (BETA-03)
+    const createApiKeyFn = new NodejsFunction(this, "CreateApiKeyFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-create-api-key",
+      entry: path.join(__dirname, "../src/auth/createApiKey.ts"),
+    });
+
+    const listApiKeysFn = new NodejsFunction(this, "ListApiKeysFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-list-api-keys",
+      entry: path.join(__dirname, "../src/auth/listApiKeys.ts"),
+    });
+
+    const deleteApiKeyFn = new NodejsFunction(this, "DeleteApiKeyFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-delete-api-key",
+      entry: path.join(__dirname, "../src/auth/deleteApiKey.ts"),
+    });
+
     // Trusted Mountain: GET/POST/DELETE /users/me/trusted-mountain (IMPL-16)
     const trustedMountainFn = new NodejsFunction(this, "TrustedMountainFn", {
       ...commonNodejsProps,
@@ -702,6 +708,7 @@ export class CodevolveStack extends cdk.Stack {
           "X-Request-Id",
           "X-Agent-Id",
           "Authorization",
+          "X-Api-Key",
         ],
       },
     });
@@ -726,6 +733,40 @@ export class CodevolveStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     };
 
+    // -----------------------------------------------------------------------
+    // API Key TOKEN Authorizer (BETA-03)
+    // -----------------------------------------------------------------------
+
+    // TOKEN-type custom authorizer that reads the X-Api-Key header.
+    // Used on all write endpoints so agents can use long-lived API keys
+    // instead of 1-hour Cognito tokens.
+    //
+    // TODO (BETA-02): Associate this authorizer's API keys with the
+    // UsagePlan created in BETA-02 (codevolveUsagePlan) once that task
+    // is complete and the UsagePlan construct is available in this stack.
+    const apiKeyTokenAuthorizer = new apigateway.TokenAuthorizer(
+      this,
+      "ApiKeyTokenAuthorizer",
+      {
+        handler: apiKeyAuthorizerFn,
+        authorizerName: "ApiKeyAuthorizer",
+        identitySource: "method.request.header.X-Api-Key",
+        resultsCacheTtl: cdk.Duration.seconds(300),
+      },
+    );
+
+    // Shorthand for methods that accept API key auth
+    const withApiKeyAuth: apigateway.MethodOptions = {
+      authorizer: apiKeyTokenAuthorizer,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
+    };
+
+    // GET / — discovery document
+    this.api.root.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(discoveryFn),
+    );
+
     // GET /health
     const healthResource = this.api.root.addResource("health");
     healthResource.addMethod(
@@ -742,7 +783,7 @@ export class CodevolveStack extends cdk.Stack {
     skillsResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(createSkillFn),
-      withAuth,
+      withApiKeyAuth,
     );
     const skillByIdResource = skillsResource.addResource("{id}");
     skillByIdResource.addMethod(
@@ -759,7 +800,7 @@ export class CodevolveStack extends cdk.Stack {
     promoteCanonicalResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(promoteCanonicalFn),
-      withAuth,
+      withApiKeyAuth,
     );
     const archiveResource = skillByIdResource.addResource("archive");
     archiveResource.addMethod(
@@ -777,7 +818,7 @@ export class CodevolveStack extends cdk.Stack {
     problemsResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(createProblemFn),
-      withAuth,
+      withApiKeyAuth,
     );
     problemsResource.addMethod(
       "GET",
@@ -802,18 +843,13 @@ export class CodevolveStack extends cdk.Stack {
       "POST",
       new apigateway.LambdaIntegration(executeFn),
     );
-    const executeChainResource = executeResource.addResource("chain");
-    executeChainResource.addMethod(
-      "POST",
-      new apigateway.LambdaIntegration(executeChainFn),
-    );
-
     // /validate (IMPL-11-B)
     const validateResource = this.api.root.addResource("validate");
     const validateBySkillIdResource = validateResource.addResource("{skill_id}");
     validateBySkillIdResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(validateFn),
+      withApiKeyAuth,
     );
 
     // /events
@@ -821,6 +857,7 @@ export class CodevolveStack extends cdk.Stack {
     eventsResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(emitEventsFn),
+      withApiKeyAuth,
     );
 
     // /analytics
@@ -835,6 +872,28 @@ export class CodevolveStack extends cdk.Stack {
     // /evolve
     this.api.root.addResource("evolve");
     // POST /evolve
+
+    // /auth/keys (BETA-03 — API key management)
+    // POST /auth/keys and GET /auth/keys accept both Cognito and API key auth.
+    // DELETE /auth/keys/{key_id} also accepts both.
+    const authResource = this.api.root.addResource("auth");
+    const keysResource = authResource.addResource("keys");
+    keysResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(createApiKeyFn),
+      withApiKeyAuth,
+    );
+    keysResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(listApiKeysFn),
+      withApiKeyAuth,
+    );
+    const keyByIdResource = keysResource.addResource("{key_id}");
+    keyByIdResource.addMethod(
+      "DELETE",
+      new apigateway.LambdaIntegration(deleteApiKeyFn),
+      withApiKeyAuth,
+    );
 
     // /users/me/trusted-mountain (IMPL-16)
     const usersResource = this.api.root.addResource("users");
@@ -887,7 +946,6 @@ export class CodevolveStack extends cdk.Stack {
     for (const fn of archiveFunctions) {
       this.problemsTable.grantReadWriteData(fn);
       this.skillsTable.grantReadWriteData(fn);
-      this.cacheTable.grantReadWriteData(fn);
       this.archiveTable.grantReadWriteData(fn);
       this.eventsStream.grantWrite(fn);
     }
@@ -919,32 +977,13 @@ export class CodevolveStack extends cdk.Stack {
 
     // Execution function permissions (IMPL-06)
     this.skillsTable.grantReadWriteData(executeFn);
-    this.cacheTable.grantReadWriteData(executeFn);
     this.eventsStream.grantWrite(executeFn);
-    executeFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["lambda:InvokeFunction"],
-        resources: [
-          runnerPython312Fn.functionArn,
-          runnerNode22Fn.functionArn,
-        ],
-      }),
-    );
 
     // ValidateFn permissions (IMPL-11-B)
     this.skillsTable.grantReadWriteData(validateFn);
-    this.cacheTable.grantReadWriteData(validateFn);
     this.eventsStream.grantWrite(validateFn);
     evolveGapQueue.grantSendMessages(validateFn);
-    validateFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["lambda:InvokeFunction"],
-        resources: [
-          runnerPython312Fn.functionArn,
-          runnerNode22Fn.functionArn,
-        ],
-      }),
-    );
+    validateFn.addEnvironment("GAP_QUEUE_URL", evolveGapQueue.queueUrl);
 
     // EvolveFn permissions (IMPL-12-B)
     this.skillsTable.grantReadWriteData(evolveFn);
@@ -952,12 +991,6 @@ export class CodevolveStack extends cdk.Stack {
     this.evolveJobsTable.grantReadWriteData(evolveFn);
     this.eventsStream.grantWrite(evolveFn);
     evolveGapQueue.grantConsumeMessages(evolveFn);
-    evolveFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["lambda:InvokeFunction"],
-        resources: [validateFn.functionArn],
-      }),
-    );
     evolveFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["secretsmanager:GetSecretValue"],
@@ -970,10 +1003,6 @@ export class CodevolveStack extends cdk.Stack {
     evolveFn.addEnvironment(
       "ANTHROPIC_SECRET_ARN",
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:codevolve/anthropic-api-key`,
-    );
-    evolveFn.addEnvironment(
-      "VALIDATE_LAMBDA_NAME",
-      validateFn.functionName,
     );
     evolveFn.addEnvironment(
       "EVOLVE_JOBS_TABLE",
@@ -995,8 +1024,6 @@ export class CodevolveStack extends cdk.Stack {
         ],
       }),
     );
-    // Cache invalidation on promotion (clear entries for demoted canonical)
-    this.cacheTable.grantReadWriteData(promoteCanonicalFn);
     // Pass GAP_QUEUE_URL so ValidateFn can enqueue gaps (reuse evolveGapQueue ref)
     validateFn.addEnvironment("GAP_QUEUE_URL", evolveGapQueue.queueUrl);
 
@@ -1012,6 +1039,14 @@ export class CodevolveStack extends cdk.Stack {
     // Trusted Mountain function permissions (IMPL-16)
     this.trustedMountainTable.grantReadWriteData(trustedMountainFn);
 
+    // API Key system permissions (BETA-03)
+    // Authorizer needs read + update (last_used_at fire-and-forget)
+    this.apiKeysTable.grantReadWriteData(apiKeyAuthorizerFn);
+    // CRUD handlers need read/write
+    this.apiKeysTable.grantReadWriteData(createApiKeyFn);
+    this.apiKeysTable.grantReadWriteData(listApiKeysFn);
+    this.apiKeysTable.grantReadWriteData(deleteApiKeyFn);
+
     // Decision Engine function permissions (IMPL-10 — ARCH-07 §6.5)
     this.skillsTable.grantReadWriteData(decisionEngineFn);
     gapLogTable.grantReadWriteData(decisionEngineFn);
@@ -1020,6 +1055,26 @@ export class CodevolveStack extends cdk.Stack {
     this.eventsStream.grantWrite(decisionEngineFn);
     archiveQueue.grantSendMessages(decisionEngineFn);
     evolveGapQueue.grantSendMessages(decisionEngineFn);
+
+    // -----------------------------------------------------------------------
+    // Frontend — existing codevolve-dashboard S3 static website bucket
+    // Deploy by syncing frontend/dist to the bucket (skill: deploy-codevolve-cdk-stack)
+    // -----------------------------------------------------------------------
+
+    const frontendDir = path.join(__dirname, "../frontend");
+    const frontendDist = path.join(frontendDir, "dist");
+
+    if (!fs.existsSync(frontendDist)) {
+      execSync("npm run build", { cwd: frontendDir, stdio: "pipe" });
+    }
+
+    const frontendBucket = s3.Bucket.fromBucketName(this, "FrontendBucket", "codevolve-dashboard");
+
+    new s3deploy.BucketDeployment(this, "FrontendDeployment", {
+      sources: [s3deploy.Source.asset(frontendDist)],
+      destinationBucket: frontendBucket,
+      prune: true,
+    });
 
     // -----------------------------------------------------------------------
     // Outputs
@@ -1033,6 +1088,16 @@ export class CodevolveStack extends cdk.Stack {
     new cdk.CfnOutput(this, "UserPoolId", {
       value: this.userPool.userPoolId,
       description: "Cognito Community User Pool ID",
+    });
+
+    new cdk.CfnOutput(this, "DashboardUrl", {
+      value: "http://codevolve-dashboard.s3-website.us-east-2.amazonaws.com/",
+      description: "codeVolve dashboard (S3 static website)",
+    });
+
+    new cdk.CfnOutput(this, "FrontendBucketName", {
+      value: frontendBucket.bucketName,
+      description: "S3 bucket for frontend assets",
     });
   }
 }

@@ -10,7 +10,7 @@ import type { ApiError } from "./types.js";
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "Content-Type,Accept,X-Request-Id,X-Agent-Id,Authorization",
+    "Content-Type,Accept,X-Request-Id,X-Agent-Id,Authorization,X-Api-Key",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
   "Content-Type": "application/json",
 };

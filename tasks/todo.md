@@ -800,6 +800,297 @@ All 5 sub-tasks are complete when ALL of the following pass:
 
 ---
 
+## Beta Readiness
+
+> This section tracks work required before public beta launch. All SECURITY tickets must be complete and verified before any public URL is shared or Moltbook posting goes live. AUTH tickets must be complete before CONTENT tickets are actionable.
+
+---
+
+### BETA-01 — SECURITY: Fix SSRF vulnerability in Node 22 skill runner sandbox
+
+| Field | Value |
+|-------|-------|
+| ID | BETA-01 |
+| Owner | Ada |
+| Priority | Critical |
+| Status | [~] In Progress |
+| Files | `src/runners/node22/handler.js`, `tests/unit/runners/node22-sandbox.test.js` |
+| Depends on | — |
+| Blocks | All public beta traffic |
+| Verification | Iris review of patched handler; automated test attempting fetch to 169.254.169.254 returns blocked error, not a response; audit checklist for all dangerous globals signed off |
+
+**2026-04-03 (Ada):** Sandbox rewritten with global shadowing for fetch, process, eval, WebSocket, FormData. Test file created at `tests/unit/runners/node22-sandbox.test.js`. All 8 tests pass. Pending Iris review.
+
+**Context.**
+The Node 22 skill runner at `src/runners/node22/handler.js` executes user-submitted skill implementations using `new Function()`. Node 22 exposes `fetch` as a global, meaning any skill implementation can call `fetch('http://169.254.169.254/latest/meta-data/')` and exfiltrate IAM role credentials from the Lambda execution environment. The sandbox currently blocks only `require` (allowlist: `crypto`, `path`) but does not shadow any other Node 22 globals.
+
+**Root cause.**
+The sandbox was designed around `require` isolation. It does not account for Node 22 globals introduced after the original sandbox design: `fetch`, `Headers`, `Request`, `Response`, `FormData`, `ReadableStream`, `WritableStream`, `TransformStream`, `WebSocket`, `Blob`, `URL`, `URLSearchParams`, `structuredClone`, `BroadcastChannel`, `MessageChannel`, `MessageEvent`. Several of these (`fetch`, `WebSocket`) provide direct network egress. Others (`process.env`) are pre-existing Node globals not addressed at all.
+
+**Motivation.**
+codeVolve is a public registry. Any agent or human can submit a skill. Before beta, a trivial malicious skill could extract the Lambda execution role credentials, enumerate internal VPC resources, or reach DynamoDB/S3 endpoints directly through the metadata service. This is a pre-condition blocker for all public access.
+
+**Acceptance criteria.**
+
+1. `globalThis.fetch` is shadowed with a blocking stub before `new Function()` receives control. Stub throws a descriptive `SandboxNetworkError` for any call.
+2. The following globals are similarly stubbed or removed from the function scope: `Headers`, `Request`, `Response`, `WebSocket`, `XMLHttpRequest` (if present), `FormData`.
+3. `process` is shadowed: the stub exposes only `{ env: {}, version: process.version, platform: process.platform }` — no `env` values, no `exit`, no `kill`, no `binding`, no `mainModule`.
+4. `require` bypass attempts are audited: `global.require`, `globalThis.require`, `Function.prototype.constructor` chain, `eval`. Document each and confirm the `new Function()` context does not expose them.
+5. A dedicated test file (`tests/unit/runners/node22-sandbox.test.js`) covers: fetch blocked, process.env empty, require allowlist enforced, eval blocked or harmless, metadata IP unreachable at the code level.
+6. Iris reviews the patched handler and the test file before status moves to [✓] Verified.
+7. Architectural rule 3 in `docs/architecture.md` is confirmed accurate post-patch: "No network access, no filesystem writes."
+
+**Design note for Ada.**
+The shadow must be injected into the `new Function()` parameter list — not just set on `globalThis` of the outer Lambda process — because `new Function()` inherits the global object of the executing realm. The correct pattern is to pass shadow variables as named parameters to the constructed function and declare them as `const fetch = () => { throw new SandboxNetworkError(...) }` in the injected preamble before user code runs.
+
+---
+
+### BETA-02 — SECURITY: API Gateway rate limiting and WAF
+
+| Field | Value |
+|-------|-------|
+| ID | BETA-02 |
+| Owner | Ada |
+| Priority | High |
+| Status | [ ] Planned |
+| Files | `infra/codevolve-stack.ts`, `docs/architecture.md` |
+| Depends on | — |
+| Blocks | Public beta traffic |
+| Verification | Iris review of CDK diff; manual test confirming 429 response at throttle threshold; WAF rule set visible in AWS Console; CORS preflight from non-allowlisted origin returns 403 |
+
+**Context.**
+API Gateway currently has no usage plans, no per-key or per-stage throttling, and no WAF in front of it. The `/execute` and `/validate` endpoints invoke sandboxed Lambda runners and update DynamoDB — both are expensive relative to a simple GET. An unauthenticated caller can invoke these at full Lambda concurrency limits at no cost to them and at potentially significant cost and disruption to codeVolve.
+
+**Motivation.**
+Before any public URL is shared (Moltbook post, docs, MCP server config), the API must have basic rate limiting and abuse resistance. The goal is not perfect security — it is preventing the most obvious denial-of-wallet and resource exhaustion attacks.
+
+**Acceptance criteria.**
+
+1. API Gateway usage plan created with:
+   - Default stage-level throttling: rate = 100 req/s, burst = 200.
+   - Per-endpoint override for POST `/execute` and POST `/validate`: rate = 10 req/s, burst = 20.
+   - Per-endpoint override for POST `/evolve`: rate = 2 req/s, burst = 5 (Claude API calls are expensive).
+2. API keys are required for write endpoints (see BETA-03 for the key system design). Usage plan is associated with the key system introduced in BETA-03.
+3. AWS WAF WebACL deployed and associated with the API Gateway stage:
+   - AWS Managed Rules: `AWSManagedRulesCommonRuleSet` and `AWSManagedRulesKnownBadInputsRuleSet` enabled.
+   - Rate-based rule: block IPs exceeding 1,000 requests per 5-minute window.
+4. CORS: `Access-Control-Allow-Origin` header restricted from `*` to an explicit allowlist. For beta, allowlist is `https://codevolve.example.com` and `http://localhost:5173` (local dev). The wildcard origin must be removed from all Lambda handlers that currently set it.
+5. CDK diff for BETA-02 changes is reviewed by Iris before deploy.
+6. `docs/architecture.md` AWS Resources table updated to include WAF WebACL and Usage Plan.
+
+**Design notes.**
+- WAF must be associated at the regional API Gateway level, not at CloudFront (CloudFront WAF is a separate resource in us-east-1). Use `CfnWebACLAssociation` targeting the stage ARN.
+- WAF adds ~$5–$15/month at beta traffic volumes. Acceptable.
+- Usage plan throttling is per API key at beta. Unauthenticated read endpoints (GET /skills, GET /problems, POST /resolve) are rate-limited at the stage level only, not per-key.
+
+---
+
+### BETA-03 — AUTH: Agent-friendly API key system
+
+| Field | Value |
+|-------|-------|
+| ID | BETA-03 |
+| Owner | Jorven (design) → Ada (implementation) |
+| Priority | High |
+| Status | [ ] Planned |
+| Files | `docs/api.md`, `docs/decisions.md`, `infra/codevolve-stack.ts`, `src/auth/` (new), `tests/unit/auth/` (new) |
+| Depends on | BETA-02 (usage plans must exist before API keys can be associated) |
+| Blocks | BETA-05 (Moltbook beta tester targeting), BETA-06 (post draft references key signup URL) |
+| Verification | Jorven approves API contract before Ada implements; Iris reviews implementation; end-to-end test: POST /auth/keys returns key, key passed as X-Api-Key on POST /skills returns 201, invalid key returns 403 |
+
+**Context.**
+The current auth model uses AWS Cognito ID tokens (1-hour expiry). This is hostile to AI agents: tokens expire during long-running tasks, agents cannot complete Cognito sign-up flows autonomously, and there is no concept of a machine identity. The MCP server currently has no practical auth story for agent consumers.
+
+For the beta, agents need a stable, long-lived credential they can configure once and use indefinitely. Humans and admins continue to use Cognito. Read endpoints should have no auth requirement to minimize friction for discovery.
+
+**Motivation.**
+Without agent-native auth, the MCP server cannot be used by agents in production. This is the primary integration path for the beta audience. The Moltbook post cannot be written until the key signup URL exists.
+
+**API contract (must be approved by Jorven before implementation begins).**
+
+```
+POST /auth/keys
+Authorization: Cognito ID token (human/admin only — bootstraps first key)
+  OR: existing valid API key (agents can self-issue additional keys)
+Body: { "name": "string (agent or service name)", "description"?: "string" }
+Response 201:
+{
+  "key_id": "uuid",
+  "api_key": "cvk_<random 48 chars>",   // shown once, never retrievable again
+  "name": "string",
+  "created_at": "ISO8601",
+  "owner_id": "string"                   // Cognito sub or existing key's owner_id
+}
+Response 400: { "code": "INVALID_REQUEST", "message": "..." }
+Response 401: { "code": "UNAUTHORIZED", "message": "..." }
+
+GET /auth/keys
+Authorization: Cognito ID token or API key
+Response 200: { "keys": [{ "key_id", "name", "description", "created_at", "last_used_at", "revoked" }] }
+// Note: api_key value is never returned after creation
+
+DELETE /auth/keys/{key_id}
+Authorization: Cognito ID token or API key (owner only)
+Response 204: (no body)
+Response 403: { "code": "FORBIDDEN", "message": "..." }
+Response 404: { "code": "NOT_FOUND", "message": "..." }
+```
+
+**DynamoDB table: `codevolve-api-keys`**
+
+```
+PK: key_id (String, UUID)
+Attributes:
+  api_key_hash   String     SHA-256 of the raw api_key (stored, never the raw value)
+  owner_id       String     Cognito sub or parent key's owner_id
+  name           String
+  description    String?
+  created_at     String     ISO8601
+  last_used_at   String?    ISO8601, updated async on use
+  revoked        Boolean    default false
+  revoked_at     String?    ISO8601
+
+GSI: gsi-owner (PK: owner_id) — for GET /auth/keys listing
+Billing: PAY_PER_REQUEST
+```
+
+**Lambda authorizer design.**
+A new `api-key-authorizer` Lambda is deployed as a TOKEN-type custom authorizer on API Gateway. It receives the `X-Api-Key` header value, hashes it with SHA-256, queries `codevolve-api-keys` GSI, validates `revoked == false`, writes `last_used_at` asynchronously (fire-and-forget, does not block auth response), and returns an IAM policy document granting `execute-api:Invoke` on the relevant resources.
+
+**Endpoint auth matrix (to be documented in `docs/api.md`):**
+
+| Endpoint | Auth required |
+|----------|--------------|
+| GET /skills, GET /skills/:id | None |
+| GET /problems, GET /problems/:id | None |
+| POST /resolve | None |
+| POST /execute | None (read-only execution of existing skills) |
+| GET /analytics/dashboards/:type | None |
+| POST /skills | API key or Cognito |
+| POST /problems | API key or Cognito |
+| POST /skills/:id/promote-canonical | API key or Cognito |
+| POST /validate/:skill_id | API key or Cognito |
+| POST /events | API key or Cognito |
+| POST /evolve | API key or Cognito |
+| POST /auth/keys | Cognito (first key) or API key |
+| GET /auth/keys | API key or Cognito |
+| DELETE /auth/keys/:id | API key or Cognito (owner only) |
+
+**Acceptance criteria.**
+
+1. ADR recorded in `docs/decisions.md` (ADR-011): API key system rationale, decision to use custom Lambda authorizer over Cognito machine credentials, key format, storage design.
+2. `codevolve-api-keys` DynamoDB table deployed via CDK.
+3. `api-key-authorizer` Lambda deployed and attached to write endpoints in API Gateway.
+4. `POST /auth/keys`, `GET /auth/keys`, `DELETE /auth/keys/:id` implemented and tested.
+5. Raw key value is never stored or logged — only SHA-256 hash in DynamoDB.
+6. Unit tests cover: valid key accepted, revoked key rejected, non-existent key rejected, malformed key rejected.
+7. `docs/api.md` updated with `/auth/keys` contract and the endpoint auth matrix.
+8. Cognito authorizer remains in place for human/admin write paths. API key authorizer is additive, not a replacement.
+
+---
+
+### BETA-04 — RESEARCH: Moltbook competitive landscape survey
+
+| Field | Value |
+|-------|-------|
+| ID | BETA-04 |
+| Owner | Human (manual research task) |
+| Priority | Medium |
+| Status | [ ] Planned |
+| Files | `docs/moltbook-research.md` (new, output of this task) |
+| Depends on | — |
+| Blocks | BETA-06 (post draft should be informed by competitive context) |
+| Verification | Output doc exists, covers all items in acceptance criteria, reviewed by project lead before Moltbook post is written |
+
+**Context.**
+codeVolve is planning a beta launch post on Moltbook, a social network for AI agents recently acquired by Meta. Before posting, the team needs to understand what is already on Moltbook in the same space — to identify differentiation, avoid reinventing positioning that already exists, find communities to post into, and avoid stepping on active projects that may react negatively.
+
+**Motivation.**
+Posting into an existing active community without surveying it first risks missing the right Submolts, duplicating positioning already claimed by a competitor, or generating negative reactions from existing projects. Research first; post second.
+
+**Acceptance criteria.**
+The output document `docs/moltbook-research.md` must cover:
+
+1. **Competitive landscape:** A table of any projects found on Moltbook that overlap with codeVolve's positioning — skill/tool registries for agents, caching/memoization services for agent computation, reusable algorithmic primitive libraries, MCP server directories, agent capability registries. For each: project name, Moltbook handle, brief description, apparent activity level, overlap with codeVolve.
+2. **Non-overlapping adjacent projects:** Projects in adjacent spaces (agent orchestration, tool use, code generation) that are potential partners or integration targets, not competitors.
+3. **Relevant Submolts:** A list of Submolts (topic communities on Moltbook) relevant to the beta post. For each: name, member count if visible, post frequency, fit with codeVolve's topic (developer tools, APIs, MCP, skill reuse, agent infrastructure).
+4. **Recommended Submolts to post into:** Ranked shortlist with rationale.
+5. **Tone and format notes:** Observations on what kind of posts perform well in the target Submolts — length, framing, technical depth, agent-native vs human-readable tone.
+6. **Risks:** Any active hostile projects, drama, or community norms that would affect the launch post strategy.
+
+**Note:** This is a manual human research task. It cannot be automated or delegated to an agent. A human must browse Moltbook's agent feed, search for relevant terms (MCP, skill registry, tool cache, algorithm, resolve intent), and compile findings.
+
+---
+
+### BETA-05 — RESEARCH: Moltbook beta tester identification
+
+| Field | Value |
+|-------|-------|
+| ID | BETA-05 |
+| Owner | Human (manual research task) |
+| Priority | Medium |
+| Status | [ ] Planned |
+| Files | `docs/moltbook-beta-targets.md` (new, output of this task) |
+| Depends on | BETA-04 (Submolt list needed to know where to look) |
+| Blocks | BETA-06 (post draft benefits from knowing the target audience concretely) |
+| Verification | Output doc exists with a shortlist of at least 10 agent accounts and 3 Submolts meeting the criteria below |
+
+**Context.**
+The Moltbook launch will be more effective if it reaches agents and operators who are already primed to adopt developer tools, API integrations, and MCP-based skill reuse. Spray-posting to the entire Moltbook feed is low-signal. Targeted reach to the right agents and communities produces better early adopters.
+
+**Motivation.**
+Early beta testers who understand the use case will generate real usage data, surface meaningful bugs, and provide credible social proof (votes, reposts, agent-to-agent recommendations on Moltbook). Identifying them in advance lets the team engage directly before or immediately after the post goes live.
+
+**Acceptance criteria.**
+The output document `docs/moltbook-beta-targets.md` must include:
+
+1. **Agent account shortlist:** At least 10 Moltbook agent accounts that meet at least two of these criteria:
+   - Posts about developer tools, APIs, code generation, or LLM tool use.
+   - Mentions MCP servers, skill reuse, or tool registries.
+   - Has posted about caching, memoization, or avoiding redundant computation.
+   - Is active in developer-adjacent Submolts identified in BETA-04.
+   - Has a verifiable operator (human or org) who is reachable for direct outreach.
+   For each: handle, follower count if visible, brief description, which criteria they meet, suggested engagement approach (direct message, reply to existing post, mention in launch post).
+2. **Submolt target list:** The 3 best Submolts to post into at launch, with rationale and recommended posting order.
+3. **Operator contacts:** Any human operators behind the agent accounts who would be worth contacting directly for early access before the public post.
+4. **Timing notes:** Any observations about posting cadence, time-of-day activity patterns, or upcoming events in the target communities that would affect launch timing.
+
+---
+
+### BETA-06 — CONTENT: Moltbook beta launch post draft
+
+| Field | Value |
+|-------|-------|
+| ID | BETA-06 |
+| Owner | Jorven (draft) |
+| Priority | Low |
+| Status | [ ] Planned |
+| Files | `tasks/moltbook-post-draft.md` |
+| Depends on | BETA-01 (security must be resolved before public launch), BETA-03 (API key URL must exist), BETA-04 (competitive context informs positioning), BETA-05 (audience informs tone) |
+| Blocks | — |
+| Verification | Draft reviewed and approved by project lead; all TODO placeholders filled in; BETA-01 and BETA-02 verified complete before post goes live |
+
+**Context.**
+Moltbook is a short-form social platform for AI agents. Agents browse, vote, and repost content. The audience is primarily AI agents (and their operators), not human developers. The post must be written in a register that an agent would find immediately useful — not a marketing pitch, but a capability announcement with enough specificity to let an agent decide whether to try it.
+
+**Motivation.**
+The Moltbook launch is the primary beta acquisition channel. The post is the top of the funnel. It must be written before BETA-01 and BETA-03 are deployed so it is ready to go live immediately when the security and auth gates pass.
+
+**Acceptance criteria.**
+
+1. Draft saved at `tasks/moltbook-post-draft.md`.
+2. Post explains codeVolve in agent-native terms: a registry of verified, cached algorithmic skills resolvable by intent and executable via API or MCP server.
+3. Post highlights the core value proposition concisely: skip re-deriving known solutions, get sub-second cached results, chain skills into pipelines, contribute improvements back.
+4. Post references the three primary integration paths: `/resolve` + `/execute` REST API, MCP server config, skill chaining via `/execute/chain`.
+5. Post includes instructions for getting an API key — with a TODO placeholder for the actual URL until BETA-03 is deployed.
+6. Post is short-form appropriate: under 300 words, no marketing fluff, no emoji overload, technically specific enough that an agent can evaluate it without clicking through.
+7. Post includes a TODO section listing items that must be filled in before publishing: actual API URL, docs URL, API key signup URL, any Submolt targeting notes from BETA-05.
+8. Tone review: the draft must read as if written by or for an agent, not a human marketing department. Project lead approves tone before the post goes live.
+
+**Draft location:** `tasks/moltbook-post-draft.md` — see that file for the current draft.
+
+---
+
 ## Phase 5 — Visualization + Scale
 
 | ID | Owner | Status | Task |

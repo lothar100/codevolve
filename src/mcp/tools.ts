@@ -66,8 +66,7 @@ export async function resolveSkill(
 
 export const executeSkillSchema = z.object({
   skill_id: z.string().uuid(),
-  inputs: z.record(z.unknown()),
-  timeout_ms: z.number().int().min(100).max(300000).optional(),
+  inputs: z.record(z.unknown()).optional(),
 });
 
 export async function executeSkill(
@@ -75,40 +74,9 @@ export async function executeSkill(
   raw: unknown
 ): Promise<ToolResult> {
   const input = executeSkillSchema.parse(raw);
-  const body: Record<string, unknown> = {
-    skill_id: input.skill_id,
-    inputs: input.inputs,
-  };
-  if (input.timeout_ms !== undefined) body["timeout_ms"] = input.timeout_ms;
+  const body: Record<string, unknown> = { skill_id: input.skill_id };
+  if (input.inputs !== undefined) body["inputs"] = input.inputs;
   return callApi(() => client.request("POST", "/execute", body));
-}
-
-// ---------------------------------------------------------------------------
-// Tool 3: chain_skills
-// ---------------------------------------------------------------------------
-
-const chainStepSchema = z.object({
-  skill_id: z.string().uuid(),
-  input_mapping: z.record(z.string()).optional(),
-});
-
-export const chainSkillsSchema = z.object({
-  steps: z.array(chainStepSchema).min(1).max(10),
-  inputs: z.record(z.unknown()),
-  timeout_ms: z.number().int().min(100).max(600000).optional(),
-});
-
-export async function chainSkills(
-  client: CodevolveClient,
-  raw: unknown
-): Promise<ToolResult> {
-  const input = chainSkillsSchema.parse(raw);
-  const body: Record<string, unknown> = {
-    steps: input.steps,
-    inputs: input.inputs,
-  };
-  if (input.timeout_ms !== undefined) body["timeout_ms"] = input.timeout_ms;
-  return callApi(() => client.request("POST", "/execute/chain", body));
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +135,9 @@ export async function listSkills(
 
 export const validateSkillSchema = z.object({
   skill_id: z.string().uuid(),
+  pass_count: z.number().int().min(0),
+  fail_count: z.number().int().min(0),
+  total_tests: z.number().int().min(1),
 });
 
 export async function validateSkill(
@@ -175,8 +146,86 @@ export async function validateSkill(
 ): Promise<ToolResult> {
   const input = validateSkillSchema.parse(raw);
   return callApi(() =>
-    client.request("POST", `/validate/${input.skill_id}`)
+    client.request("POST", `/validate/${input.skill_id}`, {
+      pass_count: input.pass_count,
+      fail_count: input.fail_count,
+      total_tests: input.total_tests,
+    })
   );
+}
+
+// ---------------------------------------------------------------------------
+// Tool 3: chain_skills
+// ---------------------------------------------------------------------------
+
+export const chainSkillsSchema = z.object({
+  steps: z
+    .array(
+      z.object({
+        intent: z.string().min(1).describe("Natural-language description of this step"),
+        language: z.string().optional().describe("Preferred language for this step"),
+        tags: z.array(z.string()).optional().describe("Optional tags to narrow the search"),
+      })
+    )
+    .min(2)
+    .describe("Ordered list of steps. Each step is resolved independently; outputs of one step are piped as inputs to the next by the caller."),
+});
+
+/**
+ * Resolve each step in a chain sequentially and return the implementations
+ * in order. The caller is responsible for running each implementation locally
+ * and piping outputs into the next step's inputs.
+ */
+export async function chainSkills(
+  client: CodevolveClient,
+  raw: unknown
+): Promise<ToolResult> {
+  const input = chainSkillsSchema.parse(raw);
+
+  const results: Array<{
+    step: number;
+    intent: string;
+    skill: unknown;
+    error?: string;
+  }> = [];
+
+  for (let i = 0; i < input.steps.length; i++) {
+    const step = input.steps[i];
+    const body: Record<string, unknown> = { intent: step.intent };
+    if (step.language !== undefined) body["language"] = step.language;
+    if (step.tags !== undefined) body["tags"] = step.tags;
+
+    try {
+      const skill = await client.request("POST", "/resolve", body);
+      results.push({ step: i + 1, intent: step.intent, skill });
+    } catch (err: unknown) {
+      const apiErr = err as { body?: unknown; message?: string };
+      results.push({
+        step: i + 1,
+        intent: step.intent,
+        skill: null,
+        error: JSON.stringify(apiErr.body ?? { error: apiErr.message ?? String(err) }),
+      });
+    }
+  }
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            chain_length: input.steps.length,
+            steps: results,
+            note: "Run each implementation locally in order. Pipe each step's outputs as the next step's inputs.",
+          },
+          null,
+          2
+        ),
+      },
+    ],
+    isError: results.some((r) => r.error !== undefined),
+  };
 }
 
 // ---------------------------------------------------------------------------

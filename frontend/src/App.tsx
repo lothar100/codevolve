@@ -8,11 +8,12 @@ import { Mountain2D } from "./components/Mountain2D";
 import { FilterSidebar } from "./components/FilterSidebar";
 import { DetailPanel } from "./components/DetailPanel";
 import { ProblemDetailModal } from "./components/ProblemDetailModal";
+import { DocsPage } from "./components/DocsPage";
 import { useMountainData } from "./hooks/useMountainData";
 import type { MountainProblem, MountainFilters } from "./types/mountain";
 import { API_BASE_URL } from "./types/mountain";
 
-type TabId = "registry" | "analytics";
+type TabId = "registry" | "analytics" | "docs";
 type AnalyticsTabId =
   | "resolve-performance"
   | "execution-caching"
@@ -31,6 +32,7 @@ const ANALYTICS_TABS: { id: AnalyticsTabId; label: string }[] = [
 function getTabFromHash(): TabId {
   const hash = window.location.hash.replace("#", "");
   if (hash === "analytics" || hash.startsWith("analytics/")) return "analytics";
+  if (hash === "docs") return "docs";
   return "registry";
 }
 
@@ -140,6 +142,7 @@ export function App() {
     if (sub != null) setAnalyticsTab(sub);
   };
 
+
   return (
     <div className="app">
       <header className="app-header">
@@ -156,6 +159,12 @@ export function App() {
             onClick={() => navigateTo("analytics")}
           >
             Analytics
+          </button>
+          <button
+            className={tab === "docs" ? "active" : ""}
+            onClick={() => navigateTo("docs")}
+          >
+            Docs
           </button>
         </nav>
       </header>
@@ -192,6 +201,12 @@ export function App() {
               {analyticsTab === "evolution-gap" && <EvolutionGapDashboard />}
               {analyticsTab === "agent-behavior" && <AgentBehaviorDashboard />}
             </div>
+          </section>
+        )}
+
+        {tab === "docs" && (
+          <section style={{ height: "100%", overflowY: "auto" }}>
+            <DocsPage />
           </section>
         )}
       </main>

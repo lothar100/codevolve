@@ -7,7 +7,6 @@
 
 import {
   QueryCommand,
-  BatchWriteCommand,
   UpdateCommand,
   PutCommand,
 } from "@aws-sdk/lib-dynamodb";
@@ -18,7 +17,6 @@ import {
 import {
   docClient,
   SKILLS_TABLE,
-  CACHE_TABLE,
   ARCHIVE_TABLE,
   PROBLEMS_TABLE,
 } from "../shared/dynamo.js";
@@ -35,59 +33,13 @@ const bedrockClient = new BedrockRuntimeClient({
 const BEDROCK_MODEL_ID = "amazon.titan-embed-text-v2:0";
 
 // ---------------------------------------------------------------------------
-// Cache invalidation
+// Cache invalidation (no-op — execution cache removed)
 // ---------------------------------------------------------------------------
 
-/**
- * Query all cache entries for a skill and batch-delete them.
- * Idempotent: deleting non-existent keys is a no-op.
- */
-export async function invalidateCacheForSkill(skillId: string): Promise<number> {
-  let deletedCount = 0;
-  let exclusiveStartKey: Record<string, unknown> | undefined;
-
-  do {
-    const queryResult = await docClient.send(
-      new QueryCommand({
-        TableName: CACHE_TABLE,
-        KeyConditionExpression: "skill_id = :sid",
-        ExpressionAttributeValues: { ":sid": skillId },
-        ProjectionExpression: "skill_id, input_hash",
-        ExclusiveStartKey: exclusiveStartKey,
-      }),
-    );
-
-    const items = queryResult.Items ?? [];
-    if (items.length === 0) break;
-
-    // BatchWriteItem supports max 25 items per call
-    const batches: Array<Array<Record<string, unknown>>> = [];
-    for (let i = 0; i < items.length; i += 25) {
-      batches.push(items.slice(i, i + 25));
-    }
-
-    for (const batch of batches) {
-      await docClient.send(
-        new BatchWriteCommand({
-          RequestItems: {
-            [CACHE_TABLE]: batch.map((item) => ({
-              DeleteRequest: {
-                Key: {
-                  skill_id: item.skill_id,
-                  input_hash: item.input_hash,
-                },
-              },
-            })),
-          },
-        }),
-      );
-      deletedCount += batch.length;
-    }
-
-    exclusiveStartKey = queryResult.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-
-  return deletedCount;
+/** No-op: skills are local CLI tools with no server-side execution cache. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export async function invalidateCacheForSkill(_skillId: string): Promise<number> {
+  return 0;
 }
 
 // ---------------------------------------------------------------------------

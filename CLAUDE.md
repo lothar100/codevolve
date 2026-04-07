@@ -4,30 +4,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project: codeVolve
 
-A global, AI-native registry of programming problems and solutions. Problems are "bricks" in a visual "mountain." Solutions evolve through stages: Unsolved → Partial → Verified → Optimized. Designed primarily for AI agents (Claude Code, etc.) as consumers, secondarily for humans.
+A global registry of reusable CLI tools and scripts. Problems are "bricks" in a visual "mountain." Solutions evolve through stages: Unsolved → Partial → Verified → Optimized. Designed primarily for AI agents (Claude Code, etc.) as consumers, secondarily for humans.
 
-**Core value proposition:** Replace agentic computation with reusable, cached, verifiable algorithmic "skills."
+**Core value proposition:** Save Claude API token usage by replacing agentic computation with pre-written, retrievable scripts. Instead of asking Claude to reason through a task from scratch, resolve a skill from the registry, fetch its implementation, and run it locally.
 
-**Starting surface area:** The analytics and feedback system — event-driven telemetry that drives routing, caching, and skill evolution automatically.
+**Execution model:** Skills are local CLI tools — scripts that run in the caller's own environment using their own credentials, filesystem, and installed tools. The registry provides discoverability and retrieval; execution is always the caller's responsibility. There is no Lambda runner or sandboxed execution layer.
 
 ---
 
 ## Architecture
 
 ```
-Client / Agent
+Client / Agent (local machine)
     │
-    ├── POST /resolve    → Skill Router     (Lambda + DynamoDB embeddings + cosine similarity)
-    ├── POST /execute    → Execution Layer  (Lambda + DynamoDB cache + skill runner)
-    ├── POST /validate   → Validation Layer (Lambda + test runner)
+    ├── POST /resolve    → Skill Router     (API Gateway + DynamoDB embeddings + cosine similarity)
+    │                      returns best matching skill + implementation
+    ├── POST /execute    → Execution Layer  (logs the run, updates analytics — does NOT run the script)
+    ├── POST /validate   → Validation Layer (marks skill status, updates confidence score)
     └── events emitted  → Kinesis → Analytics Store (ClickHouse / BigQuery)
                                          └── Decision Engine (scheduled Lambda)
                                                ├── auto-cache trigger
                                                ├── optimization flag
                                                └── gap → /evolve pipeline (Claude Code agent)
+
+Skill lifecycle:
+  resolve intent → fetch implementation → run locally → emit event → analytics feedback loop
 ```
 
-**Infrastructure:** AWS (Lambda, API Gateway, DynamoDB, Kinesis). Embeddings stored in DynamoDB with client-side similarity (ADR-004). Cache via DynamoDB TTL (ADR-003). Analytics store (ClickHouse) separate from primary DB.
+**Infrastructure:** AWS (API Gateway, DynamoDB, Kinesis). Embeddings stored in DynamoDB with client-side similarity (ADR-004). Analytics store (ClickHouse) separate from primary DB. No Lambda execution runners.
 
 ---
 

@@ -1,7 +1,0 @@
-{
-  "name": "codevolve-runner-node22",
-  "version": "1.0.0",
-  "dependencies": {
-    "sucrase": "^3.35.0"
-  }
-}

@@ -61,20 +61,13 @@ export function createServer(client: CodevolveClient): McpServer {
     "execute_skill",
     {
       description:
-        "Execute a codeVolve skill by ID with the given inputs. Returns the skill output or an error. Results may be served from cache.",
+        "Log that a codeVolve skill was executed locally. Skills are local CLI tools — fetch the implementation via get_skill, run it in your environment, then call this to record the execution for analytics.",
       inputSchema: {
-        skill_id: z.string().uuid().describe("UUID of the skill to execute"),
-        inputs: z.record(z.unknown()).describe("Input parameters matching the skill contract"),
-        timeout_ms: z
-          .number()
-          .int()
-          .min(100)
-          .max(300000)
-          .optional()
-          .describe("Execution timeout in milliseconds (default: 30000)"),
+        skill_id: z.string().uuid().describe("UUID of the skill that was executed"),
+        inputs: z.record(z.unknown()).optional().describe("Input parameters that were used (optional, for analytics)"),
       },
     },
-    (args: { skill_id: string; inputs: Record<string, unknown>; timeout_ms?: number }) =>
+    (args: { skill_id: string; inputs?: Record<string, unknown> }) =>
       executeSkill(client, args)
   );
 
@@ -82,33 +75,22 @@ export function createServer(client: CodevolveClient): McpServer {
     "chain_skills",
     {
       description:
-        "Execute a sequence of codeVolve skills where the output of one step feeds into the next. Supports optional field remapping between steps.",
+        "Resolve a sequence of codeVolve skills in order and return all implementations. Each step is resolved independently via embedding search. Run each implementation locally in sequence, piping one step's outputs as the next step's inputs.",
       inputSchema: {
         steps: z
           .array(
             z.object({
-              skill_id: z.string().uuid(),
-              input_mapping: z.record(z.string()).optional(),
+              intent: z.string().min(1).describe("Natural-language description of this step"),
+              language: z.string().optional().describe("Preferred language for this step"),
+              tags: z.array(z.string()).optional().describe("Optional tags to narrow the search"),
             })
           )
-          .min(1)
-          .max(10)
-          .describe("Ordered list of skill execution steps"),
-        inputs: z.record(z.unknown()).describe("Initial inputs for the first step"),
-        timeout_ms: z
-          .number()
-          .int()
-          .min(100)
-          .max(600000)
-          .optional()
-          .describe("Total chain timeout in milliseconds"),
+          .min(2)
+          .describe("Ordered list of steps to resolve (minimum 2)"),
       },
     },
-    (args: {
-      steps: Array<{ skill_id: string; input_mapping?: Record<string, string> }>;
-      inputs: Record<string, unknown>;
-      timeout_ms?: number;
-    }) => chainSkills(client, args)
+    (args: { steps: Array<{ intent: string; language?: string; tags?: string[] }> }) =>
+      chainSkills(client, args)
   );
 
   server.registerTool(
@@ -163,12 +145,16 @@ export function createServer(client: CodevolveClient): McpServer {
     "validate_skill",
     {
       description:
-        "Run the test suite for a codeVolve skill and update its confidence score. Returns pass/fail counts and updated confidence.",
+        "Report local test results for a codeVolve skill and update its confidence score. Run the skill's tests in your own environment, then call this with the pass/fail counts to update the registry.",
       inputSchema: {
         skill_id: z.string().uuid().describe("UUID of the skill to validate"),
+        pass_count: z.number().int().min(0).describe("Number of tests that passed"),
+        fail_count: z.number().int().min(0).describe("Number of tests that failed"),
+        total_tests: z.number().int().min(1).describe("Total number of tests run"),
       },
     },
-    (args: { skill_id: string }) => validateSkill(client, args)
+    (args: { skill_id: string; pass_count: number; fail_count: number; total_tests: number }) =>
+      validateSkill(client, args)
   );
 
   server.registerTool(

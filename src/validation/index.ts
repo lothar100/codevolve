@@ -1,8 +1,8 @@
 /**
  * Validation module — POST /validate/:skill_id
  *
- * Runs skill tests in a sandboxed runner Lambda, computes confidence,
- * updates DynamoDB, emits analytics event to Kinesis.
+ * Accepts caller-provided test results and updates skill confidence/status.
+ * The caller runs tests locally and reports pass/fail counts here.
  */
 
 export { handler } from "./handler.js";

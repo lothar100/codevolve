@@ -36,6 +36,14 @@ const config: Config = {
         "^.+\\.ts$": ["ts-jest", { tsconfig: "tsconfig.test.json" }],
       },
     },
+    {
+      // Plain JS tests for the Node 22 skill runner (handler is JS, not TS)
+      displayName: "runners",
+      rootDir: ROOT_DIR,
+      testEnvironment: "node",
+      testMatch: [`${ROOT_DIR}/tests/unit/runners/**/*.test.js`],
+      moduleFileExtensions: ["js", "json"],
+    },
   ],
 };
 
