@@ -24,7 +24,7 @@
 
 Phase 4 closes the feedback loop between execution and quality. The three components designed here are:
 
-- **`/validate`** — runs a skill's test suite through the existing sandboxed runner Lambdas (reused from IMPL-06), computes a new confidence score, and writes it back to DynamoDB.
+- **`/validate`** — accepts caller-reported test results (pass/fail counts and per-test detail), computes a new confidence score, and writes it back to DynamoDB. The caller runs the skill locally in their own environment and POSTs the results. The registry never executes skill implementations server-side.
 - **`/evolve` SQS consumer** — receives gap notifications from the Decision Engine's GapQueue, calls the Claude API to generate a new skill, writes it to DynamoDB, and auto-triggers `/validate`.
 - **`/skills/:id/promote-canonical`** — enforces the canonical promotion gate (confidence >= 0.85, all tests passing) and demotes the previous canonical atomically.
 
@@ -32,7 +32,7 @@ All three components are stateless Lambdas. State lives in DynamoDB only.
 
 ### Architectural constraint recap
 
-- The `/validate` execution path MUST reuse the existing runner Lambdas (`codevolve-runner-python312`, `codevolve-runner-node22`) from IMPL-06. No new runner infrastructure is introduced.
+- The `/validate` handler accepts caller-reported results. The caller is responsible for running the skill's tests locally (in their own environment using their own tools) and reporting outcomes. No server-side execution infrastructure (runner Lambdas, containers) is involved in validation.
 - `/evolve` calls the Claude API (`claude-sonnet-4-6`) only from within the async SQS consumer Lambda. No LLM calls occur in the synchronous API path.
 - Canonical promotion uses a DynamoDB `TransactWriteItems` to guarantee atomicity of demote-old + promote-new.
 
@@ -46,60 +46,70 @@ All three components are stateless Lambdas. State lives in DynamoDB only.
 // Path parameter
 skill_id: string (UUID)
 
-// Request body (optional — if omitted, defaults apply)
+// Request body — caller reports results from their local test run
 const ValidateRequest = z.object({
   version: z.number().int().positive().optional(),
   // When omitted: query codevolve-skills for latest version_number
   // (ScanIndexForward: false, Limit: 1 on skill_id PK)
 
-  additional_tests: z.array(SkillTest).max(64).optional(),
-  // Extra test cases appended to the skill's built-in tests array.
-  // Does NOT persist to DynamoDB — used only for this validation run.
+  total_tests: z.number().int().nonnegative(),
+  // Total number of test cases the caller executed locally.
 
-  timeout_ms: z.number().int().min(1000).max(600_000).default(120_000),
-  // Total timeout for the full test suite run.
-  // Individual test execution still capped at 10s by the runner Lambda.
+  pass_count: z.number().int().nonnegative(),
+  // Number of test cases that produced the expected output.
+
+  fail_count: z.number().int().nonnegative(),
+  // Number of test cases that produced unexpected output or errored.
+  // Invariant: pass_count + fail_count == total_tests
+
+  results: z.array(TestResult).optional(),
+  // Per-test detail, if the caller wishes to supply it.
+  // Does NOT need to match the skill's stored tests array exactly —
+  // callers report what they ran. Stored for observability only.
+
+  latency_p50_ms: z.number().nonnegative().optional(),
+  latency_p95_ms: z.number().nonnegative().optional(),
+  // Caller-reported latency percentiles from their local run.
 });
 ```
+
+The caller is expected to:
+1. Fetch the skill implementation via `GET /skills/:id` or `/resolve`.
+2. Run the skill's test suite locally against the fetched implementation.
+3. POST the aggregated results (pass/fail counts, optional per-test detail) to `/validate/:skill_id`.
+
+The registry does not run, schedule, or coordinate test execution. All execution is the caller's responsibility.
 
 ### 2.2 Execution Flow
 
 ```
 POST /validate/:skill_id
     │
-    ├── 1. Parse and validate path param (skill_id UUID) and optional body
+    ├── 1. Parse and validate path param (skill_id UUID) and request body
     ├── 2. Fetch skill from codevolve-skills
     │       ├── If not found: return 404 NOT_FOUND
     │       └── If status == "archived": return 422 PRECONDITION_FAILED (code: SKILL_ARCHIVED)
-    ├── 3. Build test list = skill.tests ++ (request.additional_tests ?? [])
-    │       └── If test list is empty: return 400 VALIDATION_ERROR (code: NO_TESTS_DEFINED)
-    ├── 4. Determine runner Lambda for skill.language
-    │       └── Same RUNNER_MAP lookup as /execute — env vars RUNNER_LAMBDA_PYTHON / RUNNER_LAMBDA_NODE
-    ├── 5. Execute each test sequentially
-    │       ├── Build runner payload: { implementation, language, inputs: test.input }
-    │       ├── Invoke runner Lambda (InvokeCommand, RequestResponse)
-    │       ├── Compare actual output to test.expected via deep equality
-    │       └── Record: { test_index, input, expected, actual, passed, latency_ms, error }
-    ├── 6. Compute new confidence score
+    ├── 3. Validate counts
+    │       └── If pass_count + fail_count != total_tests: return 400 VALIDATION_ERROR
+    │           If total_tests == 0: return 400 VALIDATION_ERROR (code: NO_TESTS_DEFINED)
+    ├── 4. Compute new confidence score
     │       └── new_confidence = pass_count / total_tests  (see §5)
-    ├── 7. Determine new status
+    ├── 5. Determine new status
     │       └── See §6 — status transition rules
-    ├── 8. Compute latency metrics from test results
-    │       ├── latency_p50_ms = median of all individual test latencies
-    │       └── latency_p95_ms = 95th-percentile of all individual test latencies
-    │               (use Math.ceil((tests.length * 0.95) - 1) as the index into sorted latency array)
-    ├── 9. DynamoDB UpdateItem on codevolve-skills
+    ├── 6. DynamoDB UpdateItem on codevolve-skills
     │       └── See §2.4 for exact update expression
-    ├── 10. Cache invalidation
+    │           Writes: confidence, status, last_validated_at, test_pass_count, test_fail_count,
+    │                   latency_p50_ms (if supplied), latency_p95_ms (if supplied), updated_at
+    ├── 7. Cache invalidation
     │       └── If confidence or status changed: issue async DeleteItem for all codevolve-cache entries
     │           for this skill_id (same pattern as archive handler — batch scan then delete)
-    ├── 11. Kinesis event emission
+    ├── 8. Kinesis event emission
     │       └── See §2.5 for event shape
-    ├── 12. Evolve trigger
+    ├── 9. Evolve trigger
     │       └── If new_confidence < 0.7: enqueue to codevolve-gap-queue.fifo (async, fire-and-forget)
     │           Message body: { intent: null, skill_id, reason: "low_confidence",
     │                           resolve_confidence: new_confidence, timestamp, original_event_id: null }
-    └── 13. Return ValidateResponse (200 OK)
+    └── 10. Return ValidateResponse (200 OK)
 ```
 
 ### 2.3 Response Contract
@@ -176,38 +186,21 @@ Emit before returning the HTTP response. Fire-and-forget (do not await on critic
 
 ### 2.6 Deep Equality Comparison
 
-For comparing `actual` output to `expected`, use a recursive deep equality check. Do NOT use `JSON.stringify` comparison (key order is not guaranteed). Rules:
+This section is retained for reference. In the caller-reported model, deep equality comparison is the caller's responsibility when comparing skill output to expected values locally. The registry does not perform comparison — it accepts the aggregated pass/fail counts the caller reports.
 
-1. Primitive types: strict equality (`===`).
-2. Arrays: same length AND each element deep-equal at the same index.
-3. Objects: same keys (order-independent) AND each value deep-equal.
-4. `null` equals `null`. `undefined` is not a valid output value — treat as mismatch.
-5. Number precision: exact match. No floating-point tolerance in Phase 4 (if needed, add an `epsilon` field to `SkillTest` in a later phase).
+If the `results` array is supplied in the request body, each `TestResult` record's `passed` field is accepted as-is. The handler does not re-evaluate or verify individual test outcomes.
 
-Ada must implement this as a utility function `deepEqual(a: unknown, b: unknown): boolean` in `src/shared/deepEqual.ts`, with unit tests in `tests/unit/shared/deepEqual.test.ts`.
+### 2.7 Handler Latency
 
-### 2.7 Test Execution Timeout Budget
-
-Total validation timeout = `request.timeout_ms` (default 120,000ms).
-
-The handler tracks elapsed time between tests. Before invoking each test, check:
-```
-if (Date.now() - validationStartMs > timeout_ms) {
-  // mark all remaining tests as failed with error: "validation_timeout"
-  break
-}
-```
-
-This prevents the Lambda from running indefinitely when a skill has 128 tests and each test hits the 10s runner timeout.
+The `/validate` Lambda handler has no execution timeout concern beyond normal Lambda limits. It does not invoke any external runners, containers, or sub-Lambdas. The handler's work is: (1) parse request, (2) fetch skill from DynamoDB, (3) write updated confidence/status back to DynamoDB, (4) emit Kinesis event, (5) optionally enqueue to GapQueue. This is a lightweight DynamoDB-read + DynamoDB-write flow completing in well under 1 second.
 
 ### 2.8 Error Cases
 
 | HTTP | Code | Condition |
 |------|------|-----------|
-| 400 | `VALIDATION_ERROR` | `skill_id` not a valid UUID, `additional_tests` invalid |
-| 400 | `NO_TESTS_DEFINED` | Skill has no built-in tests AND `additional_tests` is empty or absent |
+| 400 | `VALIDATION_ERROR` | `skill_id` not a valid UUID; `pass_count + fail_count != total_tests`; request body malformed |
+| 400 | `NO_TESTS_DEFINED` | `total_tests` is 0 |
 | 404 | `NOT_FOUND` | Skill does not exist |
-| 408 | `EXECUTION_TIMEOUT` | Total validation exceeded `timeout_ms` |
 | 422 | `PRECONDITION_FAILED` | Skill is archived (`status == "archived"`) |
 
 ---
@@ -631,8 +624,8 @@ All new CDK resources are added to `infra/codevolve-stack.ts`.
 | Resource | Type | Config |
 |----------|------|--------|
 | `ValidateFn` | Lambda (NODEJS_22_X) | 256 MB, 5 min timeout, entry: `src/validation/handler.ts` |
-| IAM grants | — | DynamoDB GetItem+UpdateItem on `codevolve-skills` (PK/SK), DynamoDB DeleteItem+Query on `codevolve-cache`, `lambda:InvokeFunction` on runner ARNs, Kinesis PutRecord, SQS SendMessage on `codevolve-gap-queue.fifo` |
-| Env vars | — | `RUNNER_LAMBDA_PYTHON`, `RUNNER_LAMBDA_NODE`, `SKILLS_TABLE`, `CACHE_TABLE`, `KINESIS_STREAM_NAME`, `GAP_QUEUE_URL` |
+| IAM grants | — | DynamoDB GetItem+UpdateItem on `codevolve-skills` (PK/SK), DynamoDB DeleteItem+Query on `codevolve-cache`, Kinesis PutRecord, SQS SendMessage on `codevolve-gap-queue.fifo` |
+| Env vars | — | `SKILLS_TABLE`, `CACHE_TABLE`, `KINESIS_STREAM_NAME`, `GAP_QUEUE_URL` |
 | API Gateway route | — | `POST /validate/{skill_id}` → `ValidateFn` |
 
 ### 8.2 IMPL-12 — /evolve SQS Consumer Lambda
@@ -668,9 +661,8 @@ All new CDK resources are added to `infra/codevolve-stack.ts`.
 
 ### Pre-conditions
 
-1. IMPL-06 (runner Lambdas) is complete and deployed. `RUNNER_LAMBDA_PYTHON` and `RUNNER_LAMBDA_NODE` exist in the environment.
-2. `npx tsc --noEmit` exits 0 before starting.
-3. `src/shared/deepEqual.ts` does not exist yet.
+1. `npx tsc --noEmit` exits 0 before starting.
+2. No runner Lambda dependencies. The validate handler accepts caller-reported results and makes no outbound Lambda invocations.
 
 ---
 
@@ -704,9 +696,9 @@ All new CDK resources are added to `infra/codevolve-stack.ts`.
 | Files | `infra/codevolve-stack.ts` |
 | Depends on | — |
 | Blocks | IMPL-11-E |
-| Verification | `npx cdk synth` exits 0; template contains `ValidateFn` with NODEJS_22_X runtime, 5 min timeout, correct IAM grants for runner Lambda invocation |
+| Verification | `npx cdk synth` exits 0; template contains `ValidateFn` with NODEJS_22_X runtime, 5 min timeout, correct IAM grants for DynamoDB, Kinesis, SQS |
 
-**What to build:** `ValidateFn` Lambda construct per §8.1 specification. Environment variables set. IAM grants for runner Lambdas, DynamoDB, Kinesis, SQS. API Gateway route `POST /validate/{skill_id}`.
+**What to build:** `ValidateFn` Lambda construct per §8.1 specification. Environment variables set. IAM grants for DynamoDB, Kinesis, SQS (no runner Lambda grants needed). API Gateway route `POST /validate/{skill_id}`.
 
 ---
 
@@ -723,18 +715,16 @@ All new CDK resources are added to `infra/codevolve-stack.ts`.
 
 **What to build:**
 1. Full handler implementing the flow in §2.2.
-2. Request parsing and Zod validation for path param + body.
+2. Request parsing and Zod validation for path param + body (caller-reported `total_tests`, `pass_count`, `fail_count`, optional `results` and latency fields).
 3. DynamoDB GetItem for skill fetch.
-4. Test loop: invoke runner Lambda per test case, collect results.
-5. `deepEqual` comparison of actual vs expected.
-6. Confidence calculation (`pass_count / total_tests`).
-7. Status transition logic per §6.
-8. Latency metrics from test results (p50, p95).
-9. DynamoDB UpdateItem per §2.4 (including conditional REMOVE of `optimization_flagged`).
-10. Cache invalidation (scan `codevolve-cache` by `skill_id`, batch delete).
-11. Kinesis event emission per §2.5.
-12. Evolve trigger if `new_confidence < 0.7`.
-13. Unit tests: mock runner Lambda and DynamoDB. Cover all error paths (no tests, archived, not found, timeout budget exceeded). Cover status transition logic. Cover confidence = 0, confidence = 1.0, confidence = partial.
+4. Count validation: `pass_count + fail_count == total_tests`; reject if `total_tests == 0`.
+5. Confidence calculation (`pass_count / total_tests`).
+6. Status transition logic per §6.
+7. DynamoDB UpdateItem per §2.4 (including conditional REMOVE of `optimization_flagged`).
+8. Cache invalidation (scan `codevolve-cache` by `skill_id`, batch delete).
+9. Kinesis event emission per §2.5.
+10. Evolve trigger if `new_confidence < 0.7`.
+11. Unit tests: mock DynamoDB. Cover all error paths (total_tests=0, count mismatch, archived, not found). Cover status transition logic. Cover confidence = 0, confidence = 1.0, confidence = partial.
 
 ---
 

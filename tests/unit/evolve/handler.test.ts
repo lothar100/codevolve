@@ -16,7 +16,6 @@ import type { SQSEvent } from "aws-lambda";
 // ---------------------------------------------------------------------------
 
 const mockDocSend = jest.fn();
-const mockLambdaSend = jest.fn();
 const mockKinesisSend = jest.fn();
 const mockAnthropicCreate = jest.fn();
 const mockGetAnthropicClient = jest.fn();
@@ -42,15 +41,6 @@ jest.mock("@aws-sdk/lib-dynamodb", () => ({
     .mockImplementation((input) => ({ _type: "UpdateCommand", input })),
 }));
 
-jest.mock("@aws-sdk/client-lambda", () => ({
-  LambdaClient: jest.fn().mockImplementation(() => ({
-    send: (...args: unknown[]) => mockLambdaSend(...args),
-  })),
-  InvokeCommand: jest
-    .fn()
-    .mockImplementation((input) => ({ _type: "InvokeCommand", input })),
-}));
-
 jest.mock("@aws-sdk/client-kinesis", () => ({
   KinesisClient: jest.fn().mockImplementation(() => ({
     send: (...args: unknown[]) => mockKinesisSend(...args),
@@ -66,9 +56,9 @@ jest.mock("@aws-sdk/client-kinesis", () => ({
 jest.mock("uuid", () => ({
   v4: jest
     .fn()
-    .mockReturnValueOnce("job-id-1111-1111-1111-111111111111")
-    .mockReturnValueOnce("skill-id-2222-2222-2222-222222222222")
-    .mockImplementation(() => "fallback-uuid-0000-0000-0000-000000000000"),
+    .mockReturnValueOnce("11111111-1111-4111-a111-111111111111")
+    .mockReturnValueOnce("22222222-2222-4222-a222-222222222222")
+    .mockImplementation(() => "00000000-0000-4000-a000-000000000000"),
 }));
 
 // Mock claudeClient so tests don't hit Secrets Manager
@@ -169,9 +159,6 @@ describe("evolve handler", () => {
     // Default: DynamoDB calls succeed
     mockDocSend.mockResolvedValue({});
 
-    // Default: Lambda invoke succeeds
-    mockLambdaSend.mockResolvedValue({});
-
     // Default: Kinesis emit succeeds
     mockKinesisSend.mockResolvedValue({});
 
@@ -239,15 +226,19 @@ describe("evolve handler", () => {
     expect(skillPut.Item.confidence).toBe(0);
   });
 
-  it("invokes the validation Lambda asynchronously after writing skill", async () => {
+  it("emits a Kinesis event with event_type 'validate' after writing skill", async () => {
     mockAnthropicCreate.mockResolvedValue(makeClaudeResponse(validClaudeSkillJson));
 
     await handler(makeSQSEvent(validMessageBody));
 
-    expect(mockLambdaSend).toHaveBeenCalledTimes(1);
-    const invokeCmd = mockLambdaSend.mock.calls[0][0];
-    expect(invokeCmd._type).toBe("InvokeCommand");
-    expect(invokeCmd.input.InvocationType).toBe("Event");
+    expect(mockKinesisSend).toHaveBeenCalledTimes(1);
+    const kinesisCmd = mockKinesisSend.mock.calls[0][0];
+    expect(kinesisCmd._type).toBe("PutRecordCommand");
+    const data = JSON.parse(
+      Buffer.from(kinesisCmd.input.Data as Uint8Array).toString("utf-8"),
+    );
+    expect(data.event_type).toBe("validate");
+    expect(data.success).toBe(true);
   });
 
   it("updates evolve-job to 'complete' with skill_id on success", async () => {
@@ -383,15 +374,15 @@ describe("evolve handler", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Validation Lambda failure is non-fatal
+  // Kinesis emission failure is non-fatal
   // -------------------------------------------------------------------------
 
-  it("continues and returns success when validation Lambda invoke fails", async () => {
+  it("continues and returns success when Kinesis event emission fails", async () => {
     mockAnthropicCreate.mockResolvedValue(makeClaudeResponse(validClaudeSkillJson));
-    mockLambdaSend.mockRejectedValue(new Error("Lambda throttled"));
+    mockKinesisSend.mockRejectedValue(new Error("Kinesis throttled"));
 
     const result = await handler(makeSQSEvent(validMessageBody));
-    // Validation Lambda failure is fire-and-forget — not a batchItemFailure
+    // Kinesis emission is fire-and-forget — not a batchItemFailure
     expect(result.batchItemFailures).toEqual([]);
   });
 

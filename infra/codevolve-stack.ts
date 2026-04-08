@@ -103,6 +103,16 @@ export class CodevolveStack extends cdk.Stack {
     });
 
     // 3. codevolve-cache (DynamoDB TTL — ADR-003, no ElastiCache)
+    //
+    // PROVISIONED BUT CURRENTLY INACTIVE.
+    // No Lambda reads from or writes to this table today. The execution handler
+    // (src/execution/execute.ts) only increments execution_count on the skill
+    // record and emits a Kinesis event — it does not check or populate this cache.
+    //
+    // The cache layer design is pending BETA-07, which will redefine the
+    // validate/cache contract for the local CLI execution model. Once BETA-07 is
+    // resolved the Decision Engine auto-cache rule (Rule 1: high execution_count +
+    // high input_repeat_rate → cache) will begin writing here.
     this.cacheTable = new dynamodb.Table(this, "CacheTable", {
       tableName: "codevolve-cache",
       partitionKey: { name: "skill_id", type: dynamodb.AttributeType.STRING },
@@ -869,8 +879,11 @@ export class CodevolveStack extends cdk.Stack {
       new apigateway.LambdaIntegration(dashboardsFn),
     );
 
-    // /evolve
-    this.api.root.addResource("evolve");
+    // /evolve — no HTTP route. The evolve pipeline is triggered exclusively via
+    // the SQS gap queue (populated by the Decision Engine on low-confidence resolves).
+    // evolveFn is wired to that SQS queue as an event source below. A caller
+    // POSTing to /evolve directly has no handler to reach; the resource is not
+    // exposed over API Gateway.
     // POST /evolve
 
     // /auth/keys (BETA-03 — API key management)

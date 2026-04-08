@@ -318,8 +318,10 @@ The Phase 2 implementation specification is fully defined in `docs/vector-search
 
 ## ADR-006: Lambda-per-Language Sandbox for `/execute`
 Date: 2026-03-21
-Status: Accepted
+Status: Superseded by ADR-012
 Decided by: Jorven (ARCH-06)
+
+> **Superseded 2026-04-07 by ADR-012.** The Lambda runner model was not carried forward. codeVolve switched to a local CLI tool execution model: skills are fetched from the registry and run by the caller in their own environment. No runner Lambdas (`codevolve-runner-python312`, `codevolve-runner-node22`) exist in the current architecture.
 
 ### Context
 
@@ -478,8 +480,10 @@ SQS DLQ is the only Lambda-native option for Kinesis event source mapping failur
 
 ## ADR-009: Test Runner Reuse and Confidence Score Formula
 Date: 2026-03-22
-Status: Accepted
+Status: Accepted (runner-reuse clause superseded by ADR-012)
 Decided by: Jorven (ARCH-08)
+
+> **Partial supersession 2026-04-07:** The runner-reuse clause of this ADR (Decision point 1 — "Reuse existing runner Lambdas") is superseded by ADR-012. `/validate` no longer invokes runner Lambdas; it accepts caller-reported test results. The confidence score formula (Decision point 2 — `pass_count / total_tests`) remains in effect and is unchanged.
 
 ### Context
 
@@ -585,3 +589,56 @@ Option A: CloudFront distribution in front of both the API Gateway regional endp
 - **Negative:** API Gateway response caching has a minimum cost of ~$14.40/month per 0.5GB cache size even at zero traffic. This is justified once GET traffic exceeds ~50,000 requests/day.
 - **Accepted trade-off:** Two caching layers mean two potential sources of stale data during debugging. Mitigated by: (1) consistent Cache-Control headers that document TTLs, (2) `X-Cache` response header from CloudFront indicating HIT/MISS, (3) API GW cache can be flushed per-resource via the AWS Console or API during incident response.
 - **Accepted trade-off:** CloudFront tag-based invalidation is eventually consistent — propagation to all edge PoPs takes 5–30 seconds. A user who hits a different edge node during this window may receive stale data. Acceptable given the 60-second base TTL makes this window already acknowledged.
+
+---
+
+## ADR-012: Local CLI Execution Model
+Date: 2026-04-07
+Status: Accepted
+Decided by: Jorven
+
+### Context
+
+The original codeVolve architecture (ADR-006, ARCH-06) treated skill execution as a server-side operation: a caller POSTed inputs to `/execute`, the orchestration Lambda looked up the skill implementation, and invoked a sandboxed runner Lambda (`codevolve-runner-python312` or `codevolve-runner-node22`) that ran the code in an isolated environment. This model was designed to prevent untrusted skill implementations from accessing the network, filesystem, or AWS services.
+
+During Phase 3 implementation, this design proved to be solving the wrong problem. codeVolve's core value proposition is to save AI agent API token usage by providing pre-written, retrievable scripts — scripts that agents then run in their own environments, using their own credentials and installed tools. Server-side execution inverts this: it prevents skills from using the caller's environment (their file system, their AWS credentials, their installed CLIs), which is exactly what many useful skills need. A skill that "lists S3 buckets" or "runs a local test suite" cannot work inside a sandboxed Lambda with CloudWatch-only IAM permissions.
+
+The sandboxed model also introduced unnecessary infrastructure complexity: two additional Lambda functions, Docker-or-zip deployment per language, IAM cross-invocation grants, and per-language runner maintenance. This overhead scales with every new language added.
+
+### Options Considered
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| A — Server-side sandboxed Lambda execution (original) | `/execute` invokes a runner Lambda per language; runner executes skill code in isolation | Prevents untrusted code from accessing network/FS; output deterministically computed server-side | Prevents legitimate use cases (caller's credentials, FS, CLIs); adds runner Lambda infrastructure per language; cannot sandbox arbitrary CLI tools or scripts |
+| B — Local CLI execution model (chosen) | Skills are local CLI tools / scripts. Registry stores and retrieves implementations. `/execute` logs the call for analytics only. Caller runs the skill locally. | Callers use their own environment, credentials, and tools; zero runner infrastructure; any language, any tool, any CLI; simpler API surface | Registry cannot verify outputs; confidence scores are caller-reported; no server-side isolation guarantee |
+| C — Hybrid: optional local or server-side | Registry supports both models; skill metadata declares which it supports | Maximum flexibility | Two code paths to maintain; API surface ambiguity; harder to reason about security model |
+
+### Decision
+
+Option B: the local CLI execution model. Skills stored in the registry are local CLI tools and scripts. The registry's role is **discoverability and retrieval** only — it never executes skill implementations. Execution is always the caller's responsibility.
+
+The API surface reflects this:
+- `POST /resolve` — returns the best matching skill (including its implementation text or an S3 reference to it).
+- `POST /execute` — accepts caller-reported execution metadata (skill_id, inputs, latency_ms, success) and logs an analytics event. It does not run code.
+- `POST /validate` — accepts caller-reported test results (pass/fail counts) and updates the skill's confidence score. It does not run tests.
+
+### Reasons
+
+**Execution in the caller's environment is the feature.** The use case is: an AI agent (Claude Code, etc.) fetches a skill and runs it locally — where it has access to the user's filesystem, AWS credentials, installed CLIs, and project context. A sandboxed Lambda with no network access and no filesystem cannot replicate this. The sandbox is incompatible with the core value proposition.
+
+**Eliminating runner Lambdas removes significant operational surface.** Each supported language required a separate Lambda function, IAM role, deployment artifact, cold-start budget, and concurrency limit. Removing these collapses two layers of the call graph and eliminates the `lambda:InvokeFunction` cross-invocation IAM grants, runner timeout budget management, and per-language deployment pipelines.
+
+**Simplicity at the right layer.** The registry is a database with a search API. Making it also an execution engine was scope creep. The caller already has an execution environment; there is no need for the registry to replicate one.
+
+**Confidence and validation via caller-reported results.** The concern about server-side verification (can we trust caller-reported pass/fail?) is mitigated by the analytics feedback loop: if a skill is marked passing but fails in practice, real-world failure events are emitted to Kinesis, processed by the Decision Engine, and the confidence score is lowered automatically. Trust-but-verify via analytics is sufficient for a registry whose primary consumers are AI agents, not anonymous public contributors.
+
+### Consequences
+
+- **Positive:** Any language, any CLI tool, any script is a valid skill. Skills can use the caller's AWS credentials, filesystem, Docker, git, npm — whatever the caller's environment has.
+- **Positive:** Runner Lambda infrastructure (`codevolve-runner-python312`, `codevolve-runner-node22`) is eliminated. CDK stack is simpler. No per-language deployment pipeline.
+- **Positive:** `/execute` and `/validate` are lightweight analytics-logging endpoints. Their Lambda functions have minimal IAM (DynamoDB write + Kinesis PutRecord only).
+- **Positive:** The execution model matches how AI agents (Claude Code) already work: fetch an artifact, run it locally.
+- **Negative:** The registry cannot guarantee skill correctness at query time. A skill marked `confidence: 0.9` has passed 90% of caller-reported tests, not server-verified tests. This is a weaker guarantee than server-side execution, but acceptable given the analytics-driven feedback loop.
+- **Negative:** Skills that require specific OS-level dependencies (e.g., `ffmpeg`, `aws-cli v2`, Python 3.12) will fail silently if the caller's environment lacks those dependencies. This is inherent to the local execution model and must be disclosed in skill metadata (the `tags` and `description` fields should document prerequisites).
+- **Consequences for ADR-006:** ADR-006 (Lambda-per-Language Sandbox) is superseded. The runner Lambda architecture it describes was not implemented in the final system.
+- **Consequences for ADR-009:** The runner-reuse clause of ADR-009 is superseded. `/validate` accepts caller-reported results. The confidence formula (`pass_count / total_tests`) from ADR-009 is unchanged.

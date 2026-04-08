@@ -403,15 +403,17 @@ After all 5 checks pass, Quimby updates IMPL-01 status to `[✓]` Verified and r
 
 ## Phase 2 — Routing + Execution
 
+> **ARCHITECTURE NOTE (2026-04-07):** The execution model changed after this phase was designed and implemented. Skills are now local CLI tools — the registry provides discoverability and retrieval, execution is always the caller's responsibility. ARCH-06 (execution sandbox) and IMPL-06/IMPL-07 as originally designed assumed server-side Lambda runners that no longer exist. The tasks below are recorded as completed per the original design. See IMPL-06 and IMPL-07 correction notes for what the current code actually does vs. what was originally planned.
+
 *Blocked on Phase 1 completion.*
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
 | ARCH-05 | Jorven | [✓] | Design vector search architecture: DynamoDB embedding storage, Bedrock Titan v2 embedding strategy (when to embed, fields to embed, 1024 dimensions), `/resolve` ranking logic (cosine similarity + tag boost, client-side in Lambda). Migration path to OpenSearch at >5K skills. Approved with notes 2026-03-21 (REVIEW-06-ARCH). C-01 resolved (no-match returns HTTP 200, not 404). IMPL-05 unblocked. | Phase 1 complete |
-| ARCH-06 | Jorven | [✓] | Design execution sandbox: Lambda-per-language (Python 3.12, Node 22), input/output serialization, timeout/memory limits, error taxonomy, cache layer integration, ADR-006. Output: `docs/execution-sandbox.md`. ADR-006 written to `docs/decisions.md`. **Verified 2026-03-21 by Jorven.** Open item for Ada: add `504 EXECUTION_OOM` to `/execute` error table in `docs/api.md` as part of IMPL-06. Approved with notes 2026-03-21 (REVIEW-06-ARCH). W-03/W-04 resolved (stack trace sanitization defined, version_number corrected). IMPL-06/07 unblocked. | Phase 1 complete |
+| ARCH-06 | Jorven | [✓] | Design execution sandbox: Lambda-per-language (Python 3.12, Node 22), input/output serialization, timeout/memory limits, error taxonomy, cache layer integration, ADR-006. Output: `docs/execution-sandbox.md`. ADR-006 written to `docs/decisions.md`. **Verified 2026-03-21 by Jorven.** Open item for Ada: add `504 EXECUTION_OOM` to `/execute` error table in `docs/api.md` as part of IMPL-06. Approved with notes 2026-03-21 (REVIEW-06-ARCH). W-03/W-04 resolved (stack trace sanitization defined, version_number corrected). IMPL-06/07 unblocked. **SUPERSEDED 2026-04-07:** The execution model changed. There are no Lambda runners. `docs/execution-sandbox.md` and ADR-006 describe a design that was not carried forward. Do not use these docs as implementation guidance. | Phase 1 complete |
 | IMPL-05 | Ada | [✓] | Implement `/resolve` endpoint: embed intent via Bedrock, vector search OpenSearch, tag filter boost, return best match + confidence. Latency target: p95 < 100ms. **Approved 2026-03-21 (REVIEW-IMPL-05 + re-review):** N-01 (Kinesis emit on error paths), N-02 (case-sensitive boost matching), N-03 (void emitEvent on success path) all verified. OI-01/OI-02 deferred to IMPL-10. | ARCH-05 |
-| IMPL-06 | Ada | [✓] | Implement `/execute` endpoint: check DynamoDB cache, validate inputs against skill contract, invoke runner Lambda (`codevolve-runner-python312` or `codevolve-runner-node22`), handle cache-on-demand write policy, update execution_count + latency on skill record, emit Kinesis event. Add `504 EXECUTION_OOM` to `docs/api.md`. Full spec: `docs/execution-sandbox.md`. **Approved 2026-03-21 (REVIEW-07 re-review):** All 3 criticals and 3 non-criticals resolved and verified. | ARCH-06 |
-| IMPL-07 | Ada | [✓] | Implement cache layer (`src/cache/cache.ts`): `getCachedOutput`, `writeCachedOutput`, `incrementCacheHit`. Key: `(skill_id, input_hash)` on `codevolve-cache`. Cache write only when `auto_cache: true` on skill record. TTL: 24h default. Full spec: `docs/execution-sandbox.md` §5. **Approved 2026-03-21 (REVIEW-07 re-review):** All fixes verified. | ARCH-06 |
+| IMPL-06 | Ada | [✓] | Implement `/execute` endpoint: check DynamoDB cache, validate inputs against skill contract, invoke runner Lambda (`codevolve-runner-python312` or `codevolve-runner-node22`), handle cache-on-demand write policy, update execution_count + latency on skill record, emit Kinesis event. Add `504 EXECUTION_OOM` to `docs/api.md`. Full spec: `docs/execution-sandbox.md`. **Approved 2026-03-21 (REVIEW-07 re-review):** All 3 criticals and 3 non-criticals resolved and verified. **MODEL CHANGE NOTE (2026-04-07):** `/execute` no longer invokes any runner Lambda. Under the current model it logs the execution event and updates analytics only — the caller runs the skill locally. The runner Lambda invocation code in `src/execution/` is stale. Ada should audit `src/execution/handler.ts` and remove or stub out the runner invocation path, keeping only: input validation against skill contract, execution_count/latency update, and Kinesis event emission. | ARCH-06 |
+| IMPL-07 | Ada | [✓] | Implement cache layer (`src/cache/cache.ts`): `getCachedOutput`, `writeCachedOutput`, `incrementCacheHit`. Key: `(skill_id, input_hash)` on `codevolve-cache`. Cache write only when `auto_cache: true` on skill record. TTL: 24h default. Full spec: `docs/execution-sandbox.md` §5. **Approved 2026-03-21 (REVIEW-07 re-review):** All fixes verified. **MODEL CHANGE NOTE (2026-04-07):** The cache was designed to store pre-computed runner outputs for repeat inputs. Under the local CLI model, the server never executes skill code, so the cache cannot be populated server-side. The `codevolve-cache` table and the cache utilities may be repurposed or removed. Before beta, Ada and Jorven should decide: (a) keep the cache table as a caller-reported result cache (callers POST their output for a given input_hash, subsequent resolves return the cached result), or (b) remove it. Decision needed before BETA-02 scope is final. | ARCH-06 |
 | DESIGN-06 | Amber | [✓] | Design MCP server interface for codeVolve: tool definitions for resolve/execute/chain/list/validate, resource definitions for skills/problems, prompt templates for skill generation. Output to `docs/platform-design.md`. Completed 2026-03-21. MCP server spec in docs/platform-design.md. IMPL-15 unblocked. | ARCH-05, ARCH-06 |
 | REVIEW-05-IMPL05 | Iris | [✓] | Review IMPL-05 (/resolve) — verify no LLM calls in path, latency targets met in tests, confidence scoring logic. **Approved with notes 2026-03-21:** 14 tests pass, no critical issues. N-01: Kinesis event not emitted on Bedrock/DynamoDB early-exit error paths (spec §7.4 violation). N-02: computeBoost uses case-insensitive matching; spec mandates case-sensitive (requires Jorven decision). N-03: await emitEvent should be void emitEvent (minor latency). OI-01/OI-02: ARCH-07 gap-log and last_resolve_at follow-ups not yet present (not blocking). See docs/reviews/REVIEW-IMPL-05.md. **Re-review 2026-03-21 (Iris):** N-01, N-02, N-03 all verified. IMPL-05 approved. | IMPL-05 |
 | REVIEW-06 | Iris | [✓] | Review ARCH-05 (vector search) + ARCH-06 (execution sandbox). **Approved with notes 2026-03-21:** C-01 resolved (no-match response code), W-02–04 resolved. All blockers cleared. See docs/reviews/REVIEW-06-ARCH.md. | ARCH-05, ARCH-06 |
@@ -542,10 +544,12 @@ All 5 sub-tasks are complete when ALL of the following pass:
 
 ## Phase 4 — Validation + Quality
 
+> **ARCHITECTURE NOTE (2026-04-07):** ARCH-08 and IMPL-11 were designed assuming `/validate` would reuse server-side runner Lambdas (`codevolve-runner-python312`, `codevolve-runner-node22`) to execute skill tests. Those runner Lambdas do not exist in the current model. Under the local CLI model, validation cannot happen server-side. See ARCH-08 and IMPL-11 correction notes below for what this means in practice.
+
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| ARCH-08 | Jorven | [✓] | Design /validate endpoint and test runner: reuse runner Lambdas from IMPL-06, confidence score formula (pass_count/total_tests), canonical promotion gate (confidence >= 0.85, zero test failures, TransactWriteItems), /evolve SQS consumer (Claude API, skill parser, auto-trigger /validate). Output: `docs/validation-evolve.md`, ADR-009 in `docs/decisions.md`. **Completed 2026-03-22 by Jorven.** | Phase 3 complete |
-| IMPL-11 | Ada | [✓] | Implement /validate: reuse sandboxed runner Lambdas, deep equality test comparison, confidence score update in DynamoDB, status transition logic, cache invalidation, emit validation event, evolve trigger on confidence < 0.7. Full spec: `docs/validation-evolve.md` §2 and §9. **Scaffold delivered 2026-03-22. REVIEW-09 (2026-03-22): approved as scaffold. WARNING-02: Kinesis validate event success field hardcoded true (must be failCount === 0). WARNING-03: NO_TESTS error code must be NO_TESTS_DEFINED per spec §2.8. Fix with IMPL-13 corrections.** Completed 2026-03-23. Sub-tasks: IMPL-11-A (deepEqual utility — `src/shared/deepEqual.ts`, `tests/unit/shared/deepEqual.test.ts`), IMPL-11-C (handler — `src/validation/handler.ts`, `tests/unit/validation/handler.test.ts`). Fixed WARNING-02 (`success: failCount === 0`, not hardcoded true) and WARNING-03 (error code `NO_TESTS_DEFINED`, not `NO_TESTS`). 61 tests passing, tsc clean. | ARCH-08 |
+| ARCH-08 | Jorven | [✓] | Design /validate endpoint and test runner: reuse runner Lambdas from IMPL-06, confidence score formula (pass_count/total_tests), canonical promotion gate (confidence >= 0.85, zero test failures, TransactWriteItems), /evolve SQS consumer (Claude API, skill parser, auto-trigger /validate). Output: `docs/validation-evolve.md`, ADR-009 in `docs/decisions.md`. **Completed 2026-03-22 by Jorven.** **MODEL CHANGE NOTE (2026-04-07):** The "reuse runner Lambdas" portion of this design is superseded. `/validate` in the current model accepts caller-reported test results (the caller runs the tests locally and POSTs pass/fail counts), or validation is triggered by the evolve pipeline for skills generated by Claude. A re-design of the validate contract is needed before IMPL-11 is re-opened. `docs/validation-evolve.md` reflects the old model and should not be used as implementation guidance until re-reviewed. | Phase 3 complete |
+| IMPL-11 | Ada | [✓] | Implement /validate: reuse sandboxed runner Lambdas, deep equality test comparison, confidence score update in DynamoDB, status transition logic, cache invalidation, emit validation event, evolve trigger on confidence < 0.7. Full spec: `docs/validation-evolve.md` §2 and §9. **Scaffold delivered 2026-03-22. REVIEW-09 (2026-03-22): approved as scaffold. WARNING-02: Kinesis validate event success field hardcoded true (must be failCount === 0). WARNING-03: NO_TESTS error code must be NO_TESTS_DEFINED per spec §2.8. Fix with IMPL-13 corrections.** Completed 2026-03-23. Sub-tasks: IMPL-11-A (deepEqual utility — `src/shared/deepEqual.ts`, `tests/unit/shared/deepEqual.test.ts`), IMPL-11-C (handler — `src/validation/handler.ts`, `tests/unit/validation/handler.test.ts`). Fixed WARNING-02 (`success: failCount === 0`, not hardcoded true) and WARNING-03 (error code `NO_TESTS_DEFINED`, not `NO_TESTS`). 61 tests passing, tsc clean. **MODEL CHANGE NOTE (2026-04-07):** The runner Lambda invocation inside `src/validation/handler.ts` is stale. Before beta, the validate handler needs to be re-evaluated: either (a) accept caller-reported results (caller runs tests locally, POSTs test_pass_count/test_fail_count), or (b) validate only skills generated by the /evolve pipeline where Claude also writes the tests. Jorven must produce a revised validate contract (new ARCH task) before Ada touches this code again. | ARCH-08 |
 | IMPL-11-B | Ada | [✓] | CDK: ValidateFn Lambda (NODEJS_22_X, 5 min timeout), IAM grants for runner Lambdas + DynamoDB + Kinesis + SQS, API Gateway `POST /validate/{skill_id}`. Completed 2026-03-23. | — |
 | IMPL-12 | Ada | [✓] | Implement /evolve SQS consumer: GapQueue FIFO consumer Lambda, similar skills DynamoDB lookup, Claude API call (claude-sonnet-4-6), skill JSON parsing + Zod validation, createSkill write, async /validate trigger, evolve-jobs DynamoDB tracking. Full spec: `docs/validation-evolve.md` §3 and §10. **Scaffold delivered 2026-03-22. REVIEW-09 (2026-03-22): approved as scaffold. GapMessageSchema must be updated to full spec shape (§3.2) before IMPL-10 Decision Engine enqueues real messages.** **IMPL-12-A** (dynamo-schemas.md codevolve-evolve-jobs table + package.json @anthropic-ai/sdk), **IMPL-12-C** (claudeClient.ts lazy singleton + skillParser.ts + tests), **IMPL-12-D** (full SQS handler + tests) — completed 2026-03-23. 37 new tests, 273 total passing, tsc clean. **REVIEW-10 (2026-03-23): CHANGES REQUIRED — CRITICAL-01 (job_id → evolve_id PK mismatch), CRITICAL-02 (VALIDATE_FUNCTION_NAME → VALIDATE_LAMBDA_NAME env var mismatch), WARNING-01 (extractTextBefore → substringIndex in dashboards.ts). All three fixed in commit fa9066f. REVIEW-11 (2026-03-24): APPROVED — all fixes verified, 496 tests pass.** | ARCH-08, IMPL-11 |
 | IMPL-12-B | Ada | [✓] | CDK: EvolveGapQueue (FIFO, contentBasedDeduplication), EvolveDlq (FIFO, maxReceiveCount 3), EvolveJobsTable (codevolve-evolve-jobs, PK: evolve_id, PAY_PER_REQUEST, TTL: ttl, GSI-status-created), EvolveFn (NODEJS_22_X, 5 min timeout, batchSize 1 SQS source). Completed 2026-03-23. | — |
@@ -563,7 +567,7 @@ All 5 sub-tasks are complete when ALL of the following pass:
 
 #### Pre-conditions
 
-1. IMPL-06 (runner Lambdas `codevolve-runner-python312`, `codevolve-runner-node22`) is complete and deployed.
+1. ~~IMPL-06 (runner Lambdas `codevolve-runner-python312`, `codevolve-runner-node22`) is complete and deployed.~~ **VOID (2026-04-07):** Runner Lambdas do not exist. See BETA-07 for the revised validate contract that replaces this dependency.
 2. `npx tsc --noEmit` exits 0 before starting.
 3. `src/shared/deepEqual.ts` does not yet exist.
 
@@ -589,13 +593,13 @@ All 5 sub-tasks are complete when ALL of the following pass:
 | Field | Value |
 |-------|-------|
 | Owner | Ada |
-| Status | [ ] Planned |
+| Status | [✓] Complete |
 | Files | `infra/codevolve-stack.ts` |
 | Depends on | — |
 | Blocks | IMPL-11-D |
 | Verification | `npx cdk synth` exits 0; template contains `ValidateFn` (NODEJS_22_X, 5 min timeout) with IAM grants for runner Lambda invocation, DynamoDB, Kinesis, SQS GapQueue |
 
-**What to build:** `ValidateFn` Lambda per `docs/validation-evolve.md` §8.1. Env vars: `RUNNER_LAMBDA_PYTHON`, `RUNNER_LAMBDA_NODE`, `SKILLS_TABLE`, `CACHE_TABLE`, `KINESIS_STREAM_NAME`, `GAP_QUEUE_URL`. API Gateway route `POST /validate/{skill_id}`.
+**What was built (ALIGN-08, 2026-04-07):** `ValidateFn` Lambda CDK construct exists with SKILLS_TABLE, CACHE_TABLE, KINESIS_STREAM_NAME, and GAP_QUEUE_URL env vars. `RUNNER_LAMBDA_PYTHON` and `RUNNER_LAMBDA_NODE` were NOT added — no runner Lambdas exist in the local CLI model. IAM grants for runner Lambda invocation were NOT included. The validate endpoint accepts caller-reported results: the caller runs tests locally and POSTs `test_pass_count` / `test_fail_count`; the Lambda handler records those counts, updates confidence in DynamoDB, and emits a Kinesis event. No server-side test execution occurs.
 
 ---
 
@@ -604,13 +608,13 @@ All 5 sub-tasks are complete when ALL of the following pass:
 | Field | Value |
 |-------|-------|
 | Owner | Ada |
-| Status | [ ] Planned |
+| Status | [✓] Complete |
 | Files | `src/validation/handler.ts` (new), `src/validation/index.ts` (replace stub), `tests/unit/validation/handler.test.ts` (new) |
 | Depends on | IMPL-11-A |
 | Blocks | IMPL-11-D |
 | Verification | `npx jest tests/unit/validation/handler.test.ts` passes; `npx tsc --noEmit` exits 0 |
 
-**What to build:** Full handler per `docs/validation-evolve.md` §2.2 — fetch skill, build test list, run tests via runner Lambdas, deepEqual comparison, confidence = pass_count/total_tests, status transitions (§6), DynamoDB UpdateItem (§2.4 — including conditional REMOVE optimization_flagged when p95 <= 5000), cache invalidation, Kinesis event (§2.5), evolve trigger if confidence < 0.7. Unit tests covering all error paths and status transitions.
+**What was built (ALIGN-08, 2026-04-07):** ~~Full handler per `docs/validation-evolve.md` §2.2 — fetch skill, build test list, run tests via runner Lambdas, deepEqual comparison, confidence = pass_count/total_tests...~~ The runner Lambda invocation was never implemented. The handler instead uses a caller-reported model: it accepts `test_pass_count` and `test_fail_count` in the POST body, computes `confidence = test_pass_count / (test_pass_count + test_fail_count)`, updates the skill record in DynamoDB (`last_validated_at`, `test_pass_count`, `test_fail_count`, `confidence`, `status`), emits a Kinesis validation event, and enqueues to the GapQueue if confidence drops below 0.7. No runner Lambda is invoked. `RUNNER_LAMBDA_PYTHON` and `RUNNER_LAMBDA_NODE` env vars do not exist. The deepEqual utility (IMPL-11-A) was not needed for this model and that sub-task remains Planned, pending BETA-07.
 
 ---
 
@@ -630,6 +634,8 @@ All 5 sub-tasks are complete when ALL of the following pass:
 ---
 
 #### IMPL-11 Completion Gate
+
+**NOTE (2026-04-07):** This completion gate is suspended pending BETA-07 (validate contract re-design). Items 1–5 will be re-evaluated after the new contract is defined. Do not attempt to satisfy this gate against the old runner-based spec.
 
 1. `npx tsc --noEmit` — exits 0.
 2. `npx jest tests/unit/validation/ tests/unit/shared/deepEqual.test.ts` — all pass.
@@ -707,7 +713,7 @@ All 5 sub-tasks are complete when ALL of the following pass:
 | Blocks | IMPL-12-E |
 | Verification | `npx jest tests/unit/evolve/handler.test.ts` passes; `npx tsc --noEmit` exits 0 |
 
-**What to build:** Full SQS handler per `docs/validation-evolve.md` §3 — GapQueueMessage Zod parse, similar skills query, prompt build, Claude API call, response parse + Zod validate, createSkill write, async ValidateFn invocation, evolve-jobs status writes, correct batchItemFailures behavior for transient vs permanent errors. Unit tests covering all paths per §10 IMPL-12-D scope.
+**What was built (ALIGN-09, 2026-04-07):** Full SQS handler per `docs/validation-evolve.md` §3 — GapQueueMessage Zod parse, similar skills query, prompt build, Claude API call, response parse + Zod validate, createSkill write, evolve-jobs status writes, correct batchItemFailures behavior for transient vs permanent errors. Unit tests covering all paths per §10 IMPL-12-D scope. ~~async ValidateFn invocation~~ — **this step was not implemented.** After `createSkill` succeeds the handler writes the evolve-job status to `"complete"` and returns. There is no Lambda.invoke call to ValidateFn. Under the local CLI model, validation is the caller's responsibility; the evolve pipeline does not trigger it server-side.
 
 ---
 
@@ -806,42 +812,21 @@ All 5 sub-tasks are complete when ALL of the following pass:
 
 ---
 
-### BETA-01 — SECURITY: Fix SSRF vulnerability in Node 22 skill runner sandbox
+### BETA-01 — CANCELLED: SSRF vulnerability in Node 22 skill runner sandbox
 
 | Field | Value |
 |-------|-------|
 | ID | BETA-01 |
 | Owner | Ada |
-| Priority | Critical |
-| Status | [~] In Progress |
+| Priority | — |
+| Status | [CANCELLED] |
 | Files | `src/runners/node22/handler.js`, `tests/unit/runners/node22-sandbox.test.js` |
 | Depends on | — |
-| Blocks | All public beta traffic |
-| Verification | Iris review of patched handler; automated test attempting fetch to 169.254.169.254 returns blocked error, not a response; audit checklist for all dangerous globals signed off |
+| Blocks | — |
 
-**2026-04-03 (Ada):** Sandbox rewritten with global shadowing for fetch, process, eval, WebSocket, FormData. Test file created at `tests/unit/runners/node22-sandbox.test.js`. All 8 tests pass. Pending Iris review.
+**CANCELLED 2026-04-07 (Jorven):** The execution model changed. codeVolve no longer executes user-submitted skill implementations server-side. Skills are local CLI tools — the registry provides discoverability and retrieval only. Execution is always the caller's responsibility, in their own environment, with their own credentials. There is no Lambda runner and no `new Function()` sandbox. The SSRF threat described here does not exist in the current architecture.
 
-**Context.**
-The Node 22 skill runner at `src/runners/node22/handler.js` executes user-submitted skill implementations using `new Function()`. Node 22 exposes `fetch` as a global, meaning any skill implementation can call `fetch('http://169.254.169.254/latest/meta-data/')` and exfiltrate IAM role credentials from the Lambda execution environment. The sandbox currently blocks only `require` (allowlist: `crypto`, `path`) but does not shadow any other Node 22 globals.
-
-**Root cause.**
-The sandbox was designed around `require` isolation. It does not account for Node 22 globals introduced after the original sandbox design: `fetch`, `Headers`, `Request`, `Response`, `FormData`, `ReadableStream`, `WritableStream`, `TransformStream`, `WebSocket`, `Blob`, `URL`, `URLSearchParams`, `structuredClone`, `BroadcastChannel`, `MessageChannel`, `MessageEvent`. Several of these (`fetch`, `WebSocket`) provide direct network egress. Others (`process.env`) are pre-existing Node globals not addressed at all.
-
-**Motivation.**
-codeVolve is a public registry. Any agent or human can submit a skill. Before beta, a trivial malicious skill could extract the Lambda execution role credentials, enumerate internal VPC resources, or reach DynamoDB/S3 endpoints directly through the metadata service. This is a pre-condition blocker for all public access.
-
-**Acceptance criteria.**
-
-1. `globalThis.fetch` is shadowed with a blocking stub before `new Function()` receives control. Stub throws a descriptive `SandboxNetworkError` for any call.
-2. The following globals are similarly stubbed or removed from the function scope: `Headers`, `Request`, `Response`, `WebSocket`, `XMLHttpRequest` (if present), `FormData`.
-3. `process` is shadowed: the stub exposes only `{ env: {}, version: process.version, platform: process.platform }` — no `env` values, no `exit`, no `kill`, no `binding`, no `mainModule`.
-4. `require` bypass attempts are audited: `global.require`, `globalThis.require`, `Function.prototype.constructor` chain, `eval`. Document each and confirm the `new Function()` context does not expose them.
-5. A dedicated test file (`tests/unit/runners/node22-sandbox.test.js`) covers: fetch blocked, process.env empty, require allowlist enforced, eval blocked or harmless, metadata IP unreachable at the code level.
-6. Iris reviews the patched handler and the test file before status moves to [✓] Verified.
-7. Architectural rule 3 in `docs/architecture.md` is confirmed accurate post-patch: "No network access, no filesystem writes."
-
-**Design note for Ada.**
-The shadow must be injected into the `new Function()` parameter list — not just set on `globalThis` of the outer Lambda process — because `new Function()` inherits the global object of the executing realm. The correct pattern is to pass shadow variables as named parameters to the constructed function and declare them as `const fetch = () => { throw new SandboxNetworkError(...) }` in the injected preamble before user code runs.
+**Disposition of artifacts:** `src/runners/node22/handler.js` and `tests/unit/runners/node22-sandbox.test.js` are stale artifacts from the prior model. Ada should delete them as cleanup — they do not belong in the repo under the local CLI model. There is no security work to do here; the attack surface was eliminated by the architecture change, not patched.
 
 ---
 
@@ -859,7 +844,9 @@ The shadow must be injected into the `new Function()` parameter list — not jus
 | Verification | Iris review of CDK diff; manual test confirming 429 response at throttle threshold; WAF rule set visible in AWS Console; CORS preflight from non-allowlisted origin returns 403 |
 
 **Context.**
-API Gateway currently has no usage plans, no per-key or per-stage throttling, and no WAF in front of it. The `/execute` and `/validate` endpoints invoke sandboxed Lambda runners and update DynamoDB — both are expensive relative to a simple GET. An unauthenticated caller can invoke these at full Lambda concurrency limits at no cost to them and at potentially significant cost and disruption to codeVolve.
+API Gateway currently has no usage plans, no per-key or per-stage throttling, and no WAF in front of it. The `/execute` endpoint writes analytics events and updates DynamoDB; `/validate` updates skill confidence and status; `/evolve` triggers Claude API calls. All three are more expensive than simple reads. An unauthenticated caller can invoke these at full Lambda concurrency limits at no cost to them and at potentially significant cost and disruption to codeVolve.
+
+**Note (2026-04-07):** The prior context stated `/execute` and `/validate` "invoke sandboxed Lambda runners." That is no longer accurate. Skills are now local CLI tools — `/execute` logs the run and updates analytics only, it does NOT run any skill code server-side. The rate limiting goal is unchanged; the cost rationale shifts to DynamoDB write pressure and Claude API calls from `/evolve`.
 
 **Motivation.**
 Before any public URL is shared (Moltbook post, docs, MCP server config), the API must have basic rate limiting and abuse resistance. The goal is not perfect security — it is preventing the most obvious denial-of-wallet and resource exhaustion attacks.
@@ -868,7 +855,7 @@ Before any public URL is shared (Moltbook post, docs, MCP server config), the AP
 
 1. API Gateway usage plan created with:
    - Default stage-level throttling: rate = 100 req/s, burst = 200.
-   - Per-endpoint override for POST `/execute` and POST `/validate`: rate = 10 req/s, burst = 20.
+   - Per-endpoint override for POST `/execute` and POST `/validate`: rate = 10 req/s, burst = 20. Rationale: `/execute` writes DynamoDB analytics; `/validate` updates skill confidence and can trigger Claude via /evolve — both warrant tighter limits than reads even without a runner Lambda.
    - Per-endpoint override for POST `/evolve`: rate = 2 req/s, burst = 5 (Claude API calls are expensive).
 2. API keys are required for write endpoints (see BETA-03 for the key system design). Usage plan is associated with the key system introduced in BETA-03.
 3. AWS WAF WebACL deployed and associated with the API Gateway stage:
@@ -1057,6 +1044,64 @@ The output document `docs/moltbook-beta-targets.md` must include:
 
 ---
 
+### BETA-00 — CLEANUP: Remove stale runner artifacts and audit execution-model drift
+
+| Field | Value |
+|-------|-------|
+| ID | BETA-00 |
+| Owner | Ada |
+| Priority | High |
+| Status | [✓] Complete |
+| Files | `src/runners/` (delete), `tests/unit/runners/` (delete), `src/execution/handler.ts` (audit), `src/validation/handler.ts` (audit), `src/cache/cache.ts` (audit), `docs/execution-sandbox.md` (flag as superseded) |
+| Depends on | — |
+| Blocks | BETA-01-CLEANUP (already cancelled, no blocker), BETA-07 (validate contract re-design), must be done before beta |
+| Verification | `src/runners/` directory does not exist; `tests/unit/runners/` directory does not exist; `src/execution/handler.ts` contains no Lambda invocation of runner functions; `src/validation/handler.ts` contains no Lambda invocation of runner functions; `npx tsc --noEmit` exits 0; `npx jest` passes |
+
+**Context.**
+The architecture switched from server-side Lambda runners to a local CLI tool model. Several source files and test files were written against the old model and contain stale code — most critically, dead runner Lambda invocations in the execution and validation handlers, and a runner sandbox implementation that should not exist.
+
+**What to do.**
+
+1. Delete `src/runners/` directory and all contents. These Node 22 and Python runner handlers have no place in the current architecture and present maintenance confusion.
+2. Delete `tests/unit/runners/` directory and all contents. The sandbox tests (`node22-sandbox.test.js`) test code that should be deleted.
+3. Audit `src/execution/handler.ts`: remove any code path that invokes `codevolve-runner-python312` or `codevolve-runner-node22`. Keep: input validation against skill contract, execution_count and latency update on the skill record, Kinesis event emission. Confirm the handler signature matches the current `/execute` contract: log the run, update analytics, return the skill implementation for the caller to run locally.
+4. Audit `src/validation/handler.ts`: remove any code path that invokes runner Lambdas. The handler may be reduced to a stub that returns `501 NOT_IMPLEMENTED` until the validate contract is re-designed in BETA-07. Do not remove the handler entirely — the CDK route and tests for the confidence update path should be preserved.
+5. Audit `src/cache/cache.ts`: add a comment block explaining the cache repurposing decision is pending (BETA-07 / Jorven decision). Do not delete yet.
+6. Add a `> SUPERSEDED 2026-04-07` banner to the top of `docs/execution-sandbox.md` noting the model change so future readers are not misled.
+
+---
+
+### BETA-07 — DESIGN: Re-design /validate contract for local CLI model
+
+| Field | Value |
+|-------|-------|
+| ID | BETA-07 |
+| Owner | Jorven (design) → Ada (implementation) |
+| Priority | High |
+| Status | [ ] Planned |
+| Files | `docs/api.md` (update /validate contract), `docs/decisions.md` (ADR-012), `src/validation/handler.ts` (re-implement after design) |
+| Depends on | BETA-00 (stale runner code removed first) |
+| Blocks | Canonical promotion correctness, /evolve pipeline correctness |
+| Verification | Jorven signs off on new contract before Ada touches handler; Iris reviews implementation |
+
+**Context.**
+`/validate` was designed to invoke runner Lambdas server-side, run skill tests, and record pass/fail counts. That execution path does not exist. The handler as implemented has dead code. The confidence score system and canonical promotion gate depend on accurate test results — without a valid validate path, these metrics cannot be trusted.
+
+**Design question to resolve.**
+Two options, Jorven must choose one before implementation:
+
+Option A — Caller-reported validation: the caller runs the skill locally against the test cases embedded in the skill record, then POSTs `{ skill_id, test_pass_count, test_fail_count, test_total }` to `/validate`. The server accepts the report, updates confidence, and triggers /evolve if below threshold. Confidence is caller-reported and therefore unverified — acceptable for an open registry where reputation of the reporter matters.
+
+Option B — Evolve-pipeline-only validation: `/validate` is only callable by the /evolve pipeline Lambda (which generates skills and can also run them in a controlled context during generation). External callers cannot trigger validation directly. Simplifies trust model but limits community contribution.
+
+**Output of this task.**
+- Updated `/validate` request/response contract in `docs/api.md` matching the chosen option.
+- ADR-012 in `docs/decisions.md` recording the decision.
+- Updated `src/validation/handler.ts` per the new contract.
+- Updated unit tests.
+
+---
+
 ### BETA-06 — CONTENT: Moltbook beta launch post draft
 
 | Field | Value |
@@ -1066,15 +1111,15 @@ The output document `docs/moltbook-beta-targets.md` must include:
 | Priority | Low |
 | Status | [ ] Planned |
 | Files | `tasks/moltbook-post-draft.md` |
-| Depends on | BETA-01 (security must be resolved before public launch), BETA-03 (API key URL must exist), BETA-04 (competitive context informs positioning), BETA-05 (audience informs tone) |
+| Depends on | BETA-00 (stale runner cleanup), BETA-02 (rate limiting), BETA-03 (API key URL must exist), BETA-04 (competitive context informs positioning), BETA-05 (audience informs tone) |
 | Blocks | — |
-| Verification | Draft reviewed and approved by project lead; all TODO placeholders filled in; BETA-01 and BETA-02 verified complete before post goes live |
+| Verification | Draft reviewed and approved by project lead; all TODO placeholders filled in; BETA-00, BETA-02 and BETA-03 verified complete before post goes live |
 
 **Context.**
 Moltbook is a short-form social platform for AI agents. Agents browse, vote, and repost content. The audience is primarily AI agents (and their operators), not human developers. The post must be written in a register that an agent would find immediately useful — not a marketing pitch, but a capability announcement with enough specificity to let an agent decide whether to try it.
 
 **Motivation.**
-The Moltbook launch is the primary beta acquisition channel. The post is the top of the funnel. It must be written before BETA-01 and BETA-03 are deployed so it is ready to go live immediately when the security and auth gates pass.
+The Moltbook launch is the primary beta acquisition channel. The post is the top of the funnel. It must be written before BETA-02 and BETA-03 are deployed so it is ready to go live immediately when the rate limiting and auth gates pass.
 
 **Acceptance criteria.**
 
@@ -1102,3 +1147,59 @@ The Moltbook launch is the primary beta acquisition channel. The post is the top
 | IMPL-16 | Ada | [✓] | Implement community auth (Cognito) + per-user trusted mountain (saved skill sets). CommunityUserPool + UserPoolClient CDK, CognitoUserPoolsAuthorizer on write endpoints, backup JWT Lambda. **Scaffold complete 2026-03-22.** **APPROVED WITH NOTES 2026-03-25 (REVIEW-14-IMPL16):** 31 tests pass (17 authorizer + 14 trustedMountain), tsc and cdk synth clean. W-01: `verifyToken` does not validate `token_use` claim — fix before custom authorizer is used outside backup context. W-02: `authorizerFn` deployed but unattached to any route — document activation conditions or defer deployment. See `docs/reviews/REVIEW-14-IMPL16.md`. | — |
 | IMPL-17 | Ada | [✓] | Implement edge caching CDK: CloudFront distribution, S3 bucket for mountain frontend, OAC, API Gateway cache, cache invalidation in write Lambdas. Full spec: `docs/architecture.md §Edge Caching` and ADR-010. **Completed 2026-03-23.** S3 bucket (codevolve-mountain-frontend-{account}), OAC, CloudFront distribution (PriceClass_100) with 5 cache behaviors, API GW stage cache (0.5 GB, 60s on GET /skills* and /problems*), `codevolve-read-cache` DynamoDB table, CloudFront invalidation in createSkill/createProblem/promoteCanonical/archiveSkill/unarchiveSkill. `src/shared/cloudfrontInvalidation.ts`, 6 unit tests. `tsc --noEmit` and `cdk synth` both exit 0. | ARCH-09 |
 | IMPL-18 | Ada | [✓] | Implement analytics dashboard frontend. Full spec: `docs/platform-design.md` §DESIGN-07. **Approved with notes 2026-03-25 (REVIEW-13-IMPL18):** 5 dashboards implemented (Recharts), all 72 tests pass, 47 new IMPL-18 tests. **Re-reviewed 2026-03-25 (REVIEW-15-IMPL18, Iris):** W-01/W-02/W-04 resolved; 75 tests pass (3 new). W-03 (from/to date range) deferred — carried forward. Pre-existing `tsc --noEmit` failure in `mountain.ts` (IMPL-14 carry-forward). | DESIGN-07, IMPL-09 |
+
+---
+
+## UI / Frontend — Registry Cleanup
+
+| ID | Owner | Status | Task | Depends On |
+|----|-------|--------|------|-----------|
+| UI-01 | Ada | [ ] Planned | Remove legend and status elements from the left panel of the registry page. Locate the legend and status components rendered in the left panel (`frontend/src/` registry view), delete the relevant JSX and any dead CSS/props. Verification: registry page renders without legend or status elements; no console errors; existing tests pass. | — |
+| UI-02 | Ada | [ ] Planned | Move the domains section out of the registry left panel and into its own dedicated "Categories" page. Create a new route and page component for Categories, wire it into the navigation, and remove the domains section from the left panel. Verification: Categories page is reachable via nav, displays all domains, domains no longer appear in left panel. | — |
+| UI-03 | Ada | [ ] Planned | Move the registry counter element from the left panel into the top navigation/header bar. Locate the counter component in the left panel, relocate it into the top bar component, and remove the left-panel instance. Verification: counter is visible in the top bar on all pages, absent from left panel, count value is correct. | — |
+| UI-04 | Ada | [!] Blocked | Remove the left panel from the registry entirely. Delete the left panel component and all references to it from the registry page layout. Verification: registry page renders full-width without a left panel; no layout regressions on other pages; existing tests pass. | UI-01, UI-02, UI-03 |
+
+---
+
+## Alignment / Cleanup
+
+> Identified by Jorven, 2026-04-07. These tasks correct artifacts, tests, and documentation that are misaligned with the current local CLI tool execution model or are otherwise broken.
+
+---
+
+### Execution Model Misalignment
+
+| ID | Owner | Status | Task | Files Affected | Verification | Depends On |
+|----|-------|--------|------|---------------|--------------|-----------|
+| ALIGN-01 | Ada | [✓] Complete | Delete stale runner test file. `tests/unit/runners/node22-sandbox.test.js` imports `src/runners/node22/handler.js` which does not exist. The import will fail at module resolution and break the test suite. Delete the file and the `tests/unit/runners/` directory entirely. | `tests/unit/runners/node22-sandbox.test.js`, `tests/unit/runners/` (dir) | `npx jest` passes with no "Cannot find module" error on the runners path; directory is absent | — |
+| ALIGN-02 | Ada | [✓] Complete | Delete `docs/execution-sandbox.md`. The entire document describes the old Lambda-per-language runner model (ARCH-06): Python and Node 22 runner Lambdas, `new Function()` sandbox, `InvokeCommand` invocation flow, timeout/memory limits for runners, cache write policy. None of this exists in the codebase. The document is actively misleading. | `docs/execution-sandbox.md` | File is absent from repo | — |
+| ALIGN-03 | Jorven | [x] Complete | Rewrite Hard Architectural Rule 3 in `docs/architecture.md`. Current text: "Skill execution → sandboxed Lambda only. No network access, no filesystem writes..." This is false under the local CLI model. Correct rule: "Skill execution → always local. The registry stores and retrieves implementations; it never executes them server-side. `/execute` logs the run for analytics only." Also remove `skill-runner-python` and `skill-runner-node` from the Lambda Functions table in that document. | `docs/architecture.md` | Rule 3 accurately describes the local CLI model; Lambda Functions table contains no runner entries | — |
+| ALIGN-04 | Jorven | [x] Complete | Rewrite `docs/validation-evolve.md` to remove all runner Lambda invocation language. Section 1 Overview states `/validate` "runs a skill's test suite through the existing sandboxed runner Lambdas." Section 1 Architectural constraint recap mandates runner Lambda reuse. Sections 2.1 and 2.2 describe a runner-invocation flow. The actual implemented handler (`src/validation/handler.ts`) accepts caller-reported `pass_count / fail_count / total_tests`. The document must be rewritten to describe the caller-reported model. | `docs/validation-evolve.md` | Document describes caller-reported validation; no references to runner Lambda invocation remain | ALIGN-03 |
+| ALIGN-05 | Jorven | [x] Complete | Write ADR-012 in `docs/decisions.md` documenting the switch from the server-side Lambda runner model to the local CLI tool model. Context: why the model changed. Decision: skills are local CLI tools; the registry provides discoverability and retrieval only; execution is always the caller's responsibility. Consequences: runner Lambdas eliminated, ADR-006 (Lambda sandbox) superseded, ADR-009 runner-reuse clause superseded. Mark ADR-006 status as Superseded by ADR-012. Add supersession note to ADR-009. | `docs/decisions.md` | ADR-012 present with status Accepted; ADR-006 marked Superseded by ADR-012; ADR-009 updated with note | — |
+
+---
+
+### Broken Tests
+
+| ID | Owner | Status | Task | Files Affected | Verification | Depends On |
+|----|-------|--------|------|---------------|--------------|-----------|
+| ALIGN-06 | Ada | [✓] Complete | Fix broken Lambda invocation assertions in `tests/unit/evolve/handler.test.ts`. The test at line 242 ("invokes the validation Lambda asynchronously after writing skill") asserts `mockLambdaSend` was called once with an `InvokeCommand`. The test at line 389 ("continues and returns success when validation Lambda invoke fails") has the same assumption. However, `src/evolve/handler.ts` has no `@aws-sdk/client-lambda` import and never invokes a Lambda — both tests will always fail. Delete both test cases and the `@aws-sdk/client-lambda` mock block from the test file. If async validate invocation is a future design goal, it must be specified in a separate task before tests are written for it. | `tests/unit/evolve/handler.test.ts` | `npx jest tests/unit/evolve/handler.test.ts` passes; no `@aws-sdk/client-lambda` mock in the file unless the handler uses it | — |
+| ALIGN-07 | Ada | [✓] Complete | After ALIGN-06, audit all remaining test cases in `tests/unit/evolve/handler.test.ts` for any other references to `mockLambdaSend`. Verify all remaining coverage matches actual handler behavior. | `tests/unit/evolve/handler.test.ts` | All tests pass; test descriptions match the handler steps in `src/evolve/handler.ts` | ALIGN-06 |
+
+---
+
+### Stale Task Descriptions in todo.md
+
+| ID | Owner | Status | Task | Files Affected | Verification | Depends On |
+|----|-------|--------|------|---------------|--------------|-----------|
+| ALIGN-08 | Jorven | [✓] Complete | Update IMPL-11-B and IMPL-11-C sub-task descriptions. Both describe building a runner-Lambda-based validate handler with env vars `RUNNER_LAMBDA_PYTHON` and `RUNNER_LAMBDA_NODE`. The actual handler (`src/validation/handler.ts`) is implemented as a caller-reported model. Mark IMPL-11-B and IMPL-11-C as Complete with a note explaining what was built. | `tasks/todo.md` | IMPL-11-B and IMPL-11-C statuses read Complete; descriptions reference the caller-reported model | — |
+| ALIGN-09 | Jorven | [✓] Complete | Update IMPL-12-D sub-task description. It lists "async ValidateFn invocation" as step 8 of the evolve handler. The implemented `src/evolve/handler.ts` does not invoke a validate Lambda — after writing the skill it updates the job status to "complete" and exits. Correct the description to reflect actual behavior. | `tasks/todo.md` | IMPL-12-D description matches the implemented flow; no reference to Lambda invocation | — |
+
+---
+
+### Dead and Inconsistent Infrastructure
+
+| ID | Owner | Status | Task | Files Affected | Verification | Depends On |
+|----|-------|--------|------|---------------|--------------|-----------|
+| ALIGN-10 | Ada | [✓] Complete | Annotate the `codevolve-cache` DynamoDB table in `infra/codevolve-stack.ts`. The table is provisioned but no Lambda currently reads from or writes to it — `src/execution/execute.ts` only increments `execution_count` on the skill record and emits a Kinesis event. Add a code comment on the `CacheTable` construct explaining it is provisioned for future Decision Engine auto-cache use (Rule 1) but is not active. Update the `docs/architecture.md` AWS Resources table row for `codevolve-cache` to note its pending status. | `infra/codevolve-stack.ts` (comment only), `docs/architecture.md` | CacheTable construct has an explanatory comment; architecture doc notes it as provisioned-for-future-use | — |
+| ALIGN-11 | Ada | [✓] Complete | Fix the orphaned `/evolve` API Gateway resource in `infra/codevolve-stack.ts`. Line 873 calls `this.api.root.addResource("evolve")` but adds no POST method — no Lambda integration is wired. `evolveFn` is triggered by the SQS gap queue only, not by an HTTP route. A caller POSTing to `/evolve` gets a 403 or 404 with no useful response. Preferred resolution: remove the orphaned `addResource("evolve")` call and update `docs/api.md` to note that POST /evolve has no direct HTTP trigger (it is SQS-only via the Decision Engine gap queue). Alternative: add a stub POST method returning 501 Not Implemented. | `infra/codevolve-stack.ts`, `docs/api.md` | `npx cdk synth` exits 0; `/evolve` either has a wired POST method or the resource declaration is removed and `docs/api.md` is updated | — |

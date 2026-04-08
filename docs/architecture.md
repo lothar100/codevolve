@@ -45,7 +45,7 @@ Client / Agent
 |----------|------|---------|
 | `codevolve-problems` | DynamoDB | Problem records |
 | `codevolve-skills` | DynamoDB | Skill records |
-| `codevolve-cache` | DynamoDB (TTL) or ElastiCache | Input/output cache |
+| `codevolve-cache` | DynamoDB (TTL) | Input/output cache — **provisioned but currently inactive**. No Lambda reads from or writes to this table. Cache layer design is pending BETA-07, which will redefine the validate/cache contract for the local CLI execution model. Will be activated by the Decision Engine auto-cache rule (Rule 1) once BETA-07 is resolved. |
 | `codevolve-archive` | DynamoDB | Archived problems and skills |
 | OpenSearch Serverless | OpenSearch | Skill embeddings for /resolve |
 | Kinesis Data Stream | Kinesis | Analytics event pipeline |
@@ -70,8 +70,6 @@ Client / Agent
 | `archive-handler` | SQS (ArchiveQueue) | Archive/unarchive skills and problems |
 | `analytics-consumer` | Kinesis | Events → ClickHouse/BigQuery |
 | `decision-engine` | EventBridge (5-min) | Auto-cache, optimization flags, gap detection, archive evaluation |
-| `skill-runner-python` | Lambda (invoked by execution-handler) | Sandboxed Python skill execution |
-| `skill-runner-node` | Lambda (invoked by execution-handler) | Sandboxed Node.js skill execution |
 
 ---
 
@@ -99,7 +97,7 @@ tasks/            ← Task tracker and lessons
 
 1. Analytics events → Kinesis only. Never write analytics to DynamoDB primary tables.
 2. LLM calls (Claude API) → `src/evolve/` only. Never in `/resolve` or `/execute` paths.
-3. Skill execution → sandboxed Lambda only. No network access, no filesystem writes. `fetch`, `WebSocket`, `XMLHttpRequest`, `FormData`, and all other network globals are shadowed to a throwing stub via named parameters to `new Function()`. `process.env` is replaced with an empty object. `eval` and `globalThis` are shadowed to `undefined`. Only `require('crypto')` and `require('path')` are permitted. See `src/runners/node22/handler.js` and BETA-01.
+3. Skill execution → always local. The registry stores and retrieves skill implementations; it never executes them server-side. `/execute` logs the run for analytics only. Callers fetch the implementation via `/resolve` or `GET /skills/:id` and run it in their own environment using their own credentials, filesystem, and installed tools.
 4. Archive → `status: "archived"` flag only. Never hard-delete records.
 5. ClickHouse/BigQuery → append-only. No analytics record deletion, even for archived skills.
 6. Canonical promotion → requires `confidence >= 0.85` AND all tests passing.
@@ -570,7 +568,7 @@ At high agent traffic (100M GET requests/month), CloudFront costs scale to ~$75/
 
 1. Analytics events → Kinesis only. Never write analytics to DynamoDB primary tables.
 2. LLM calls (Claude API) → `src/evolve/` only. Never in `/resolve` or `/execute` paths.
-3. Skill execution → sandboxed Lambda only. No network access, no filesystem writes. `fetch`, `WebSocket`, `XMLHttpRequest`, `FormData`, and all other network globals are shadowed to a throwing stub via named parameters to `new Function()`. `process.env` is replaced with an empty object. `eval` and `globalThis` are shadowed to `undefined`. Only `require('crypto')` and `require('path')` are permitted. See `src/runners/node22/handler.js` and BETA-01.
+3. Skill execution → always local. The registry stores and retrieves skill implementations; it never executes them server-side. `/execute` logs the run for analytics only. Callers fetch the implementation via `/resolve` or `GET /skills/:id` and run it in their own environment using their own credentials, filesystem, and installed tools.
 4. Archive → `status: "archived"` flag only. Never hard-delete records.
 5. ClickHouse/BigQuery → append-only. No analytics record deletion, even for archived skills.
 6. Canonical promotion → requires `confidence >= 0.85` AND all tests passing.

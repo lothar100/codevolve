@@ -28,7 +28,7 @@ Base URL: `https://api.codevolve.dev/v1`
 - [POST /validate/:skill_id](#post-validateskill_id)
 - [POST /events](#post-events)
 - [GET /analytics/dashboards/:type](#get-analyticsdashboardstype)
-- [POST /evolve](#post-evolve)
+- [POST /evolve](#post-evolve) *(SQS-only — no HTTP endpoint)*
 
 ---
 
@@ -198,7 +198,7 @@ Per-agent limits enforced via API Gateway usage plans (keyed by API key). Exceed
 | `POST /execute/chain` | 20 req/min |
 | `POST /validate/:skill_id` | 30 req/min |
 | `POST /events` | 10 req/min (batches of up to 100 events — effective throughput: 1,000 events/min) |
-| `POST /evolve` | 5 req/min |
+| `POST /evolve` | N/A — SQS-only, no HTTP endpoint |
 | All other endpoints (CRUD, analytics reads) | 200 req/min |
 
 API Gateway default throttle is 10,000 req/s at the account level; the per-agent limits above are the operative constraint.
@@ -1142,9 +1142,13 @@ None. Reads from analytics store only.
 
 ---
 
-## POST /evolve
+## POST /evolve — SQS-only, no HTTP endpoint
 
-Trigger asynchronous skill generation or improvement. Enqueues work for a Claude Code agent to create a new skill (from an unresolved intent) or improve an existing weak skill.
+> **The evolve pipeline is not HTTP-accessible.** There is no API Gateway route for `/evolve`. The `evolveFn` Lambda is triggered exclusively by the SQS gap queue, which is populated by the Decision Engine when a `/resolve` returns low confidence (< 0.7) or no matching skill is found. Callers cannot enqueue evolve jobs directly via HTTP.
+
+The contract below documents the SQS message shape that the Decision Engine writes to the gap queue, and the processing behavior of `evolveFn`. It is retained here for internal reference — it does not describe an HTTP endpoint.
+
+Trigger asynchronous skill generation or improvement. The Decision Engine enqueues work for a Claude Code agent to create a new skill (from an unresolved intent) or improve an existing weak skill.
 
 ### Request
 
