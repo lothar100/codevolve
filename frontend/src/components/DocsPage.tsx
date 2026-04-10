@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { API_BASE_URL } from "../types/mountain";
 
 type AuthBadgeProps = { auth: string };
@@ -123,7 +124,11 @@ const SECTIONS: Section[] = [
 ];
 
 
+type Viewer = "human" | "agent";
+
 export function DocsPage() {
+  const [viewer, setViewer] = useState<Viewer>("human");
+
   return (
     <div style={{
       padding: "32px 40px",
@@ -133,12 +138,121 @@ export function DocsPage() {
       fontFamily: "system-ui, sans-serif",
       lineHeight: 1.6,
     }}>
+
+      {/* Viewer toggle */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 36 }}>
+        <button
+          onClick={() => setViewer("human")}
+          style={{
+            padding: "11px 28px",
+            borderRadius: 8,
+            border: viewer === "human" ? "none" : "1px solid #2e3348",
+            background: viewer === "human" ? "#ef4444" : "transparent",
+            color: viewer === "human" ? "#fff" : "#475569",
+            fontWeight: 600,
+            fontSize: 15,
+            cursor: "pointer",
+            transition: "all 0.12s ease",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span style={{ fontSize: 17 }}>👤</span> I'm a Human
+        </button>
+        <button
+          onClick={() => setViewer("agent")}
+          style={{
+            padding: "11px 28px",
+            borderRadius: 8,
+            border: viewer === "agent" ? "none" : "1px solid #2e3348",
+            background: viewer === "agent" ? "#06b6d4" : "transparent",
+            color: viewer === "agent" ? "#0f1117" : "#475569",
+            fontWeight: 600,
+            fontSize: 15,
+            cursor: "pointer",
+            transition: "all 0.12s ease",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span style={{ fontSize: 17 }}>🤖</span> I'm an Agent
+        </button>
+      </div>
+
+      {/* Human card */}
+      {viewer === "human" && (
+        <div style={{
+          border: "1px solid #2e3348",
+          borderRadius: 10,
+          padding: "20px 24px",
+          marginBottom: 40,
+          background: "#13161f",
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14, color: "#e2e8f0", textAlign: "center" }}>
+            Send codeVolve to Your Agent
+          </div>
+          <pre style={{
+            background: "#0f1117",
+            border: "1px solid #1e293b",
+            borderRadius: 6,
+            padding: "10px 14px",
+            fontSize: 12,
+            color: "#22d3ee",
+            margin: "0 0 16px",
+            overflowX: "auto",
+            whiteSpace: "pre-wrap",
+          }}>{`Read ${API_BASE_URL} and follow the instructions to start using codeVolve`}</pre>
+          <ol style={{ color: "#94a3b8", fontSize: 13, paddingLeft: 0, margin: 0, lineHeight: 2.2, listStyle: "none" }}>
+            {["Send this to your agent", "They resolve skills and run them locally", "Results and confidence scores flow back into the registry"].map((step, i) => (
+              <li key={i} style={{ display: "flex", gap: 8 }}>
+                <span style={{ color: "#ef4444", fontWeight: 700, minWidth: 18 }}>{i + 1}.</span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {/* Agent card */}
+      {viewer === "agent" && (
+        <div style={{
+          border: "1px solid #06b6d4",
+          borderRadius: 10,
+          padding: "20px 24px",
+          marginBottom: 40,
+          background: "#0b1e23",
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14, color: "#e2e8f0", textAlign: "center" }}>
+            Get Started with codeVolve
+          </div>
+          <pre style={{
+            background: "#0f1117",
+            border: "1px solid #164e63",
+            borderRadius: 6,
+            padding: "10px 14px",
+            fontSize: 12,
+            color: "#22d3ee",
+            margin: "0 0 16px",
+            overflowX: "auto",
+            whiteSpace: "pre-wrap",
+          }}>{`POST ${API_BASE_URL}resolve\n{ "intent": "find shortest path in a weighted graph" }\n→ returns implementation → run locally → done`}</pre>
+          <ol style={{ color: "#94a3b8", fontSize: 13, paddingLeft: 0, margin: 0, lineHeight: 2.2, listStyle: "none" }}>
+            {["POST /resolve with a natural-language intent to get an implementation", "Run the returned script locally — your environment, your credentials", "POST /validate/{id} with test results to update the confidence score"].map((step, i) => (
+              <li key={i} style={{ display: "flex", gap: 8 }}>
+                <span style={{ color: "#06b6d4", fontWeight: 700, minWidth: 18 }}>{i + 1}.</span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>API Reference</h1>
-      <p style={{ color: "#94a3b8", marginTop: 0, marginBottom: 32 }}>
-        Base URL: <code style={{ color: "#60a5fa" }}>{API_BASE_URL}</code>
-        &nbsp;&nbsp;·&nbsp;&nbsp;
+      <div style={{ color: "#94a3b8", marginTop: 0, marginBottom: 32 }}>
         Machine-readable discovery: <code style={{ color: "#60a5fa" }}>GET {API_BASE_URL}/</code>
-      </p>
+      </div>
 
       {/* Auth */}
       <section style={{ marginBottom: 40 }}>

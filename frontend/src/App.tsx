@@ -5,15 +5,19 @@ import { SkillQualityDashboard } from "./components/dashboards/SkillQualityDashb
 import { EvolutionGapDashboard } from "./components/dashboards/EvolutionGapDashboard";
 import { AgentBehaviorDashboard } from "./components/dashboards/AgentBehaviorDashboard";
 import { Mountain2D } from "./components/Mountain2D";
-import { FilterSidebar } from "./components/FilterSidebar";
 import { DetailPanel } from "./components/DetailPanel";
 import { ProblemDetailModal } from "./components/ProblemDetailModal";
 import { DocsPage } from "./components/DocsPage";
+import { CategoriesPage } from "./components/CategoriesPage";
 import { useMountainData } from "./hooks/useMountainData";
 import type { MountainProblem, MountainFilters } from "./types/mountain";
 import { API_BASE_URL } from "./types/mountain";
 
-type TabId = "registry" | "analytics" | "docs";
+// Stable empty filters used at the App level to fetch registry totals for the header.
+// Declared outside the component so the object reference never changes between renders.
+const EMPTY_FILTERS: MountainFilters = { domain: null, language: null, status: null };
+
+type TabId = "registry" | "analytics" | "docs" | "categories";
 type AnalyticsTabId =
   | "resolve-performance"
   | "execution-caching"
@@ -33,6 +37,7 @@ function getTabFromHash(): TabId {
   const hash = window.location.hash.replace("#", "");
   if (hash === "analytics" || hash.startsWith("analytics/")) return "analytics";
   if (hash === "docs") return "docs";
+  if (hash === "categories") return "categories";
   return "registry";
 }
 
@@ -49,37 +54,63 @@ function getAnalyticsTabFromHash(): AnalyticsTabId {
   return "execution-caching";
 }
 
-function MountainView() {
-  const [filters, setFilters] = useState<MountainFilters>({
-    domain: null,
-    language: null,
-    status: null,
-  });
+interface MountainViewProps {
+  activeDomain: string | null;
+  onClearDomain: () => void;
+}
+
+function MountainView({ activeDomain, onClearDomain }: MountainViewProps) {
+  const filters = useMemo<MountainFilters>(
+    () => ({ domain: activeDomain, language: null, status: null }),
+    [activeDomain]
+  );
   const [selected, setSelected] = useState<MountainProblem | null>(null);
   const [modalProblemId, setModalProblemId] = useState<string | null>(null);
   const { data, loading, error } = useMountainData(filters);
 
-  const domains = useMemo(
-    () =>
-      data
-        ? Array.from(new Set(data.problems.flatMap((p) => p.domain))).sort()
-        : [],
-    [data],
-  );
-
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <FilterSidebar
-        filters={filters}
-        domains={domains}
-        onFiltersChange={setFilters}
-        totalProblems={data?.total_problems ?? 0}
-        totalSkills={data?.total_skills ?? 0}
-        generatedAt={data?.generated_at ?? null}
-        cacheHit={data?.cache_hit ?? false}
-      />
-
-      <div style={{ position: "absolute", inset: 0, left: 220, overflow: "hidden" }}>
+      {activeDomain != null && (
+        <div style={{
+          position: "absolute",
+          top: 12,
+          left: 16,
+          zIndex: 10,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}>
+          <span style={{
+            fontSize: 12,
+            color: "#94a3b8",
+            background: "#1a1d27",
+            border: "1px solid #3b82f6",
+            borderRadius: 16,
+            padding: "4px 12px",
+            textTransform: "capitalize",
+          }}>
+            {activeDomain}
+          </span>
+          <button
+            onClick={onClearDomain}
+            style={{
+              fontSize: 11,
+              color: "#64748b",
+              background: "transparent",
+              border: "1px solid #2e3348",
+              borderRadius: 16,
+              padding: "4px 10px",
+              cursor: "pointer",
+              transition: "color 0.1s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#ef4444")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}
+          >
+            ✕ clear filter
+          </button>
+        </div>
+      )}
+      <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
         {loading && (
           <div className="dashboard-loading">Loading registry…</div>
         )}
@@ -121,6 +152,12 @@ export function App() {
   const [analyticsTab, setAnalyticsTab] = useState<AnalyticsTabId>(
     getAnalyticsTabFromHash
   );
+  const [activeDomain, setActiveDomain] = useState<string | null>(null);
+
+  // Fetch registry totals once at the App level so the header counter is always visible.
+  const { data: registryData } = useMountainData(EMPTY_FILTERS);
+  const totalProblems = registryData?.total_problems ?? null;
+  const totalSkills = registryData?.total_skills ?? null;
 
   useEffect(() => {
     const onHashChange = () => {
@@ -142,7 +179,6 @@ export function App() {
     if (sub != null) setAnalyticsTab(sub);
   };
 
-
   return (
     <div className="app">
       <header className="app-header">
@@ -161,18 +197,43 @@ export function App() {
             Analytics
           </button>
           <button
+            className={tab === "categories" ? "active" : ""}
+            onClick={() => navigateTo("categories")}
+          >
+            Categories
+          </button>
+          <button
             className={tab === "docs" ? "active" : ""}
             onClick={() => navigateTo("docs")}
           >
             Docs
           </button>
         </nav>
+        {totalProblems !== null && totalSkills !== null && (
+          <div className="header-registry-counter">
+            <span className="header-registry-counter__item">
+              <span className="header-registry-counter__value">{totalProblems}</span>
+              {" problems"}
+            </span>
+            <span className="header-registry-counter__sep">·</span>
+            <span className="header-registry-counter__item">
+              <span className="header-registry-counter__value">{totalSkills}</span>
+              {" skills"}
+            </span>
+          </div>
+        )}
       </header>
 
       <main>
         {tab === "registry" && (
           <section style={{ height: "100%", overflow: "hidden" }}>
-            <MountainView />
+            <MountainView
+              activeDomain={activeDomain}
+              onClearDomain={() => {
+                setActiveDomain(null);
+                navigateTo("categories");
+              }}
+            />
           </section>
         )}
 
@@ -201,6 +262,17 @@ export function App() {
               {analyticsTab === "evolution-gap" && <EvolutionGapDashboard />}
               {analyticsTab === "agent-behavior" && <AgentBehaviorDashboard />}
             </div>
+          </section>
+        )}
+
+        {tab === "categories" && (
+          <section style={{ height: "100%", overflowY: "auto" }}>
+            <CategoriesPage
+              onSelectDomain={(domain) => {
+                setActiveDomain(domain);
+                navigateTo("registry");
+              }}
+            />
           </section>
         )}
 

@@ -272,3 +272,22 @@ main {
   font-size: 13px;
   color: var(--text-muted);
 }
+
+/* ── Header registry counter ──────────────────────────────── */
+.header-registry-counter {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.header-registry-counter__value {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.header-registry-counter__sep {
+  color: var(--border);
+}

@@ -128,7 +128,7 @@ export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "flex-end",
-        paddingBottom: 40,
+        paddingBottom: 56,
         paddingTop: 24,
       }}
     >
@@ -203,14 +203,12 @@ export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
       {/* Legend */}
       <div
         style={{
-          position: "absolute",
-          bottom: 8,
-          right: 16,
           display: "flex",
           gap: 14,
           fontSize: 11,
           color: "#64748b",
           alignItems: "center",
+          marginTop: 14,
         }}
       >
         {STATUS_ORDER.map((status) => (
@@ -227,6 +225,25 @@ export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
             {STATUS_LABEL[status]}
           </span>
         ))}
+      </div>
+
+      {/* Donation addresses */}
+      <div
+        style={{
+          marginTop: 14,
+          fontSize: 10,
+          color: "#334155",
+          textAlign: "center",
+          lineHeight: 1.9,
+          fontFamily: "monospace",
+          letterSpacing: "0.02em",
+        }}
+      >
+        <div style={{ color: "#475569", marginBottom: 4, fontSize: 9, letterSpacing: "0.08em", textTransform: "uppercase" }}>Support codeVolve</div>
+        <div><span style={{ color: "#94a3b8", marginRight: 6 }}>BTC</span>bc1qf8cedqguh2ucc3fgsphmgt789q9szh35vtl38m</div>
+        <div><span style={{ color: "#94a3b8", marginRight: 6 }}>LTC</span>Les2qb8tp16kcxkm6cxzWdCV5174pMzcNK</div>
+        <div><span style={{ color: "#94a3b8", marginRight: 6 }}>ETH</span>0xc7F9f7Acc3941cC0Da9956410D0023FB936a6A09</div>
+        <div><span style={{ color: "#94a3b8", marginRight: 6 }}>XMR</span>43pgpvwinkK4HCxJvEH7Fs2KMkH1VBCVqRjyCVLfCwTrGD1NzGSHkmuDUyFqCjBiCPLYePT1StfQn1uZhkPJczzzFXjYZ1U</div>
       </div>
 
       {/* Stats + pagination */}
@@ -282,6 +299,33 @@ export function Mountain2D({ problems, onSelect }: Mountain2DProps) {
           </div>
         )}
       </div>
+
+      {/* ASCII graffiti title */}
+      <pre
+        style={{
+          position: "absolute",
+          top: "40%",
+          left: 0,
+          right: 0,
+          margin: 0,
+          padding: 0,
+          textAlign: "center",
+          fontFamily: "'Courier New', 'Lucida Console', monospace",
+          fontSize: "11px",
+          lineHeight: 1.18,
+          color: "#161b28",
+          pointerEvents: "none",
+          userSelect: "none",
+          overflow: "hidden",
+          whiteSpace: "pre",
+          transform: "translateY(-50%) rotate(-2deg)",
+        }}
+      >{` ██████╗  ██████╗ ██████╗  ███████╗ ██╗   ██╗  ██████╗  ██╗      ██╗   ██╗  ███████╗
+██╔════╝ ██╔═══██╗██╔══██╗ ██╔════╝ ██║   ██║ ██╔═══██╗ ██║      ██║   ██║  ██╔════╝
+██║      ██║   ██║██║  ██║ █████╗   ╚██╗ ██╔╝ ██║   ██║ ██║      ██║   ██║  █████╗
+██║      ██║   ██║██║  ██║ ██╔══╝    ╚████╔╝  ██║   ██║ ██║      ╚██╗ ██╔╝  ██╔══╝
+╚██████╗ ╚██████╔╝██████╔╝ ███████╗   ╚██╔╝   ╚██████╔╝ ███████╗  ╚████╔╝   ███████╗
+ ╚═════╝  ╚═════╝ ╚═════╝  ╚══════╝    ╚═╝     ╚═════╝  ╚══════╝   ╚═══╝    ╚══════╝`}</pre>
 
       {/* Hover tooltip */}
       {tooltip && (
