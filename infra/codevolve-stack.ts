@@ -380,22 +380,13 @@ export class CodevolveStack extends cdk.Stack {
       listProblemsFn,
     ];
 
-    // Router: POST /resolve (IMPL-05)
+    // Router: POST /intent (IMPL-05)
     const resolveFn = new NodejsFunction(this, "ResolveFn", {
       ...commonNodejsProps,
       functionName: "codevolve-resolve",
       entry: path.join(__dirname, "../src/router/resolve.ts"),
       memorySize: 512,
       timeout: cdk.Duration.seconds(10),
-    });
-
-    // Execution: POST /execute — logs local execution for analytics (IMPL-06)
-    const executeFn = new NodejsFunction(this, "ExecuteFn", {
-      ...commonNodejsProps,
-      functionName: "codevolve-execute",
-      entry: path.join(__dirname, "../src/execution/execute.ts"),
-      memorySize: 128,
-      timeout: cdk.Duration.seconds(5),
     });
 
     // Validation: POST /validate/{skill_id} — accepts caller-provided test results (IMPL-11-B)
@@ -840,19 +831,13 @@ export class CodevolveStack extends cdk.Stack {
       new apigateway.LambdaIntegration(getProblemFn),
     );
 
-    // /resolve (IMPL-05)
-    const resolveResource = this.api.root.addResource("resolve");
+    // /intent (IMPL-05)
+    const resolveResource = this.api.root.addResource("intent");
     resolveResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(resolveFn),
     );
 
-    // /execute (IMPL-06)
-    const executeResource = this.api.root.addResource("execute");
-    executeResource.addMethod(
-      "POST",
-      new apigateway.LambdaIntegration(executeFn),
-    );
     // /validate (IMPL-11-B)
     const validateResource = this.api.root.addResource("validate");
     const validateBySkillIdResource = validateResource.addResource("{skill_id}");
@@ -987,10 +972,6 @@ export class CodevolveStack extends cdk.Stack {
         ],
       }),
     );
-
-    // Execution function permissions (IMPL-06)
-    this.skillsTable.grantReadWriteData(executeFn);
-    this.eventsStream.grantWrite(executeFn);
 
     // ValidateFn permissions (IMPL-11-B)
     this.skillsTable.grantReadWriteData(validateFn);

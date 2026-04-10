@@ -1,0 +1,9 @@
+{
+  "CodevolveStack": {
+    "ApiUrl": "https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1/",
+    "UserPoolId": "us-east-2_ANzMKNk5k",
+    "FrontendBucketName": "codevolve-dashboard",
+    "CodevolveApiEndpoint1DCC363F": "https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1/",
+    "DashboardUrl": "http://codevolve-dashboard.s3-website.us-east-2.amazonaws.com/"
+  }
+}

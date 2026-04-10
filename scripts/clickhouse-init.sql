@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS codevolve.analytics_events
     skill_id     String,                         -- UUID string or empty string (never NULL in CH)
     intent       String,                         -- intent string or empty string
     latency_ms   Float64,
-    confidence   Nullable(Float64),              -- null for 'fail' and 'archive_warning' events
+    confidence   Float64,                        -- -1.0 sentinel when field is null (never NULL in CH)
     cache_hit    UInt8,                          -- 0 or 1 (boolean stored as UInt8)
     input_hash   String,                         -- SHA-256 hex or empty string
     success      UInt8,                          -- 0 or 1

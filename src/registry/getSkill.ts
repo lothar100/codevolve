@@ -12,6 +12,7 @@ import { z } from "zod";
 import { docClient, SKILLS_TABLE } from "../shared/dynamo.js";
 import { validate } from "../shared/validation.js";
 import { success, error } from "../shared/response.js";
+import { emitEvent } from "../shared/emitEvent.js";
 import type { Skill } from "../shared/types.js";
 
 const PathParamsSchema = z.object({
@@ -74,7 +75,18 @@ export async function handler(
       return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
     }
 
-    return success(200, { skill: mapSkillFromDynamo(item) });
+    const skill = mapSkillFromDynamo(item);
+    void emitEvent({
+      event_type: "execute",
+      skill_id: skill.skill_id,
+      intent: "",
+      latency_ms: 0,
+      confidence: skill.confidence ?? null,
+      cache_hit: false,
+      input_hash: null,
+      success: true,
+    });
+    return success(200, { skill });
   } catch (err) {
     console.error("getSkill error:", err);
     return error(500, "INTERNAL_ERROR", "An unexpected error occurred");

@@ -49,8 +49,8 @@ const DateRangeParamsSchema = z.object({
   to: z.string().optional(),
 });
 
-// Default time window: last 1 hour
-const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
+// Default time window: last 7 days
+const DEFAULT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Resolve and validate the time range from query parameters.

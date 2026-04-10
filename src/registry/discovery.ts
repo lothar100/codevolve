@@ -26,8 +26,7 @@ const ENDPOINTS = [
   { method: "GET",    path: "/problems",                         auth: "none",     description: "List / filter problems" },
   { method: "GET",    path: "/problems/{id}",                    auth: "none",     description: "Get a problem and all its skills" },
   // Core agent workflow
-  { method: "POST",   path: "/resolve",                          auth: "none",     description: "Route a natural-language intent to the best matching skill" },
-  { method: "POST",   path: "/execute",                          auth: "none",     description: "Log that a skill was executed locally (analytics only — skills run in the caller's environment)" },
+  { method: "POST",   path: "/intent",                           auth: "none",     description: "Route a natural-language intent to the best matching skill" },
   { method: "POST",   path: "/validate/{skill_id}",              auth: "api_key",  description: "Report local test results (pass/fail counts) to update a skill's confidence score" },
   // Telemetry
   { method: "POST",   path: "/events",                           auth: "api_key",  description: "Emit analytics events (batch up to 100)" },

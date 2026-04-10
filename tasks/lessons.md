@@ -90,3 +90,63 @@ The codeVolve project was bootstrapped on 2026-03-20. Several foundational decis
 - Architecture complete: ARCH-05, ARCH-06, REVIEW-06-ARCH all approved
 - ARCH-07 (Decision Engine) and DESIGN-04 (mountain visualization) now being designed in parallel
 - Next: merge worktree results, run Iris review (REVIEW-05-IMPL05, REVIEW-07)
+
+---
+
+### L-004: Architecture drift accumulates silently and must be audited when the model changes
+
+**Observation:** After the execution model switched from server-side Lambda runners to local CLI tools, stale references accumulated across 11 distinct locations: task descriptions, doc files, test mocks, CDK constructs, and source handlers. No single agent caught all of them during normal implementation. The drift was only found through a dedicated Jorven audit pass run against both tasks and code simultaneously.
+**Rule:** Whenever the execution model or a foundational architectural assumption changes, immediately dispatch a Jorven audit pass covering tasks/todo.md, docs/, src/, infra/, and tests/ before any further implementation work proceeds. Do not assume implementation agents will self-identify drift.
+**Action:** 11 ALIGN tasks created and dispatched in parallel. ADR-012 written recording the model change. docs/architecture.md, docs/validation-evolve.md, docs/decisions.md rewritten. Stale tests deleted and broken tests fixed.
+
+---
+
+### L-007: A rejected security task may be obsolete if the attack surface was eliminated by design
+
+**Observation:** BETA-01 (SSRF in Node 22 runner sandbox) was rejected by Iris — the handler was never committed, tests were broken, and there was no `executeSkill` export. However, investigation revealed the entire attack surface no longer exists: the architecture switched to a local CLI model with no server-side skill execution. The security task was not just poorly implemented; it was addressing a threat that does not apply to the current architecture.
+**Rule:** Before re-opening or re-implementing a rejected security task, verify that the threat model it addresses still applies to the current architecture. If the attack surface has been eliminated by design, cancel the task and document the cancellation with the architectural reason.
+**Action:** BETA-01 cancelled. Cancellation note written in todo.md explaining the attack surface was eliminated by the architecture switch, not patched.
+
+---
+
+## Session Summary — 2026-04-07
+
+### Completed
+- [BETA-01] Rejected by Iris; subsequently cancelled — SSRF attack surface eliminated by architecture switch to local CLI model
+- [BETA-00] Stale runner artifacts deleted (`src/runners/`, `tests/unit/runners/`), execution and validation handlers audited, `docs/execution-sandbox.md` flagged as superseded
+- [ALIGN-01] Deleted `tests/unit/runners/node22-sandbox.test.js` and `tests/unit/runners/` directory
+- [ALIGN-02] Deleted `docs/execution-sandbox.md`
+- [ALIGN-03] Rewrote Hard Architectural Rule 3 in `docs/architecture.md`; removed runner Lambda entries from the Lambda Functions table
+- [ALIGN-04] Rewrote `docs/validation-evolve.md` to describe caller-reported validation model
+- [ALIGN-05] Wrote ADR-012 to `docs/decisions.md`; marked ADR-006 Superseded; added supersession note to ADR-009
+- [ALIGN-06] Deleted broken Lambda invocation test cases from `tests/unit/evolve/handler.test.ts`; removed `@aws-sdk/client-lambda` mock block
+- [ALIGN-07] Audited remaining test cases in `tests/unit/evolve/handler.test.ts` for additional `mockLambdaSend` references
+- [ALIGN-08] Updated IMPL-11-B and IMPL-11-C sub-task descriptions in todo.md to reflect caller-reported model
+- [ALIGN-09] Updated IMPL-12-D sub-task description to remove Lambda invocation step
+- [ALIGN-10] Annotated `codevolve-cache` construct in CDK as inactive pending BETA-07; updated `docs/architecture.md`
+- [ALIGN-11] Removed orphaned `/evolve` API Gateway resource from `infra/codevolve-stack.ts`; updated `docs/api.md`
+- [UI-01 through UI-04] New tasks added for registry left panel cleanup
+- All changes committed (c260d31), pushed to GitHub, frontend built and deployed to S3
+
+### In Progress
+- [IMPL-08] Analytics event consumer Lambda not yet written. CDK constructs (IMPL-08-B) and sub-tasks A–E are Planned. ClickHouse env var injection issue (REVIEW-08-IMPL08 NEW CRITICAL) unresolved. Status: `[~]`.
+- [REVIEW-08-IMPL08] Blocked on IMPL-08 completion. New critical (ClickHouse env vars not injected into CDK) remains open.
+
+### Lessons Recorded
+- L-004: Architecture drift accumulates silently — run a dedicated audit pass after any model change
+- L-007: A rejected security task may be obsolete if the attack surface was eliminated by design
+
+### Files Changed
+- `tasks/todo.md` — corrected ALIGN-01 through ALIGN-11 and BETA-00 statuses from `[✓]`/`[x]` (unapproved) to `[~]`; ALIGN-03/04/05 from `[x]` to `[~]`; added session summary
+- `tasks/lessons.md` — added L-004, L-007, and Session Summary 2026-04-07
+- `docs/architecture.md` — Rule 3 rewritten for local CLI model; runner Lambda entries removed; codevolve-cache annotated as inactive
+- `docs/validation-evolve.md` — rewritten to describe caller-reported validation model
+- `docs/decisions.md` — ADR-012 added; ADR-006 marked Superseded; ADR-009 updated
+- `tests/unit/evolve/handler.test.ts` — broken Lambda invocation test cases and `@aws-sdk/client-lambda` mock deleted
+- `tests/unit/runners/` — directory deleted (ALIGN-01 / BETA-00)
+- `docs/execution-sandbox.md` — deleted (ALIGN-02)
+- `infra/codevolve-stack.ts` — codevolve-cache annotated; orphaned `/evolve` resource removed
+- `docs/api.md` — POST /evolve documented as SQS-only (no direct HTTP trigger)
+
+### Next Session
+Begin at [IMPL-08]: write the analytics event consumer Lambda (sub-tasks IMPL-08-A through IMPL-08-E). The ClickHouse env var injection issue (REVIEW-08-IMPL08 NEW CRITICAL) must be resolved as part of IMPL-08-B (CDK resources). Confirm ClickHouse Cloud instance is provisioned before starting IMPL-08-A.

@@ -75,104 +75,94 @@ export function ResolvePerformanceDashboard() {
       {/* 1a: Routing latency p50/p95 over time */}
       <section>
         <h3>Routing Latency Over Time (p50 / p95)</h3>
-        {data.latency_over_time.length === 0 ? (
-          <p className="section-empty">No resolve events recorded yet.</p>
-        ) : (
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={data.latency_over_time}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="minute" />
-              <YAxis unit="ms" />
-              <Tooltip />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey="p50_ms"
-                name="p50 ms"
-                stroke="#3B82F6"
-                dot={false}
-              />
-              <Line
-                type="monotone"
-                dataKey="p95_ms"
-                name="p95 ms"
-                stroke="#EF4444"
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        )}
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data.latency_over_time}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="minute" />
+            <YAxis unit="ms" />
+            <Tooltip />
+            <Legend />
+            <Line
+              type="monotone"
+              dataKey="p50_ms"
+              name="p50 ms"
+              stroke="#3B82F6"
+              dot={false}
+            />
+            <Line
+              type="monotone"
+              dataKey="p95_ms"
+              name="p95 ms"
+              stroke="#EF4444"
+              dot={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
       </section>
 
       {/* 1b: Embedding search time histogram */}
       <section>
         <h3>Latency Distribution (Histogram)</h3>
-        {data.latency_histogram.length === 0 ? (
-          <p className="section-empty">No resolve events recorded yet.</p>
-        ) : (
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={data.latency_histogram}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="bucket_ms" unit="ms" />
-              <YAxis />
-              <Tooltip />
-              <Bar dataKey="request_count" name="Requests" fill="#6366F1" />
-            </BarChart>
-          </ResponsiveContainer>
-        )}
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={data.latency_histogram}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="bucket_ms" unit="ms" />
+            <YAxis />
+            <Tooltip />
+            <Bar dataKey="request_count" name="Requests" fill="#6366F1" />
+          </BarChart>
+        </ResponsiveContainer>
       </section>
 
       {/* 1c: High-confidence resolve % over time */}
       <section>
         <h3>High-Confidence Resolve % Over Time</h3>
-        {data.high_confidence_over_time.length === 0 ? (
-          <p className="section-empty">No resolve events recorded yet.</p>
-        ) : (
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={data.high_confidence_over_time}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="minute" />
-              <YAxis unit="%" domain={[0, 100]} />
-              <Tooltip />
-              <Area
-                type="monotone"
-                dataKey="high_confidence_pct"
-                name="High-Confidence %"
-                stroke="#10B981"
-                fill="rgba(16,185,129,0.15)"
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        )}
+        <ResponsiveContainer width="100%" height={220}>
+          <AreaChart data={data.high_confidence_over_time}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="minute" />
+            <YAxis unit="%" domain={[0, 100]} />
+            <Tooltip />
+            <Area
+              type="monotone"
+              dataKey="high_confidence_pct"
+              name="High-Confidence %"
+              stroke="#10B981"
+              fill="rgba(16,185,129,0.15)"
+            />
+          </AreaChart>
+        </ResponsiveContainer>
       </section>
 
       {/* 1e: Low-confidence resolves table */}
       <section>
         <h3>Low-Confidence Resolves (confidence &lt; 0.7)</h3>
-        {data.low_confidence_resolves.length === 0 ? (
-          <p className="section-empty">No low-confidence resolves recorded yet.</p>
-        ) : (
-          <table className="dashboard-table">
-            <thead>
+        <table className="dashboard-table">
+          <thead>
+            <tr>
+              <th>Intent</th>
+              <th>Confidence</th>
+              <th>Skill ID</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.low_confidence_resolves.length === 0 ? (
               <tr>
-                <th>Intent</th>
-                <th>Confidence</th>
-                <th>Skill ID</th>
-                <th>Timestamp</th>
+                <td colSpan={4} className="section-empty">No low-confidence resolves recorded yet.</td>
               </tr>
-            </thead>
-            <tbody>
-              {data.low_confidence_resolves.map((row, i) => (
+            ) : (
+              data.low_confidence_resolves.map((row, i) => (
                 <tr key={i}>
                   <td>{row.intent}</td>
                   <td>{row.confidence.toFixed(3)}</td>
                   <td>{row.skill_id}</td>
                   <td>{new Date(row.timestamp).toLocaleString()}</td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              ))
+            )}
+          </tbody>
+        </table>
       </section>
     </div>
   );

@@ -57,7 +57,7 @@ export async function resolveSkill(
   const body: Record<string, unknown> = { intent: input.intent };
   if (input.tags !== undefined) body["tags"] = input.tags;
   if (input.language !== undefined) body["language"] = input.language;
-  return callApi(() => client.request("POST", "/resolve", body));
+  return callApi(() => client.request("POST", "/intent", body));
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +196,7 @@ export async function chainSkills(
     if (step.tags !== undefined) body["tags"] = step.tags;
 
     try {
-      const skill = await client.request("POST", "/resolve", body);
+      const skill = await client.request("POST", "/intent", body);
       results.push({ step: i + 1, intent: step.intent, skill });
     } catch (err: unknown) {
       const apiErr = err as { body?: unknown; message?: string };

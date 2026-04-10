@@ -64,8 +64,8 @@ const SECTIONS: Section[] = [
   {
     title: "Core Agent Workflow",
     endpoints: [
-      { method: "POST",   path: "/resolve",       auth: "none",    description: "Route a natural-language intent to the best matching skill via embedding search. Returns implementation ready to run locally." },
-      { method: "POST",   path: "/execute",        auth: "none",    description: "Log that a skill was executed locally. Skills run in your own environment — this records the execution for analytics only." },
+      { method: "POST",   path: "/intent",        auth: "none",    description: "Route a natural-language intent to the best matching skill via embedding search. Returns implementation ready to run locally." },
+      { method: "GET",    path: "/skills/{id}",   auth: "none",    description: "Fetch a skill's full implementation. Automatically records an execute event for analytics — fetching signals intent to run." },
       { method: "POST",   path: "/validate/{id}",  auth: "api_key", description: "Report local test results (pass/fail counts) to update a skill's confidence score (0–1). Run tests yourself, then call this." },
     ],
   },
@@ -77,7 +77,7 @@ const SECTIONS: Section[] = [
       { method: "GET",    path: "/skills/{id}",                   auth: "none",    description: "Get a skill by ID including full implementation. Add ?version= for a specific version." },
       { method: "GET",    path: "/skills/{id}/versions",          auth: "none",    description: "List all versions of a skill, newest first" },
       { method: "POST",   path: "/skills/{id}/promote-canonical", auth: "api_key", description: "Promote to canonical. Requires confidence ≥ 0.85, all tests passing, status verified/optimized." },
-      { method: "POST",   path: "/skills/{id}/archive",           auth: "none",    description: "Soft-archive. Excluded from /resolve and list endpoints." },
+      { method: "POST",   path: "/skills/{id}/archive",           auth: "none",    description: "Soft-archive. Excluded from /intent and list endpoints." },
       { method: "POST",   path: "/skills/{id}/unarchive",         auth: "none",    description: "Restore an archived skill. Regenerates embedding." },
     ],
   },
@@ -97,7 +97,7 @@ const SECTIONS: Section[] = [
       { method: "GET",    path: "/analytics/dashboards/execution-caching",    auth: "none", description: "Most executed skills, execution frequency, input repetition rate" },
       { method: "GET",    path: "/analytics/dashboards/skill-quality",        auth: "none", description: "Test pass rate, confidence over time, competing implementations" },
       { method: "GET",    path: "/analytics/dashboards/evolution-gap",        auth: "none", description: "Unresolved intents, low-confidence resolves, evolve queue depth" },
-      { method: "GET",    path: "/analytics/dashboards/agent-behavior",       auth: "none", description: "resolve→execute conversion, chain usage, repeated resolves" },
+      { method: "GET",    path: "/analytics/dashboards/agent-behavior",       auth: "none", description: "resolve→fetch conversion, chain usage, repeated resolves" },
     ],
   },
   {
