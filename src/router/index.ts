@@ -1,5 +1,5 @@
 /**
- * Skill Router module — POST /resolve
+ * Skill Router module — POST /intent
  * Implemented in IMPL-05.
  */
 export { handler } from "./resolve.js";

@@ -2,7 +2,7 @@
  * GET /analytics/dashboards/:type — Analytics dashboard endpoints.
  *
  * Implements all 5 dashboards per docs/platform-design.md DESIGN-02:
- *   1. resolve-performance
+ *   1. intent-performance
  *   2. execution-caching
  *   3. skill-quality
  *   4. evolution-gap
@@ -128,7 +128,7 @@ export async function handler(
 
     // Route to the appropriate dashboard query
     switch (type) {
-      case "resolve-performance":
+      case "intent-performance":
         return await resolvePerformanceDashboard(from, to);
       case "execution-caching":
         return await executionCachingDashboard(from, to);
@@ -163,7 +163,7 @@ async function queryClickHouse<T = Record<string, unknown>>(
 }
 
 // ---------------------------------------------------------------------------
-// Dashboard 1: Resolve Performance
+// Dashboard 1: Intent Performance
 // ---------------------------------------------------------------------------
 
 async function resolvePerformanceDashboard(
@@ -241,7 +241,7 @@ async function resolvePerformanceDashboard(
   `);
 
   return success(200, {
-    dashboard: "resolve-performance",
+    dashboard: "intent-performance",
     time_range: { from, to },
     latency_over_time: latencyOverTime,
     latency_histogram: latencyDistribution,
@@ -260,6 +260,9 @@ async function executionCachingDashboard(
   from: string,
   to: string,
 ): Promise<APIGatewayProxyResult> {
+  const repetitionWindowStart = `parseDateTime64BestEffort('${from}') - INTERVAL 24 HOUR`;
+  const repetitionWindowEnd = `parseDateTime64BestEffort('${to}')`;
+
   // 2a: Most executed skills (top 20)
   const mostExecuted = await queryClickHouse(`
     SELECT
@@ -275,40 +278,89 @@ async function executionCachingDashboard(
 
   // 2b: Input repetition rate per skill
   const inputRepetitionRate = await queryClickHouse(`
+    WITH repeated_resolves AS (
+      SELECT
+          skill_id,
+          input_hash,
+          timestamp,
+          lagInFrame(timestamp) OVER (
+            PARTITION BY skill_id, input_hash
+            ORDER BY timestamp
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+          ) AS previous_seen_at
+      FROM analytics_events
+      WHERE event_type = 'resolve'
+        AND success = 1
+        AND skill_id != ''
+        AND input_hash != ''
+        AND timestamp BETWEEN ${repetitionWindowStart} AND ${repetitionWindowEnd}
+    )
     SELECT
         skill_id,
-        count() AS total_executions,
+        count() AS total_intents,
         uniq(input_hash) AS unique_inputs,
-        1.0 - (uniq(input_hash) / count()) AS input_repeat_rate
-    FROM analytics_events
-    WHERE event_type = 'execute'
-      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
+        countIf(previous_seen_at >= timestamp - INTERVAL 24 HOUR) AS repeated_intents,
+        countIf(previous_seen_at >= timestamp - INTERVAL 24 HOUR) * 100.0 / count() AS input_repeat_rate_pct
+    FROM repeated_resolves
+    WHERE timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id
-    HAVING total_executions >= 10
-    ORDER BY input_repeat_rate DESC
+    HAVING total_intents >= 10
+    ORDER BY input_repeat_rate_pct DESC
   `);
 
-  // 2c: Cache hit/miss rate over time
-  const cacheHitOverTime = await queryClickHouse(`
+  // 2c: Intent repetition rate over time
+  const intentRepetitionOverTime = await queryClickHouse(`
+    WITH repeated_resolves AS (
+      SELECT
+          skill_id,
+          input_hash,
+          timestamp,
+          lagInFrame(timestamp) OVER (
+            PARTITION BY skill_id, input_hash
+            ORDER BY timestamp
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+          ) AS previous_seen_at
+      FROM analytics_events
+      WHERE event_type = 'resolve'
+        AND success = 1
+        AND skill_id != ''
+        AND input_hash != ''
+        AND timestamp BETWEEN ${repetitionWindowStart} AND ${repetitionWindowEnd}
+    )
     SELECT
         toStartOfMinute(timestamp) AS minute,
-        countIf(cache_hit = 1) AS cache_hits,
-        countIf(cache_hit = 0) AS cache_misses,
-        countIf(cache_hit = 1) * 100.0 / count() AS hit_rate_pct
-    FROM analytics_events
-    WHERE event_type = 'execute'
-      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
+        count() AS total_intents,
+        countIf(previous_seen_at >= timestamp - INTERVAL 24 HOUR) AS repeated_intents,
+        countIf(previous_seen_at >= timestamp - INTERVAL 24 HOUR) * 100.0 / count() AS repetition_rate_pct
+    FROM repeated_resolves
+    WHERE timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY minute
     ORDER BY minute
   `);
 
-  // 2c: Aggregate cache hit rate
-  const [cacheHitAgg] = await queryClickHouse(`
+  // 2d: Aggregate intent repetition rate
+  const [intentRepetitionAgg] = await queryClickHouse(`
+    WITH repeated_resolves AS (
+      SELECT
+          skill_id,
+          input_hash,
+          timestamp,
+          lagInFrame(timestamp) OVER (
+            PARTITION BY skill_id, input_hash
+            ORDER BY timestamp
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+          ) AS previous_seen_at
+      FROM analytics_events
+      WHERE event_type = 'resolve'
+        AND success = 1
+        AND skill_id != ''
+        AND input_hash != ''
+        AND timestamp BETWEEN ${repetitionWindowStart} AND ${repetitionWindowEnd}
+    )
     SELECT
-        countIf(cache_hit = 1) * 100.0 / count() AS cache_hit_rate_pct
-    FROM analytics_events
-    WHERE event_type = 'execute'
-      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
+        countIf(previous_seen_at >= timestamp - INTERVAL 24 HOUR) * 100.0 / count() AS intent_repetition_rate_pct
+    FROM repeated_resolves
+    WHERE timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
   `);
 
   // 2e: Global execution latency p50/p95 over time
@@ -326,19 +378,53 @@ async function executionCachingDashboard(
 
   // 2f: Cache candidates — skills eligible for auto-caching
   const cacheCandidates = await queryClickHouse(`
+    WITH repeated_resolves AS (
+      SELECT
+          skill_id,
+          input_hash,
+          timestamp,
+          lagInFrame(timestamp) OVER (
+            PARTITION BY skill_id, input_hash
+            ORDER BY timestamp
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+          ) AS previous_seen_at
+      FROM analytics_events
+      WHERE event_type = 'resolve'
+        AND success = 1
+        AND skill_id != ''
+        AND input_hash != ''
+        AND timestamp BETWEEN ${repetitionWindowStart} AND ${repetitionWindowEnd}
+    ),
+    repetition_stats AS (
+      SELECT
+          skill_id,
+          count() AS total_intents,
+          uniq(input_hash) AS unique_inputs,
+          countIf(previous_seen_at >= timestamp - INTERVAL 24 HOUR) * 1.0 / count() AS intent_repeat_rate
+      FROM repeated_resolves
+      WHERE timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
+      GROUP BY skill_id
+    ),
+    execution_latency AS (
+      SELECT
+          skill_id,
+          quantile(0.95)(latency_ms) AS p95_ms
+      FROM analytics_events
+      WHERE event_type = 'execute'
+        AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
+      GROUP BY skill_id
+    )
     SELECT
-        skill_id,
-        count() AS execution_count,
-        uniq(input_hash) AS unique_inputs,
-        1.0 - (uniq(input_hash) / count()) AS input_repeat_rate,
-        quantile(0.95)(latency_ms) AS p95_ms
-    FROM analytics_events
-    WHERE event_type = 'execute'
-      AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
-    GROUP BY skill_id
-    HAVING execution_count > 50
-       AND input_repeat_rate > 0.3
-    ORDER BY execution_count * input_repeat_rate DESC
+        r.skill_id,
+        r.total_intents,
+        r.unique_inputs,
+        r.intent_repeat_rate,
+        e.p95_ms
+    FROM repetition_stats r
+    LEFT JOIN execution_latency e ON r.skill_id = e.skill_id
+    WHERE r.total_intents > 50
+      AND r.intent_repeat_rate > 0.3
+    ORDER BY r.total_intents * r.intent_repeat_rate DESC
     LIMIT 50
   `);
 
@@ -347,8 +433,9 @@ async function executionCachingDashboard(
     time_range: { from, to },
     top_skills: mostExecuted,
     repetition_rates: inputRepetitionRate,
-    cache_rate_over_time: cacheHitOverTime,
-    cache_hit_rate_pct: (cacheHitAgg as Record<string, number> | undefined)?.cache_hit_rate_pct ?? 0,
+    repetition_rate_over_time: intentRepetitionOverTime,
+    intent_repetition_rate_pct:
+      (intentRepetitionAgg as Record<string, number> | undefined)?.intent_repetition_rate_pct ?? 0,
     execution_latency_over_time: executionLatencyOverTime,
     cache_candidates: cacheCandidates,
   });
@@ -669,7 +756,7 @@ async function agentBehaviorDashboard(
         skill_id AS to_skill,
         count() AS chain_count
     FROM analytics_events
-    WHERE event_type = 'execute'
+    WHERE event_type IN ('resolve', 'execute')
       AND intent LIKE 'chain:%'
       AND timestamp BETWEEN parseDateTime64BestEffort('${from}') AND parseDateTime64BestEffort('${to}')
     GROUP BY skill_id
@@ -783,6 +870,7 @@ async function mountainDashboard(
         name: prob["name"] as string,
         difficulty: (prob["difficulty"] as Difficulty) ?? "medium",
         domain: (prob["domain"] as string[]) ?? [],
+        tags: (prob["tags"] as string[] | undefined) ?? [],
         skill_count: skills.length,
         dominant_status: dom,
         skill_status_distribution: distribution,

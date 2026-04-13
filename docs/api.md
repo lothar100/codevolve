@@ -22,13 +22,12 @@ Base URL: `https://api.codevolve.dev/v1`
 - [POST /problems](#post-problems)
 - [GET /problems/:id](#get-problemsid)
 - [GET /problems](#get-problems)
-- [POST /resolve](#post-resolve)
+- [POST /intent](#post-intent)
+- [POST /chains](#post-chains)
 - [POST /execute](#post-execute)
-- [POST /execute/chain](#post-executechain)
 - [POST /validate/:skill_id](#post-validateskill_id)
 - [POST /events](#post-events)
 - [GET /analytics/dashboards/:type](#get-analyticsdashboardstype)
-- [POST /evolve](#post-evolve) *(SQS-only — no HTTP endpoint)*
 
 ---
 
@@ -193,12 +192,11 @@ Per-agent limits enforced via API Gateway usage plans (keyed by API key). Exceed
 
 | Endpoint | Limit |
 |----------|-------|
-| `POST /resolve` | 100 req/min |
+| `POST /intent` | 100 req/min |
+| `POST /chains` | 20 req/min |
 | `POST /execute` | 50 req/min |
-| `POST /execute/chain` | 20 req/min |
 | `POST /validate/:skill_id` | 30 req/min |
 | `POST /events` | 10 req/min (batches of up to 100 events — effective throughput: 1,000 events/min) |
-| `POST /evolve` | N/A — SQS-only, no HTTP endpoint |
 | All other endpoints (CRUD, analytics reads) | 200 req/min |
 
 API Gateway default throttle is 10,000 req/s at the account level; the per-agent limits above are the operative constraint.
@@ -457,7 +455,7 @@ const PromoteCanonicalResponse = z.object({
 
 ## POST /skills/:id/archive
 
-Soft-archive a skill. Archived skills are excluded from `/resolve` routing and `/skills` listings (unless `include_archived=true`). Never deletes data.
+Soft-archive a skill. Archived skills are excluded from intent routing and `/skills` listings (unless `include_archived=true`). Never deletes data.
 
 ### Path Parameters
 
@@ -492,7 +490,7 @@ const ArchiveSkillResponse = z.object({
 
 - **DynamoDB write**: Set `status = "archived"`, set `archived_at`, update `updated_at`.
 - **Cache invalidation**: Invalidate cached resolve results for this skill's `problem_id`.
-- **Embedding removal**: Sets `embedding` to null on the skill record so it no longer appears in `/resolve` similarity results.
+- **Embedding removal**: Sets `embedding` to null on the skill record so it no longer appears in intent-routing similarity results.
 
 ---
 
@@ -657,14 +655,14 @@ None (read-only).
 
 ---
 
-## POST /resolve
+## POST /intent
 
-Route a natural-language intent to the best matching skill. Embeds the intent via Bedrock, loads candidate skill embeddings from DynamoDB, and computes cosine similarity client-side in Lambda.
+Route a natural-language intent to the best matching skill summary. The router ranks precomputed candidates using embeddings and metadata, then returns the best matches and implementation references. The caller still fetches the implementation and executes locally.
 
 ### Request
 
 ```typescript
-const ResolveRequest = z.object({
+const IntentRequest = z.object({
   intent: z.string().min(1).max(1024),          // natural language description of what the caller needs
   language: SupportedLanguage.optional(),        // preferred language filter
   domain: z.array(z.string()).optional(),        // domain filter
@@ -679,7 +677,7 @@ const ResolveRequest = z.object({
 **200 OK**
 
 ```typescript
-const ResolveMatch = z.object({
+const IntentMatch = z.object({
   skill_id: z.string().uuid(),
   name: z.string(),
   description: z.string(),
@@ -694,11 +692,23 @@ const ResolveMatch = z.object({
   tags: z.array(z.string()),
 });
 
-const ResolveResponse = z.object({
-  matches: z.array(ResolveMatch),              // ordered by similarity_score desc
-  best_match: ResolveMatch.nullable(),          // top result, or null if no matches
-  resolve_confidence: z.number().min(0).max(1), // max similarity_score, or 0
-  evolve_triggered: z.boolean(),                // true if resolve_confidence < 0.7
+const IntentResponse = z.object({
+  matches: z.array(IntentMatch),              // ordered by similarity_score desc
+  best_match: IntentMatch.nullable(),         // top result, or null if no matches
+  intent_confidence: z.number().min(0).max(1), // max similarity_score, or 0
+  evolve_triggered: z.boolean(),              // true if intent_confidence < 0.7
+  chain_suggestion: z.object({
+    kind: z.literal("intent_chain"),
+    rationale: z.string(),
+    overall_confidence: z.number().min(0).max(1),
+    steps: z.array(z.object({
+      step: z.number().int().positive(),
+      intent: z.string(),
+      confidence: z.number().min(0).max(1),
+      best_match: IntentMatch.nullable(),
+      input_mapping: z.record(z.string()),
+    })).min(2),
+  }).optional(),
 });
 ```
 
@@ -708,18 +718,82 @@ const ResolveResponse = z.object({
 |--------|------|-----------|
 | 400 | `VALIDATION_ERROR` | Missing `intent`, invalid filters |
 
-Note: An empty result set is NOT an error. Returns `{ matches: [], best_match: null, resolve_confidence: 0, evolve_triggered: true }`.
+Note: An empty result set is NOT an error. Returns `{ matches: [], best_match: null, intent_confidence: 0, evolve_triggered: true }`.
 
 ### Side Effects
 
-- **Kinesis event**: Emits `resolve` event with `intent`, `skill_id` (of best match or null), `confidence` (resolve_confidence), `latency_ms`, `success` (true if matches > 0), `cache_hit` (false for resolve).
-- **Evolve trigger**: If `resolve_confidence` < 0.7, asynchronously enqueues the intent for the `/evolve` pipeline.
+- **Kinesis event**: Emits `resolve` event with `intent`, `skill_id` (of best match or null), `confidence` (intent_confidence), `latency_ms`, `success` (true if matches > 0), `cache_hit` (false for intent routing).
+- **No server-side execution**: This path only routes and scores. It does not run the skill.
+- **Optional chain suggestion**: Composition-shaped requests may also include `chain_suggestion`, which gives an ordered local execution plan without suppressing `best_match`.
+- **Evolve trigger**: If `intent_confidence` < 0.7, asynchronously enqueues the intent for the `/evolve` pipeline.
+
+---
+
+## POST /chains
+
+Resolve an ordered local-execution chain from explicit steps or from a prior `/intent` chain suggestion. The API returns a structured plan for the caller to execute locally; it does not run any step server-side.
+
+### Request
+
+```typescript
+const ExplicitChainStep = z.object({
+  intent: z.string().min(1).max(1024).optional(),
+  skill_id: z.string().uuid().optional(),
+  language: SupportedLanguage.optional(),
+  domain: z.array(z.string()).optional(),
+  tags: z.array(z.string()).optional(),
+  input_mapping: z.record(z.string()).optional(),
+}).refine((step) => step.intent !== undefined || step.skill_id !== undefined);
+
+const ChainSuggestion = IntentResponse.shape.chain_suggestion.unwrap();
+
+const ChainRequest = z.object({
+  steps: z.array(ExplicitChainStep).min(2).max(10).optional(),
+  suggestion: ChainSuggestion.optional(),
+});
+```
+
+### Response
+
+**200 OK**
+
+```typescript
+const ChainPlanStep = z.object({
+  step: z.number().int().positive(),
+  intent: z.string().nullable(),
+  input_mapping: z.record(z.string()),
+  best_match: IntentMatch.nullable(),
+  confidence: z.number().min(0).max(1),
+  resolved: z.boolean(),
+});
+
+const ChainResponse = z.object({
+  chain_id: z.string().uuid(),
+  source: z.enum(["explicit", "suggestion"]),
+  rationale: z.string(),
+  overall_confidence: z.number().min(0).max(1),
+  ready_for_local_execution: z.boolean(),
+  unresolved_steps: z.number().int().nonnegative(),
+  steps: z.array(ChainPlanStep),
+});
+```
+
+### Errors
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| 400 | `VALIDATION_ERROR` | Missing both `steps` and `suggestion`, invalid step shape |
+
+### Side Effects
+
+- **No server-side execution**: The API returns a plan only.
+- **Kinesis event**: Emits a `resolve` analytics event with a `chain:`-prefixed intent so analytics can distinguish chain planning from direct single-skill routing.
 
 ---
 
 ## POST /execute
 
-Execute a skill with given inputs. Checks DynamoDB cache first (keyed by `skill_id` + `input_hash` with TTL).
+Record a local execution report for a skill. The caller runs the skill in its own environment and submits execution metadata here. This endpoint does not run the skill server-side.
 
 ### Request
 
@@ -728,8 +802,9 @@ const ExecuteRequest = z.object({
   skill_id: z.string().uuid(),
   version: z.number().int().positive().optional(),  // specific version number; when omitted, uses latest version
   inputs: z.record(z.unknown()),               // key-value pairs matching the skill's input schema
-  skip_cache: z.boolean().default(false),       // bypass cache read; does not affect cache write policy (writes are Decision Engine-controlled)
-  timeout_ms: z.number().int().min(100).max(300_000).default(30_000),  // execution timeout
+  latency_ms: z.number().nonnegative().default(0),  // caller-observed local execution time
+  cache_hit: z.boolean().default(false),            // whether the caller served the run from a local memo/cache
+  success: z.boolean().default(true),               // whether the caller considers the local run successful
 });
 ```
 
@@ -741,11 +816,11 @@ const ExecuteRequest = z.object({
 const ExecuteResponse = z.object({
   skill_id: z.string().uuid(),
   version: z.number().int().positive(),
-  outputs: z.record(z.unknown()),              // key-value pairs matching the skill's output schema
-  latency_ms: z.number().nonnegative(),
-  cache_hit: z.boolean(),
-  input_hash: z.string(),                      // SHA-256 of canonical JSON of inputs
   execution_id: z.string().uuid(),             // unique execution trace ID
+  input_hash: z.string(),                      // SHA-256 of canonical JSON of inputs
+  cache_hit: z.boolean(),
+  success: z.boolean(),
+  acknowledged: z.boolean(),
 });
 ```
 
@@ -755,91 +830,19 @@ const ExecuteResponse = z.object({
 |--------|------|-----------|
 | 400 | `VALIDATION_ERROR` | Missing `skill_id`, invalid `inputs` shape, inputs don't match skill's input schema |
 | 404 | `NOT_FOUND` | Skill does not exist or is archived |
-| 408 | `EXECUTION_TIMEOUT` | Execution exceeded `timeout_ms` |
-| 504 | `EXECUTION_OOM` | Runner Lambda killed by OOM. Skill implementation exceeded 512 MB memory limit. |
-| 422 | `EXECUTION_FAILED` | Skill execution threw a runtime error. `details` field contains error message and stack trace. |
 
 ### Side Effects
 
-- **Cache read**: Check `codevolve-cache` DynamoDB table for `(skill_id, input_hash)`.
-- **Execution**: If cache miss, run skill implementation in sandboxed Lambda runner for the skill's `language`.
-- **Cache write**: Only when the Decision Engine has flagged this skill for caching (i.e. `execution_count > threshold AND input_repeat_rate > threshold`). Cache writes do not happen on every successful execution — caching is on-demand, triggered by the Decision Engine's automated rule. See `dynamo-schemas.md` §3 and `CLAUDE.md` Automated Decision Rules.
-- **Kinesis event**: Emits `execute` event with `skill_id`, `latency_ms`, `cache_hit`, `input_hash`, `success`.
-- **DynamoDB write**: Updates `latency_p50_ms` and `latency_p95_ms` on the Skill record (rolling percentile).
-
----
-
-## POST /execute/chain
-
-Execute a sequence of skills, piping outputs of one into inputs of the next. If any step fails, the chain halts and returns partial results.
-
-### Request
-
-```typescript
-const ChainStep = z.object({
-  skill_id: z.string().uuid(),
-  input_mapping: z.record(z.string()).optional(),
-  // Maps this step's input names to:
-  //   - "$input.<field>" to reference chain-level inputs
-  //   - "$steps[<index>].output.<field>" to reference a previous step's output
-  //   - If omitted, passes previous step's full output as this step's input
-});
-
-const ExecuteChainRequest = z.object({
-  steps: z.array(ChainStep).min(1).max(10),
-  inputs: z.record(z.unknown()),               // initial inputs for the chain
-  skip_cache: z.boolean().default(false),
-  timeout_ms: z.number().int().min(100).max(600_000).default(60_000),  // total chain timeout
-});
-```
-
-### Response
-
-**200 OK**
-
-```typescript
-const ChainStepResult = z.object({
-  skill_id: z.string().uuid(),
-  version: z.number().int().positive(),
-  outputs: z.record(z.unknown()),
-  latency_ms: z.number().nonnegative(),
-  cache_hit: z.boolean(),
-  success: z.boolean(),
-  error: z.string().nullable(),                // null if success, error message if failed
-});
-
-const ExecuteChainResponse = z.object({
-  chain_id: z.string().uuid(),
-  steps: z.array(ChainStepResult),
-  final_outputs: z.record(z.unknown()).nullable(),  // last successful step's outputs, null if first step failed
-  total_latency_ms: z.number().nonnegative(),
-  completed_steps: z.number().int().nonnegative(),
-  total_steps: z.number().int().positive(),
-  success: z.boolean(),                         // true only if all steps succeeded
-});
-```
-
-### Errors
-
-| Status | Code | Condition |
-|--------|------|-----------|
-| 400 | `VALIDATION_ERROR` | Empty steps, invalid input_mapping references, invalid skill_ids |
-| 404 | `NOT_FOUND` | Any referenced skill does not exist or is archived |
-| 408 | `EXECUTION_TIMEOUT` | Total chain execution exceeded `timeout_ms` |
-
-Note: Individual step failures do NOT return an error status. The response has `success: false` and the `steps` array shows which step failed. Only schema-level and timeout errors produce HTTP error codes.
-
-### Side Effects
-
-- **Cache read**: Per-step cache read behavior, same as `/execute`. Cache writes follow the same Decision Engine-controlled policy as `/execute` — writes only happen when the skill has been flagged for caching.
-- **Kinesis events**: One `execute` event per step, plus one aggregate `execute` event for the full chain (with `input_hash` computed from chain inputs).
-- **DynamoDB writes**: Latency updates per skill, same as `/execute`.
+- **No server-side execution**: The caller runs the skill locally; the API only records the result metadata.
+- **Kinesis event**: Emits `execute` telemetry with `skill_id`, `latency_ms`, `cache_hit`, `input_hash`, `success`.
+- **No server-side cache write**: Caching, if any, belongs to the caller or a separate explicit cache contract. The API should not imply a hosted runner cache.
+- **DynamoDB write**: Increments `execution_count` and updates `last_executed_at` on the Skill record.
 
 ---
 
 ## POST /validate/:skill_id
 
-Run a skill's test suite and update its confidence score. Used to establish or refresh a skill's quality metrics.
+Record caller-reported test feedback for a skill and update its confidence score. In the current model the caller runs tests locally and reports the results; the API updates the skill record from that feedback report. It does not launch a test runner.
 
 ### Path Parameters
 
@@ -851,40 +854,36 @@ Run a skill's test suite and update its confidence score. Used to establish or r
 
 ```typescript
 const ValidateRequest = z.object({
-  version: z.number().int().positive().optional(),          // specific version number; when omitted, uses latest version
-  additional_tests: z.array(SkillTest).max(64).optional(),  // extra tests beyond the skill's built-in tests
-  timeout_ms: z.number().int().min(1000).max(600_000).default(120_000),  // total validation timeout
+  version: z.number().int().positive().optional(),   // specific version number; when omitted, uses latest version
+  pass_count: z.number().int().nonnegative(),
+  fail_count: z.number().int().nonnegative(),
+  total_tests: z.number().int().positive(),
 });
 ```
 
-Request body is optional. If omitted, runs only the skill's built-in tests.
+Compatibility note: callers may also send `test_pass_count`, `test_fail_count`, and `test_total`. The handler normalizes those aliases to the canonical `pass_count`, `fail_count`, and `total_tests` fields. If `total_tests` is omitted but pass/fail counts are present, the handler infers `total_tests = pass_count + fail_count`.
 
 ### Response
 
 **200 OK**
 
 ```typescript
-const TestResult = z.object({
-  test_index: z.number().int().nonnegative(),
-  input: z.record(z.unknown()),
-  expected: z.record(z.unknown()),
-  actual: z.record(z.unknown()).nullable(),   // null if execution failed
-  passed: z.boolean(),
-  latency_ms: z.number().nonnegative(),
-  error: z.string().nullable(),               // runtime error message if execution failed
-});
-
 const ValidateResponse = z.object({
   skill_id: z.string().uuid(),
+  version: z.number().int().positive(),
   total_tests: z.number().int().nonnegative(),
-  passed: z.number().int().nonnegative(),
-  failed: z.number().int().nonnegative(),
+  pass_count: z.number().int().nonnegative(),
+  fail_count: z.number().int().nonnegative(),
+  passed: z.number().int().nonnegative(),     // alias of pass_count
+  failed: z.number().int().nonnegative(),     // alias of fail_count
   pass_rate: z.number().min(0).max(1),
   previous_confidence: z.number().min(0).max(1),
   new_confidence: z.number().min(0).max(1),   // updated confidence based on pass_rate
+  confidence: z.number().min(0).max(1),       // alias of new_confidence for convenience
   status_changed: z.boolean(),
   new_status: SkillStatus,                    // status after validation
-  results: z.array(TestResult),
+  status: SkillStatus,                        // alias of new_status
+  last_validated_at: z.string().datetime(),
 });
 ```
 
@@ -899,15 +898,14 @@ const ValidateResponse = z.object({
 
 | Status | Code | Condition |
 |--------|------|-----------|
-| 400 | `VALIDATION_ERROR` | Invalid `skill_id`, invalid `additional_tests` |
+| 400 | `VALIDATION_ERROR` | Invalid `skill_id`, invalid counts, or `pass_count + fail_count != total_tests` |
 | 404 | `NOT_FOUND` | Skill does not exist |
-| 408 | `EXECUTION_TIMEOUT` | Validation exceeded `timeout_ms` |
-| 422 | `PRECONDITION_FAILED` | Skill has no tests (built-in or additional) — nothing to validate |
+| 409 | `SKILL_ARCHIVED` | Skill is archived and cannot be validated |
 
 ### Side Effects
 
-- **Execution**: Runs each test in sandboxed Lambda, same as `/execute`.
-- **DynamoDB write**: Updates `confidence`, `status`, `latency_p50_ms`, `latency_p95_ms`, `updated_at` on the Skill record.
+- **No server-side execution**: The caller runs the tests locally.
+- **DynamoDB write**: Updates `confidence`, `status`, `last_validated_at`, `test_pass_count`, and `test_fail_count` on the Skill record.
 - **Kinesis event**: Emits `validate` event with `skill_id`, `confidence` (new), `latency_ms` (total validation time), `success` (pass_rate == 1.0).
 - **Evolve trigger**: If `new_confidence` < 0.7, asynchronously enqueues `skill_id` for the `/evolve` pipeline to attempt improvement.
 - **Cache invalidation**: Invalidates cached execution results for this `skill_id` (since confidence/status changed).
@@ -1142,69 +1140,6 @@ None. Reads from analytics store only.
 
 ---
 
-## POST /evolve — SQS-only, no HTTP endpoint
-
-> **The evolve pipeline is not HTTP-accessible.** There is no API Gateway route for `/evolve`. The `evolveFn` Lambda is triggered exclusively by the SQS gap queue, which is populated by the Decision Engine when a `/resolve` returns low confidence (< 0.7) or no matching skill is found. Callers cannot enqueue evolve jobs directly via HTTP.
-
-The contract below documents the SQS message shape that the Decision Engine writes to the gap queue, and the processing behavior of `evolveFn`. It is retained here for internal reference — it does not describe an HTTP endpoint.
-
-Trigger asynchronous skill generation or improvement. The Decision Engine enqueues work for a Claude Code agent to create a new skill (from an unresolved intent) or improve an existing weak skill.
-
-### Request
-
-```typescript
-const EvolveRequest = z.object({
-  // Exactly one of the following two modes:
-  intent: z.string().min(1).max(1024).optional(),      // generate new skill from intent
-  skill_id: z.string().uuid().optional(),               // improve existing skill
-
-  // Required context:
-  language: SupportedLanguage,
-  domain: z.array(z.string().min(1).max(64)).min(1).max(16),
-  tags: z.array(z.string().min(1).max(64)).max(32).default([]),
-
-  // Optional guidance:
-  problem_id: z.string().uuid().optional(),             // link to existing problem
-  priority: z.enum(["low", "normal", "high"]).default("normal"),
-  constraints: z.string().max(4096).optional(),         // additional constraints for the agent
-}).refine(
-  (data) => (data.intent != null) !== (data.skill_id != null),
-  { message: "Provide exactly one of 'intent' or 'skill_id'" }
-);
-```
-
-### Response
-
-**202 Accepted**
-
-```typescript
-const EvolveResponse = z.object({
-  evolve_id: z.string().uuid(),                // reference ID for this evolve request
-  status: z.literal("queued"),
-  intent: z.string().nullable(),
-  skill_id: z.string().uuid().nullable(),
-});
-```
-
-> **Phase 4 note:** Full job status tracking (poll URL, `GET /evolve/:evolve_id`, persistent job records) is deferred to Phase 4 when `/evolve` is fully implemented. In the current phase, this endpoint is fire-and-forget — it returns a reference `evolve_id` but there is no poll URL and no DynamoDB job record is created. Job tracking will be backed by a `codevolve-evolve-jobs` table defined in Phase 4.
-
-### Errors
-
-| Status | Code | Condition |
-|--------|------|-----------|
-| 400 | `VALIDATION_ERROR` | Neither or both of `intent`/`skill_id` provided, invalid fields |
-| 404 | `NOT_FOUND` | `skill_id` does not exist, or `problem_id` does not exist |
-| 409 | `CONFLICT` | An evolve job for the same `intent` or `skill_id` is already queued/in-progress |
-
-### Side Effects
-
-- **Kinesis write**: Emits evolve request to `codevolve-events` Kinesis stream for async pickup by the Claude Code agent pipeline.
-- **Kinesis event**: Emits `fail` event if triggered by low confidence (the gap that caused this evolve is a "failure" in analytics terms). No event if manually triggered.
-- **No DynamoDB write**: Evolve job persistence is deferred to Phase 4. The `evolve_id` in the response is generated server-side but not stored.
-- **Async processing**: Claude Code agent picks up the job from Kinesis, generates/improves a skill, calls `POST /skills` and `POST /validate/:skill_id`.
-
----
-
 ## GET /
 
 Discovery document. Returns the full endpoint index, auth schemes, rate limits, and pointers to docs. Designed for AI agents arriving at the API without prior context. No authentication required.
@@ -1253,10 +1188,9 @@ None.
 | POST | `/problems` | 201 | Yes | No |
 | GET | `/problems/:id` | 200 | Yes | No |
 | GET | `/problems` | 200 | Yes | No |
-| POST | `/resolve` | 200 | Yes | Yes (`resolve`) |
+| POST | `/intent` | 200 | Yes | Yes (`resolve`) |
 | POST | `/execute` | 200 | Yes | Yes (`execute`) |
-| POST | `/execute/chain` | 200 | Yes | Yes (`execute` per step) |
+| POST | `/chains` | 200 | Yes | Yes (`resolve`, `intent` prefixed with `chain:`) |
 | POST | `/validate/:skill_id` | 200 | Yes | Yes (`validate`) |
 | POST | `/events` | 202 | Yes | Yes (passthrough) |
 | GET | `/analytics/dashboards/:type` | 200 | Yes | No |
-| POST | `/evolve` | 202 | Yes | Conditional (`fail`) |

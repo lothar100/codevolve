@@ -36,7 +36,7 @@ async function callApi(
 }
 
 // ---------------------------------------------------------------------------
-// Tool 1: resolve_skill
+// Tool 1: resolve_skill (legacy public name, canonical intent routing)
 // ---------------------------------------------------------------------------
 
 export const resolveSkillSchema = z.object({
@@ -52,31 +52,11 @@ export async function resolveSkill(raw: unknown): Promise<ToolResult> {
   const body: Record<string, unknown> = { intent: input.intent };
   if (input.tags !== undefined) body["tags"] = input.tags;
   if (input.language !== undefined) body["language"] = input.language;
-  return callApi(() => client.request("POST", "/resolve", body));
+  return callApi(() => client.request("POST", "/intent", body));
 }
 
 // ---------------------------------------------------------------------------
-// Tool 2: execute_skill
-// ---------------------------------------------------------------------------
-
-export const executeSkillSchema = z.object({
-  skill_id: z.string().uuid(),
-  inputs: z.record(z.unknown()),
-  timeout_ms: z.number().int().min(100).max(300000).optional(),
-});
-
-export async function executeSkill(raw: unknown): Promise<ToolResult> {
-  const input = executeSkillSchema.parse(raw);
-  const body: Record<string, unknown> = {
-    skill_id: input.skill_id,
-    inputs: input.inputs,
-  };
-  if (input.timeout_ms !== undefined) body["timeout_ms"] = input.timeout_ms;
-  return callApi(() => client.request("POST", "/execute", body));
-}
-
-// ---------------------------------------------------------------------------
-// Tool 3: chain_skills
+// Tool 2: chain_skills
 // ---------------------------------------------------------------------------
 
 const chainStepSchema = z.object({
@@ -97,11 +77,11 @@ export async function chainSkills(raw: unknown): Promise<ToolResult> {
     inputs: input.inputs,
   };
   if (input.timeout_ms !== undefined) body["timeout_ms"] = input.timeout_ms;
-  return callApi(() => client.request("POST", "/execute/chain", body));
+  return callApi(() => client.request("POST", "/chains", body));
 }
 
 // ---------------------------------------------------------------------------
-// Tool 4: get_skill
+// Tool 3: get_skill
 // ---------------------------------------------------------------------------
 
 export const getSkillSchema = z.object({
@@ -116,7 +96,7 @@ export async function getSkill(raw: unknown): Promise<ToolResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Tool 5: list_skills
+// Tool 4: list_skills
 // ---------------------------------------------------------------------------
 
 export const listSkillsSchema = z.object({
@@ -145,22 +125,25 @@ export async function listSkills(raw: unknown): Promise<ToolResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Tool 6: validate_skill
+// Tool 5: feedback_skill
 // ---------------------------------------------------------------------------
 
-export const validateSkillSchema = z.object({
+export const feedbackSkillSchema = z.object({
   skill_id: z.string().uuid(),
 });
 
-export async function validateSkill(raw: unknown): Promise<ToolResult> {
-  const input = validateSkillSchema.parse(raw);
+export async function feedbackSkill(raw: unknown): Promise<ToolResult> {
+  const input = feedbackSkillSchema.parse(raw);
   return callApi(() =>
     client.request("POST", `/validate/${input.skill_id}`)
   );
 }
 
+export const validateSkillSchema = feedbackSkillSchema;
+export const validateSkill = feedbackSkill;
+
 // ---------------------------------------------------------------------------
-// Tool 7: submit_skill
+// Tool 6: submit_skill
 // ---------------------------------------------------------------------------
 
 const ioFieldSchema = z.object({
@@ -206,7 +189,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "resolve_skill",
     description:
-      "Route an intent string to the best matching codeVolve skill using embedding search and tag filtering. Returns the matched skill with a confidence score.",
+      "Route an intent string to the best matching codeVolve skill using canonical intent routing and optional metadata filters.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -229,36 +212,9 @@ export const TOOL_DEFINITIONS = [
     handler: resolveSkill,
   },
   {
-    name: "execute_skill",
-    description:
-      "Execute a codeVolve skill by ID with the given inputs. Returns the skill output or an error. Results may be served from cache.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        skill_id: {
-          type: "string",
-          format: "uuid",
-          description: "UUID of the skill to execute",
-        },
-        inputs: {
-          type: "object",
-          description: "Input parameters matching the skill contract",
-        },
-        timeout_ms: {
-          type: "integer",
-          minimum: 100,
-          maximum: 300000,
-          description: "Execution timeout in milliseconds (default: 30000)",
-        },
-      },
-      required: ["skill_id", "inputs"],
-    },
-    handler: executeSkill,
-  },
-  {
     name: "chain_skills",
     description:
-      "Execute a sequence of codeVolve skills where the output of one step feeds into the next. Supports optional field remapping between steps.",
+      "Build an ordered local execution plan from multiple codeVolve skills. The API returns a chain plan; the caller still executes each step locally.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -299,7 +255,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "get_skill",
     description:
-      "Retrieve full details of a codeVolve skill by its UUID, including implementation, tests, examples, and confidence metrics.",
+      "Retrieve a codeVolve skill payload by its UUID. Prefer this only when you need the full implementation and metadata, not just routing context.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -353,9 +309,26 @@ export const TOOL_DEFINITIONS = [
     handler: listSkills,
   },
   {
+    name: "feedback_skill",
+    description:
+      "Report local test feedback for a codeVolve skill and update its confidence score.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        skill_id: {
+          type: "string",
+          format: "uuid",
+          description: "UUID of the skill to send feedback for",
+        },
+      },
+      required: ["skill_id"],
+    },
+    handler: feedbackSkill,
+  },
+  {
     name: "validate_skill",
     description:
-      "Run the test suite for a codeVolve skill and update its confidence score. Returns pass/fail counts and updated confidence.",
+      "Legacy alias for feedback reporting. Submit local test feedback for a codeVolve skill.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -372,7 +345,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "submit_skill",
     description:
-      "Submit a new skill implementation to the codeVolve registry. Requires a complete skill contract including implementation and at least 2 test cases.",
+      "Submit a new skill contract to the codeVolve registry. Requires a complete implementation and at least 2 test cases.",
     inputSchema: {
       type: "object" as const,
       properties: {

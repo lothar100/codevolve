@@ -1,8 +1,8 @@
 /**
  * Unit tests for src/mcp/server.ts
  *
- * Verifies that createServer registers the correct tool names (matching DESIGN-06),
- * all 7 tools are present, and the module is safe to import without CODEVOLVE_API_URL set.
+ * Verifies that createServer registers the current MCP tool set
+ * and the module is safe to import without CODEVOLVE_API_URL set.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -44,7 +44,7 @@ describe("createServer", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tool registration — names must match DESIGN-06 §1
+// Tool registration
 // ---------------------------------------------------------------------------
 
 describe("registered tools", () => {
@@ -57,10 +57,10 @@ describe("registered tools", () => {
 
   const EXPECTED_TOOL_NAMES = [
     "resolve_skill",
-    "execute_skill",
     "chain_skills",
     "get_skill",
     "list_skills",
+    "feedback_skill",
     "validate_skill",
     "submit_skill",
   ] as const;

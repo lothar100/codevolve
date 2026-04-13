@@ -6,7 +6,18 @@
 
 ## System Overview
 
-codeVolve is an AI-native registry of programming problems and solutions ("skills"). The platform is designed primarily for AI agent consumption — agents resolve intents to canonical skills, execute them, and contribute improvements back. The feedback loop drives continuous improvement: more usage → better analytics → better routing → less agentic computation.
+codeVolve is an AI-native registry of programming problems and solutions ("skills"). The platform is designed primarily for AI agent consumption. Agents use exact lookup or intent routing to get a summary first, fetch implementations only when needed, execute locally, and contribute feedback back to the registry. The feedback loop drives continuous improvement: better retrieval, better ranking, lower token use, and less agent-side planning.
+
+### Authentication Model
+
+External authentication is agent-first.
+
+- Public beta agents authenticate with `cvk_...` API keys.
+- Cognito is ops-only for now and is not part of the normal external agent bootstrap path.
+- IAM credentials are internal operator credentials only.
+- Future human auth on `moltbook.com` will manage accounts and agents, but runtime agent traffic will continue to use API keys.
+
+See `docs/agent-auth-architecture.md` for the detailed auth design and rollout plan.
 
 ---
 
@@ -14,27 +25,28 @@ codeVolve is an AI-native registry of programming problems and solutions ("skill
 
 ```
 Client / Agent
-    │
-    ├── POST /resolve    → Skill Router     (Lambda + OpenSearch Serverless + DynamoDB tag filter)
-    │                                        Returns: { skill_id, confidence, skill }
-    │
-    ├── POST /execute    → Execution Layer  (Lambda + ElastiCache/DynamoDB cache + sandboxed runner Lambda)
-    │                                        Returns: { outputs, latency_ms, cache_hit }
-    │
-    ├── POST /validate   → Validation Layer (Lambda + per-language Docker test runner)
-    │                                        Returns: { pass_rate, test_results, confidence_score }
-    │
-    ├── POST /evolve     → Evolution Layer  (Lambda + SQS + Claude API — async)
-    │                                        Returns: 202 Accepted, { job_id }
-    │
-    └── All handlers → Kinesis Data Stream
+    |
+    ├── exact lookup or intent routing -> Skill Router / Registry
+    |                                      Returns: summary + implementation ref
+    |
+    ├── implementation fetch when needed
+    |
+    ├── local execution in the caller's environment
+    |
+    ├── POST /execute -> execution reporting / analytics only
+    |
+    ├── POST /validate -> feedback / confidence update
+    |
+    |- internal evolve pipeline -> SQS GapQueue -> Evolve Lambda -> Claude API
+    |
+    └── All handlers -> Kinesis Data Stream
                               └── Analytics Consumer Lambda
                                         └── ClickHouse / BigQuery
                                                   └── Decision Engine Lambda (EventBridge, scheduled)
-                                                            ├── auto-cache trigger → ElastiCache
-                                                            ├── optimization flag → DynamoDB
-                                                            ├── gap detection → SQS GapQueue → /evolve
-                                                            └── archive evaluation → SQS ArchiveQueue → archive Lambda
+                                                            ├── retrieval suggestions -> intent routing
+                                                            ├── ranking signals -> DynamoDB
+                                                            |- gap detection -> SQS GapQueue -> evolve pipeline
+                                                            └── archive evaluation -> SQS ArchiveQueue -> archive Lambda
 ```
 
 ---
@@ -45,16 +57,16 @@ Client / Agent
 |----------|------|---------|
 | `codevolve-problems` | DynamoDB | Problem records |
 | `codevolve-skills` | DynamoDB | Skill records |
-| `codevolve-cache` | DynamoDB (TTL) | Input/output cache — **provisioned but currently inactive**. No Lambda reads from or writes to this table. Cache layer design is pending BETA-07, which will redefine the validate/cache contract for the local CLI execution model. Will be activated by the Decision Engine auto-cache rule (Rule 1) once BETA-07 is resolved. |
+| `codevolve-cache` | DynamoDB (TTL) | Input/output cache - provisioned for future caller-reported or decision-engine use, but not part of the current local-execution hot path. No Lambda reads from or writes to this table today. |
 | `codevolve-archive` | DynamoDB | Archived problems and skills |
-| OpenSearch Serverless | OpenSearch | Skill embeddings for /resolve |
+| OpenSearch Serverless | OpenSearch | Skill embeddings for intent routing |
 | Kinesis Data Stream | Kinesis | Analytics event pipeline |
 | ClickHouse / BigQuery | Analytics store | All analytics events (separate from primary DB) |
-| SQS GapQueue | SQS | Unresolved intents queued for /evolve |
+| SQS GapQueue | SQS | Unresolved intents queued for the internal evolve pipeline |
 | SQS ArchiveQueue | SQS | Archive decisions queued for archive Lambda |
 | EventBridge | Scheduler | Triggers Decision Engine Lambda every 5 minutes |
 | Bedrock (Titan Embeddings v2) | AI | Embedding generation for skills |
-| Claude API (claude-sonnet-4-6) | AI | Skill generation in /evolve only |
+| Claude API (claude-sonnet-4-6) | AI | Skill generation in the internal evolve pipeline only |
 
 ---
 
@@ -63,10 +75,11 @@ Client / Agent
 | Function | Trigger | Description |
 |----------|---------|-------------|
 | `registry-handler` | API Gateway | Skill + Problem CRUD |
-| `router-handler` | API Gateway | /resolve |
-| `execution-handler` | API Gateway | /execute |
-| `validation-handler` | API Gateway | /validate |
-| `evolve-handler` | API Gateway + SQS | /evolve (async) |
+| `router-handler` | API Gateway | intent routing / exact lookup |
+| `chain-handler` | API Gateway | ordered local chain planning |
+| `execution-handler` | API Gateway | execution reporting / analytics |
+| `validation-handler` | API Gateway | feedback / confidence update |
+| `evolve-handler` | SQS (GapQueue) | Internal evolve pipeline worker |
 | `archive-handler` | SQS (ArchiveQueue) | Archive/unarchive skills and problems |
 | `analytics-consumer` | Kinesis | Events → ClickHouse/BigQuery |
 | `decision-engine` | EventBridge (5-min) | Auto-cache, optimization flags, gap detection, archive evaluation |
@@ -78,11 +91,11 @@ Client / Agent
 ```
 src/
   registry/       ← Skill + Problem CRUD (DynamoDB)
-  router/         ← /resolve (OpenSearch + tag filter, no LLM)
-  execution/      ← /execute (cache + sandboxed runner invocation)
-  validation/     ← /validate (test runner)
+  router/         ← intent routing + exact lookup (OpenSearch + metadata)
+  execution/      ← execution reporting / analytics only
+  validation/     ← feedback / confidence update
   analytics/      ← dashboard endpoints + analytics consumer
-  evolve/         ← /evolve (Claude API — only LLM usage in codebase)
+  evolve/         ??? internal evolve pipeline (Claude API ??? only LLM usage in codebase)
   archive/        ← archive mechanism
   shared/         ← types, DynamoDB client, Kinesis emitter, zod schemas, errors
 infra/            ← AWS CDK stacks and constructs
@@ -96,16 +109,16 @@ tasks/            ← Task tracker and lessons
 ## Hard Architectural Rules
 
 1. Analytics events → Kinesis only. Never write analytics to DynamoDB primary tables.
-2. LLM calls (Claude API) → `src/evolve/` only. Never in `/resolve` or `/execute` paths.
-3. Skill execution → always local. The registry stores and retrieves skill implementations; it never executes them server-side. `/execute` logs the run for analytics only. Callers fetch the implementation via `/resolve` or `GET /skills/:id` and run it in their own environment using their own credentials, filesystem, and installed tools.
+2. LLM calls (Claude API) → `src/evolve/` only. Never in intent routing, execution reporting, or feedback paths.
+3. Skill execution → always local. The registry stores and retrieves skill implementations; it never executes them server-side. Callers fetch a summary or implementation, run it in their own environment using their own credentials, filesystem, and installed tools, and then report the result back.
 4. Archive → `status: "archived"` flag only. Never hard-delete records.
 5. ClickHouse/BigQuery → append-only. No analytics record deletion, even for archived skills.
 6. Canonical promotion → requires `confidence >= 0.85` AND all tests passing.
-7. `/resolve` → pre-computed embeddings only. No real-time embedding at query time.
+7. Intent routing → pre-computed embeddings only. No real-time embedding at query time.
 
 ---
 
-*Last updated: 2026-03-20 — initial bootstrap*
+*Last updated: 2026-04-12 - local execution model clarified*
 
 ### Overview
 
@@ -142,7 +155,7 @@ Internet / AI Agents
         │   Cache key: URI + query string        │         │
         │   Vary: Accept, Accept-Language        │         ▼
         │                                        │    API GW Stage Cache (GET only)
-        ├── POST /resolve  ─────────────────────►│    TTL: 60s, keyed on path + query string
+        ├── POST /intent  ─────────────────────►│    TTL: 60s, keyed on path + query string
         │   NO CACHE — pass-through              │
         │                                        │         │
         ├── POST /execute  ─────────────────────►│         ▼
@@ -150,7 +163,7 @@ Internet / AI Agents
         │                                        │         │
         └── POST /skills, POST /problems,        │         ▼
             POST /skills/:id/promote-canonical,  │    DynamoDB
-            POST /evolve, POST /validate, etc.   │
+            POST /validate, POST /events, etc.   |
             NO CACHE — pass-through             ─┘
 ```
 
@@ -166,7 +179,7 @@ Internet / AI Agents
 | `/problems/{id}` | GET | 60s | Yes (60s) | URI + path param | `Cache-Control: public, max-age=60, stale-while-revalidate=30` |
 | `/analytics/dashboards/{type}` | GET | 300s | No | URI + path param | `Cache-Control: public, max-age=300, stale-while-revalidate=60` |
 | `/health` | GET | No cache | No | — | `Cache-Control: no-store` |
-| `/resolve` | POST | No cache | No | — | `Cache-Control: no-store` |
+| `/intent` | POST | No cache | No | — | `Cache-Control: no-store` |
 | `/execute` | POST | No cache | No | — | `Cache-Control: no-store` |
 | `/execute/chain` | POST | No cache | No | — | `Cache-Control: no-store` |
 | `/validate/{skill_id}` | POST | No cache | No | — | `Cache-Control: no-store` |
@@ -176,8 +189,6 @@ Internet / AI Agents
 | `/skills/{id}/unarchive` | POST | No cache | No | — | `Cache-Control: no-store` |
 | `/problems` | POST | No cache | No | — | `Cache-Control: no-store` |
 | `/events` | POST | No cache | No | — | `Cache-Control: no-store` |
-| `/evolve` | POST | No cache | No | — | `Cache-Control: no-store` |
-
 Notes on cache key policy (applied to all cached GET behaviors):
 - **Included in cache key:** URI path, query string parameters (all), `Accept` header, `Accept-Language` header.
 - **Excluded from cache key:** Cookies (none are set by the API), `Authorization` header (API is currently public-read; add Authorization to cache key if per-user auth is introduced in Phase 5 IMPL-16), `X-Request-Id`, `X-Agent-Id` (request-tracking headers must never be part of the cache key — they are unique per request and would reduce cache effectiveness to zero).
@@ -197,7 +208,7 @@ Priority  Path Pattern                       TTL      Origin
           (POST pass-through, no cache)
 ```
 
-The default behavior (priority 5) applies to all POST endpoints, `/resolve`, `/execute`, `/validate`, `/events`, `/evolve`, and any path not matched above. TTL is 0 and `min-ttl=0, default-ttl=0, max-ttl=0` is enforced so CloudFront never caches these responses regardless of the origin's Cache-Control header.
+The default behavior (priority 5) applies to all POST endpoints, `/intent`, `/execute`, `/validate`, `/events`, and any path not matched above. TTL is 0 and `min-ttl=0, default-ttl=0, max-ttl=0` is enforced so CloudFront never caches these responses regardless of the origin's Cache-Control header.
 
 ### Cache Key Policy Details
 
@@ -274,7 +285,7 @@ Cache key per endpoint:
   GET /problems/{id}                → method.request.path.id
 ```
 
-POST methods, `/resolve`, `/execute`, `/validate`, `/events`, `/evolve`: caching disabled.
+POST methods, `/intent`, `/execute`, `/validate`, and `/events`: caching disabled.
 
 ### Cache Invalidation Strategy
 
@@ -567,15 +578,15 @@ At high agent traffic (100M GET requests/month), CloudFront costs scale to ~$75/
 ## Hard Architectural Rules
 
 1. Analytics events → Kinesis only. Never write analytics to DynamoDB primary tables.
-2. LLM calls (Claude API) → `src/evolve/` only. Never in `/resolve` or `/execute` paths.
-3. Skill execution → always local. The registry stores and retrieves skill implementations; it never executes them server-side. `/execute` logs the run for analytics only. Callers fetch the implementation via `/resolve` or `GET /skills/:id` and run it in their own environment using their own credentials, filesystem, and installed tools.
+2. LLM calls (Claude API) → `src/evolve/` only. Never in intent routing, execution reporting, or validation feedback paths.
+3. Skill execution → always local. The registry stores and retrieves skill implementations; it never executes them server-side. Callers fetch a summary or implementation, run it in their own environment using their own credentials, filesystem, and installed tools, and then report the result back.
 4. Archive → `status: "archived"` flag only. Never hard-delete records.
 5. ClickHouse/BigQuery → append-only. No analytics record deletion, even for archived skills.
 6. Canonical promotion → requires `confidence >= 0.85` AND all tests passing.
-7. `/resolve` → pre-computed embeddings only. No real-time embedding at query time.
-8. Edge cache → never cache POST endpoints, `/resolve`, `/execute`, `/validate`, `/events`, or `/evolve`. Cache only GET endpoints with explicit TTLs documented in the cache behavior table above.
+7. Intent routing → pre-computed embeddings only. No real-time embedding at query time.
+8. Edge cache -> never cache POST endpoints, intent routing, execution reports, or feedback routes. Cache only GET endpoints with explicit TTLs documented in the cache behavior table above.
 9. Cache invalidation → always synchronously initiate CloudFront invalidation within the write Lambda handler before returning the response. Never allow a write to complete without triggering invalidation.
 
 ---
 
-*Last updated: 2026-03-22 — ARCH-09 edge caching design added (ADR-010)*
+*Last updated: 2026-04-12 - local execution model clarified*

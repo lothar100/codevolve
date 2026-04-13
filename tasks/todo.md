@@ -6,6 +6,23 @@
 
 ---
 
+## Current Canonical Model
+
+The current product story is:
+
+`exact lookup or intent -> skill summary -> implementation fetch if needed -> local execution -> feedback`
+
+Guidance for future task writing:
+
+- Treat `/execute` as a reporting and telemetry surface, not a hosted runner.
+- Treat `/validate` as caller-reported validation feedback unless a later task explicitly redefines it.
+- Treat `/evolve` as async generation only.
+- Keep stale server-execution wording out of new tasks, review notes, and doc updates.
+
+---
+
+## Staleness Cleanup
+
 ## Phase 1 — Foundation
 
 ### Architecture & Design (Jorven + Amber — run in parallel, no blockers)
@@ -306,7 +323,7 @@ The current `cdk.json` context block has only 2 flags. CDK v2 `cdk init` generat
 ```typescript
 /**
  * Skill Router module.
- * Implements POST /resolve.
+ * Implements POST /intent.
  * Populated in IMPL-05.
  */
 export {};
@@ -835,48 +852,6 @@ All 5 sub-tasks are complete when ALL of the following pass:
 
 ---
 
-### BETA-02 — SECURITY: API Gateway rate limiting and WAF
-
-| Field | Value |
-|-------|-------|
-| ID | BETA-02 |
-| Owner | Ada |
-| Priority | High |
-| Status | [ ] Planned |
-| Files | `infra/codevolve-stack.ts`, `docs/architecture.md` |
-| Depends on | — |
-| Blocks | Public beta traffic |
-| Verification | Iris review of CDK diff; manual test confirming 429 response at throttle threshold; WAF rule set visible in AWS Console; CORS preflight from non-allowlisted origin returns 403 |
-
-**Context.**
-API Gateway currently has no usage plans, no per-key or per-stage throttling, and no WAF in front of it. The `/execute` endpoint writes analytics events and updates DynamoDB; `/validate` updates skill confidence and status; `/evolve` triggers Claude API calls. All three are more expensive than simple reads. An unauthenticated caller can invoke these at full Lambda concurrency limits at no cost to them and at potentially significant cost and disruption to codeVolve.
-
-**Note (2026-04-07):** The prior context stated `/execute` and `/validate` "invoke sandboxed Lambda runners." That is no longer accurate. Skills are now local CLI tools — `/execute` logs the run and updates analytics only, it does NOT run any skill code server-side. The rate limiting goal is unchanged; the cost rationale shifts to DynamoDB write pressure and Claude API calls from `/evolve`.
-
-**Motivation.**
-Before any public URL is shared (Moltbook post, docs, MCP server config), the API must have basic rate limiting and abuse resistance. The goal is not perfect security — it is preventing the most obvious denial-of-wallet and resource exhaustion attacks.
-
-**Acceptance criteria.**
-
-1. API Gateway usage plan created with:
-   - Default stage-level throttling: rate = 100 req/s, burst = 200.
-   - Per-endpoint override for POST `/execute` and POST `/validate`: rate = 10 req/s, burst = 20. Rationale: `/execute` writes DynamoDB analytics; `/validate` updates skill confidence and can trigger Claude via /evolve — both warrant tighter limits than reads even without a runner Lambda.
-   - Per-endpoint override for POST `/evolve`: rate = 2 req/s, burst = 5 (Claude API calls are expensive).
-2. API keys are required for write endpoints (see BETA-03 for the key system design). Usage plan is associated with the key system introduced in BETA-03.
-3. AWS WAF WebACL deployed and associated with the API Gateway stage:
-   - AWS Managed Rules: `AWSManagedRulesCommonRuleSet` and `AWSManagedRulesKnownBadInputsRuleSet` enabled.
-   - Rate-based rule: block IPs exceeding 1,000 requests per 5-minute window.
-4. CORS: `Access-Control-Allow-Origin` header restricted from `*` to an explicit allowlist. For beta, allowlist is `https://codevolve.example.com` and `http://localhost:5173` (local dev). The wildcard origin must be removed from all Lambda handlers that currently set it.
-5. CDK diff for BETA-02 changes is reviewed by Iris before deploy.
-6. `docs/architecture.md` AWS Resources table updated to include WAF WebACL and Usage Plan.
-
-**Design notes.**
-- WAF must be associated at the regional API Gateway level, not at CloudFront (CloudFront WAF is a separate resource in us-east-1). Use `CfnWebACLAssociation` targeting the stage ARN.
-- WAF adds ~$5–$15/month at beta traffic volumes. Acceptable.
-- Usage plan throttling is per API key at beta. Unauthenticated read endpoints (GET /skills, GET /problems, POST /resolve) are rate-limited at the stage level only, not per-key.
-
----
-
 ### BETA-03 — AUTH: Agent-friendly API key system
 
 | Field | Value |
@@ -884,9 +859,9 @@ Before any public URL is shared (Moltbook post, docs, MCP server config), the AP
 | ID | BETA-03 |
 | Owner | Jorven (design) → Ada (implementation) |
 | Priority | High |
-| Status | [ ] Planned |
+| Status | [x] Complete |
 | Files | `docs/api.md`, `docs/decisions.md`, `infra/codevolve-stack.ts`, `src/auth/` (new), `tests/unit/auth/` (new) |
-| Depends on | BETA-02 (usage plans must exist before API keys can be associated) |
+| Depends on | — |
 | Blocks | BETA-05 (Moltbook beta tester targeting), BETA-06 (post draft references key signup URL) |
 | Verification | Jorven approves API contract before Ada implements; Iris reviews implementation; end-to-end test: POST /auth/keys returns key, key passed as X-Api-Key on POST /skills returns 201, invalid key returns 403 |
 
@@ -1049,33 +1024,6 @@ The output document `docs/moltbook-beta-targets.md` must include:
 
 ---
 
-### BETA-00 — CLEANUP: Remove stale runner artifacts and audit execution-model drift
-
-| Field | Value |
-|-------|-------|
-| ID | BETA-00 |
-| Owner | Ada |
-| Priority | High |
-| Status | [~] |
-| Files | `src/runners/` (delete), `tests/unit/runners/` (delete), `src/execution/handler.ts` (audit), `src/validation/handler.ts` (audit), `src/cache/cache.ts` (audit), `docs/execution-sandbox.md` (flag as superseded) |
-| Depends on | — |
-| Blocks | BETA-01-CLEANUP (already cancelled, no blocker), BETA-07 (validate contract re-design), must be done before beta |
-| Verification | `src/runners/` directory does not exist; `tests/unit/runners/` directory does not exist; `src/execution/handler.ts` contains no Lambda invocation of runner functions; `src/validation/handler.ts` contains no Lambda invocation of runner functions; `npx tsc --noEmit` exits 0; `npx jest` passes |
-
-**Context.**
-The architecture switched from server-side Lambda runners to a local CLI tool model. Several source files and test files were written against the old model and contain stale code — most critically, dead runner Lambda invocations in the execution and validation handlers, and a runner sandbox implementation that should not exist.
-
-**What to do.**
-
-1. Delete `src/runners/` directory and all contents. These Node 22 and Python runner handlers have no place in the current architecture and present maintenance confusion.
-2. Delete `tests/unit/runners/` directory and all contents. The sandbox tests (`node22-sandbox.test.js`) test code that should be deleted.
-3. Audit `src/execution/handler.ts`: remove any code path that invokes `codevolve-runner-python312` or `codevolve-runner-node22`. Keep: input validation against skill contract, execution_count and latency update on the skill record, Kinesis event emission. Confirm the handler signature matches the current `/execute` contract: log the run, update analytics, return the skill implementation for the caller to run locally.
-4. Audit `src/validation/handler.ts`: remove any code path that invokes runner Lambdas. The handler may be reduced to a stub that returns `501 NOT_IMPLEMENTED` until the validate contract is re-designed in BETA-07. Do not remove the handler entirely — the CDK route and tests for the confidence update path should be preserved.
-5. Audit `src/cache/cache.ts`: add a comment block explaining the cache repurposing decision is pending (BETA-07 / Jorven decision). Do not delete yet.
-6. Add a `> SUPERSEDED 2026-04-07` banner to the top of `docs/execution-sandbox.md` noting the model change so future readers are not misled.
-
----
-
 ### BETA-07 — DESIGN: Re-design /validate contract for local CLI model
 
 | Field | Value |
@@ -1085,7 +1033,7 @@ The architecture switched from server-side Lambda runners to a local CLI tool mo
 | Priority | High |
 | Status | [ ] Planned |
 | Files | `docs/api.md` (update /validate contract), `docs/decisions.md` (ADR-012), `src/validation/handler.ts` (re-implement after design) |
-| Depends on | BETA-00 (stale runner code removed first) |
+| Depends on | — |
 | Blocks | Canonical promotion correctness, /evolve pipeline correctness |
 | Verification | Jorven signs off on new contract before Ada touches handler; Iris reviews implementation |
 
@@ -1116,15 +1064,15 @@ Option B — Evolve-pipeline-only validation: `/validate` is only callable by th
 | Priority | Low |
 | Status | [ ] Planned |
 | Files | `tasks/moltbook-post-draft.md` |
-| Depends on | BETA-00 (stale runner cleanup), BETA-02 (rate limiting), BETA-03 (API key URL must exist), BETA-04 (competitive context informs positioning), BETA-05 (audience informs tone) |
+| Depends on | BETA-03 (API key URL must exist), BETA-04 (competitive context informs positioning), BETA-05 (audience informs tone) |
 | Blocks | — |
-| Verification | Draft reviewed and approved by project lead; all TODO placeholders filled in; BETA-00, BETA-02 and BETA-03 verified complete before post goes live |
+| Verification | Draft reviewed and approved by project lead; all TODO placeholders filled in; BETA-03 verified complete before post goes live |
 
 **Context.**
 Moltbook is a short-form social platform for AI agents. Agents browse, vote, and repost content. The audience is primarily AI agents (and their operators), not human developers. The post must be written in a register that an agent would find immediately useful — not a marketing pitch, but a capability announcement with enough specificity to let an agent decide whether to try it.
 
 **Motivation.**
-The Moltbook launch is the primary beta acquisition channel. The post is the top of the funnel. It must be written before BETA-02 and BETA-03 are deployed so it is ready to go live immediately when the rate limiting and auth gates pass.
+The Moltbook launch is the primary beta acquisition channel. The post is the top of the funnel. It must be written before BETA-03 is deployed so it is ready to go live immediately when the auth path is ready.
 
 **Acceptance criteria.**
 
@@ -1159,74 +1107,34 @@ The Moltbook launch is the primary beta acquisition channel. The post is the top
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| UI-01 | Ada | [ ] Planned | Remove legend and status elements from the left panel of the registry page. Locate the legend and status components rendered in the left panel (`frontend/src/` registry view), delete the relevant JSX and any dead CSS/props. Verification: registry page renders without legend or status elements; no console errors; existing tests pass. | — |
-| UI-02 | Ada | [ ] Planned | Move the domains section out of the registry left panel and into its own dedicated "Categories" page. Create a new route and page component for Categories, wire it into the navigation, and remove the domains section from the left panel. Verification: Categories page is reachable via nav, displays all domains, domains no longer appear in left panel. | — |
-| UI-03 | Ada | [ ] Planned | Move the registry counter element from the left panel into the top navigation/header bar. Locate the counter component in the left panel, relocate it into the top bar component, and remove the left-panel instance. Verification: counter is visible in the top bar on all pages, absent from left panel, count value is correct. | — |
-| UI-04 | Ada | [!] Blocked | Remove the left panel from the registry entirely. Delete the left panel component and all references to it from the registry page layout. Verification: registry page renders full-width without a left panel; no layout regressions on other pages; existing tests pass. | UI-01, UI-02, UI-03 |
+| UI-01 | Ada | [x] Complete | Remove legend and status elements from the left panel of the registry page. Locate the legend and status components rendered in the left panel (`frontend/src/` registry view), delete the relevant JSX and any dead CSS/props. Verification: registry page renders without legend or status elements; no console errors; existing tests pass. | — |
+| UI-02 | Ada | [x] Complete | Move the domains section out of the registry left panel and into its own dedicated "Categories" page. Create a new route and page component for Categories, wire it into the navigation, and remove the domains section from the left panel. Verification: Categories page is reachable via nav, displays all domains, domains no longer appear in left panel. | — |
+| UI-03 | Ada | [x] Complete | Move the registry counter element from the left panel into the top navigation/header bar. Locate the counter component in the left panel, relocate it into the top bar component, and remove the left-panel instance. Verification: counter is visible in the top bar on all pages, absent from left panel, count value is correct. | — |
+| UI-04 | Ada | [x] Complete | Remove the left panel from the registry entirely. Delete the left panel component and all references to it from the registry page layout. Verification: registry page renders full-width without a left panel; no layout regressions on other pages; existing tests pass. | UI-01, UI-02, UI-03 |
 
----
-
-## Alignment / Cleanup
-
-> Identified by Jorven, 2026-04-07. These tasks correct artifacts, tests, and documentation that are misaligned with the current local CLI tool execution model or are otherwise broken.
-
----
-
-### Execution Model Misalignment
-
-| ID | Owner | Status | Task | Files Affected | Verification | Depends On |
-|----|-------|--------|------|---------------|--------------|-----------|
-| ALIGN-01 | Ada | [~] | Delete stale runner test file. `tests/unit/runners/node22-sandbox.test.js` imports `src/runners/node22/handler.js` which does not exist. The import will fail at module resolution and break the test suite. Delete the file and the `tests/unit/runners/` directory entirely. | `tests/unit/runners/node22-sandbox.test.js`, `tests/unit/runners/` (dir) | `npx jest` passes with no "Cannot find module" error on the runners path; directory is absent | — |
-| ALIGN-02 | Ada | [~] | Delete `docs/execution-sandbox.md`. The entire document describes the old Lambda-per-language runner model (ARCH-06): Python and Node 22 runner Lambdas, `new Function()` sandbox, `InvokeCommand` invocation flow, timeout/memory limits for runners, cache write policy. None of this exists in the codebase. The document is actively misleading. | `docs/execution-sandbox.md` | File is absent from repo | — |
-| ALIGN-03 | Jorven | [~] | Rewrite Hard Architectural Rule 3 in `docs/architecture.md`. Current text: "Skill execution → sandboxed Lambda only. No network access, no filesystem writes..." This is false under the local CLI model. Correct rule: "Skill execution → always local. The registry stores and retrieves implementations; it never executes them server-side. `/execute` logs the run for analytics only." Also remove `skill-runner-python` and `skill-runner-node` from the Lambda Functions table in that document. | `docs/architecture.md` | Rule 3 accurately describes the local CLI model; Lambda Functions table contains no runner entries | — |
-| ALIGN-04 | Jorven | [~] | Rewrite `docs/validation-evolve.md` to remove all runner Lambda invocation language. Section 1 Overview states `/validate` "runs a skill's test suite through the existing sandboxed runner Lambdas." Section 1 Architectural constraint recap mandates runner Lambda reuse. Sections 2.1 and 2.2 describe a runner-invocation flow. The actual implemented handler (`src/validation/handler.ts`) accepts caller-reported `pass_count / fail_count / total_tests`. The document must be rewritten to describe the caller-reported model. | `docs/validation-evolve.md` | Document describes caller-reported validation; no references to runner Lambda invocation remain | ALIGN-03 |
-| ALIGN-05 | Jorven | [~] | Write ADR-012 in `docs/decisions.md` documenting the switch from the server-side Lambda runner model to the local CLI tool model. Context: why the model changed. Decision: skills are local CLI tools; the registry provides discoverability and retrieval only; execution is always the caller's responsibility. Consequences: runner Lambdas eliminated, ADR-006 (Lambda sandbox) superseded, ADR-009 runner-reuse clause superseded. Mark ADR-006 status as Superseded by ADR-012. Add supersession note to ADR-009. | `docs/decisions.md` | ADR-012 present with status Accepted; ADR-006 marked Superseded by ADR-012; ADR-009 updated with note | — |
-
----
-
-### Broken Tests
-
-| ID | Owner | Status | Task | Files Affected | Verification | Depends On |
-|----|-------|--------|------|---------------|--------------|-----------|
-| ALIGN-06 | Ada | [~] | Fix broken Lambda invocation assertions in `tests/unit/evolve/handler.test.ts`. The test at line 242 ("invokes the validation Lambda asynchronously after writing skill") asserts `mockLambdaSend` was called once with an `InvokeCommand`. The test at line 389 ("continues and returns success when validation Lambda invoke fails") has the same assumption. However, `src/evolve/handler.ts` has no `@aws-sdk/client-lambda` import and never invokes a Lambda — both tests will always fail. Delete both test cases and the `@aws-sdk/client-lambda` mock block from the test file. If async validate invocation is a future design goal, it must be specified in a separate task before tests are written for it. | `tests/unit/evolve/handler.test.ts` | `npx jest tests/unit/evolve/handler.test.ts` passes; no `@aws-sdk/client-lambda` mock in the file unless the handler uses it | — |
-| ALIGN-07 | Ada | [~] | After ALIGN-06, audit all remaining test cases in `tests/unit/evolve/handler.test.ts` for any other references to `mockLambdaSend`. Verify all remaining coverage matches actual handler behavior. | `tests/unit/evolve/handler.test.ts` | All tests pass; test descriptions match the handler steps in `src/evolve/handler.ts` | ALIGN-06 |
-
----
-
-### Stale Task Descriptions in todo.md
-
-| ID | Owner | Status | Task | Files Affected | Verification | Depends On |
-|----|-------|--------|------|---------------|--------------|-----------|
-| ALIGN-08 | Jorven | [~] | Update IMPL-11-B and IMPL-11-C sub-task descriptions. Both describe building a runner-Lambda-based validate handler with env vars `RUNNER_LAMBDA_PYTHON` and `RUNNER_LAMBDA_NODE`. The actual handler (`src/validation/handler.ts`) is implemented as a caller-reported model. Mark IMPL-11-B and IMPL-11-C as Complete with a note explaining what was built. | `tasks/todo.md` | IMPL-11-B and IMPL-11-C statuses read Complete; descriptions reference the caller-reported model | — |
-| ALIGN-09 | Jorven | [~] | Update IMPL-12-D sub-task description. It lists "async ValidateFn invocation" as step 8 of the evolve handler. The implemented `src/evolve/handler.ts` does not invoke a validate Lambda — after writing the skill it updates the job status to "complete" and exits. Correct the description to reflect actual behavior. | `tasks/todo.md` | IMPL-12-D description matches the implemented flow; no reference to Lambda invocation | — |
-
----
-
-### Dead and Inconsistent Infrastructure
-
-| ID | Owner | Status | Task | Files Affected | Verification | Depends On |
-|----|-------|--------|------|---------------|--------------|-----------|
 ---
 
 ## UI Bugs
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| BUG-01 | Ada | [ ] Planned | **Fix analytics tab content not rendering on first visit.** The analytics page almost never shows dashboard content on the first try — switching tabs or refreshing is required. Investigate: analytics tab switching logic in `App.tsx`, the dashboard data-fetching hooks, and each dashboard component's loading/empty state. Fix the root cause (likely a race between tab mount and fetch hook, stale initial render state, or conditional render gated on data that hasn't arrived). **Verify:** navigating directly to `#analytics` renders the active tab's content immediately without requiring a second interaction. | — |
+| BUG-01 | Ada | [x] Complete | **Fix analytics tab content not rendering on first visit.** The analytics page almost never shows dashboard content on the first try — switching tabs or refreshing is required. Investigate: analytics tab switching logic in `App.tsx`, the dashboard data-fetching hooks, and each dashboard component's loading/empty state. Fix the root cause (likely a race between tab mount and fetch hook, stale initial render state, or conditional render gated on data that hasn't arrived). **Verify:** navigating directly to `#analytics` renders the active tab's content immediately without requiring a second interaction. | — |
 
 ---
 
-## API Simplification + Rename Refactor
+## API Simplification + Terminology Cleanup
 
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
-| REFACTOR-01 | Ada | [ ] Planned | **Remove `/execute` endpoint.** Delete `src/execution/` handler and all files. Remove CDK Lambda construct (`ExecuteFn`), API Gateway route (`POST /execute`), and IAM grants. Remove `mcp__codevolve__execute_skill` from `src/mcp/server.ts` and `src/mcp/tools.ts`. Update `docs/api.md` (remove /execute row), `docs/architecture.md`, `CLAUDE.md` API surface table and architecture diagram. Update Dashboard 2 (Execution & Caching) to remove execute-dependent metrics — cache hit and latency will come from intent repetition (REFACTOR-05). Remove all tests covering the execute handler. **Verify:** no references to `/execute`, `ExecuteFn`, or `execute_skill` remain in `src/`, `infra/`, `docs/`, or `CLAUDE.md`. | — |
-| REFACTOR-02 | Ada | [ ] Planned | **Rename `/resolve` → `/intent`.** Rename `src/router/resolve.ts` → `src/router/intent.ts`. Update CDK stack: Lambda logical ID `ResolveFn` → `IntentFn`, API Gateway route `POST /resolve` → `POST /intent`. Rename MCP tool `resolve_skill` → `intent` in `src/mcp/server.ts` and `src/mcp/tools.ts`. Update `event_type: "resolve"` → `"intent"` in analytics events and ClickHouse schema. Update `docs/api.md`, `docs/architecture.md`, `CLAUDE.md` (API surface table, architecture diagram, skill lifecycle description, decision rules). Update `tasks/todo.md`. Update all unit/integration tests referencing resolve. **Verify:** no references to `/resolve`, `ResolveFn`, or `resolve_skill` remain anywhere. | REFACTOR-01 |
-| REFACTOR-03 | Ada | [ ] Planned | **Rename `validate` → `feedback`.** Rename `src/validation/` → `src/feedback/` (all files). Update CDK stack: Lambda `ValidateFn` → `FeedbackFn`, API route `POST /validate/:skill_id` → `POST /feedback/:skill_id`, env var `VALIDATE_LAMBDA_NAME` → `FEEDBACK_LAMBDA_NAME`. Rename MCP tool `validate_skill` → `feedback`. Update `event_type: "validate"` → `"feedback"` in analytics events and ClickHouse schema. Update `docs/api.md`, `docs/architecture.md`, `CLAUDE.md` (all references: API surface, skill lifecycle, decision rules, confidence threshold). Update `tasks/todo.md`. Update all tests. **Verify:** no references to `/validate`, `ValidateFn`, or `validate_skill` remain anywhere. | REFACTOR-01 |
-| REFACTOR-04 | Ada | [ ] Planned | **Implement adaptive top_k in intent handler.** Replace fixed `top_k` default (5) with a confidence-based formula computed after scoring all candidates: `k = clamp(round(1 + 4 × (1 − max(0, min(1, (bestScore − 0.5) × 2)))), 1, 5)`. This maps: confidence 1.0 → k=1, 0.875 → k=2, 0.75 → k=3, 0.625 → k=4, ≤0.5 → k=5. Caller-supplied `top_k` acts as a hard cap only. Add unit tests for all five breakpoints and edge cases. Update `docs/api.md` to document adaptive behaviour. Update MCP tool description. | REFACTOR-02 |
-| REFACTOR-05 | Ada | [ ] Planned | **Predict cache hit from intent repetition.** (1) Emit `input_hash` (SHA-256 of `intent + skill_id`) on every intent event in the Kinesis payload. (2) Add `input_hash` column to ClickHouse analytics events DDL (`scripts/clickhouse-init.sql`). (3) Update Dashboard 2 (Execution & Caching): replace `cache_hit` rate (was execute-based) with intent repetition rate — `% of intent events whose input_hash appeared in a prior 24 h window`. (4) Update Decision Engine auto-cache rule to read from intent event repetition. (5) Update `docs/analytics-consumer.md`, `docs/architecture.md`, `CLAUDE.md` (automated decision rules section). **Verify:** Dashboard 2 renders; repetition rate is non-zero after sending the same intent twice. | REFACTOR-02, REFACTOR-01 |
+| REFACTOR-01 | Ada | [x] Complete | **Re-scope `/execute` to reporting only.** Remove any stale runner semantics from `src/execution/` and its docs. Keep the endpoint, if retained, as a local execution report and telemetry surface only. Update `docs/api.md`, `docs/architecture.md`, `CLAUDE.md`, and the MCP docs so they do not imply hosted execution. Remove any tests that assume the server runs skill code. **Verify:** no docs or task descriptions say `/execute` runs the skill server-side. | — |
+| REFACTOR-02 | Ada | [x] Complete | **Normalize routing naming to `intent`.** Update `src/router/resolve.ts` and the active docs/task descriptions that still say `resolve_skill` or `/resolve` so the canonical concept is intent routing. Keep compatibility aliases only if explicitly required by a follow-up task. Update `docs/api.md`, `docs/architecture.md`, `CLAUDE.md`, and `tasks/todo.md` so they use the exact lookup -> intent -> summary flow. **Verify:** no active docs or task descriptions present `/resolve` as the canonical concept. | REFACTOR-01 |
+| REFACTOR-03 | Ada | [~] In Progress | **Normalize validation naming to feedback.** Update `src/validation/` and the docs/task history that still describe a hosted test runner so the canonical concept is caller-reported validation feedback. Update `docs/api.md`, `docs/architecture.md`, `CLAUDE.md`, and `tasks/todo.md` so they describe local test execution with server-side confidence updates only. **Verify:** no active docs or task descriptions imply server-side test execution. | REFACTOR-01 |
+| REFACTOR-04 | Ada | [x] Complete | **Implement adaptive top_k in intent handler.** Replace fixed `top_k` default (5) with a confidence-based formula computed after scoring all candidates: `k = clamp(round(1 + 4 × (1 − max(0, min(1, (bestScore − 0.5) × 2)))), 1, 5)`. This maps: confidence 1.0 → k=1, 0.875 → k=2, 0.75 → k=3, 0.625 → k=4, ≤0.5 → k=5. Caller-supplied `top_k` acts as a hard cap only. Add unit tests for all five breakpoints and edge cases. Update `docs/api.md` to document adaptive behaviour. Update MCP tool description. | REFACTOR-02 |
+| REFACTOR-05 | Ada | [x] Complete | **Predict cache hit from intent repetition.** (1) Emit `input_hash` (SHA-256 of `intent + skill_id`) on every intent event in the Kinesis payload. (2) Add `input_hash` column to ClickHouse analytics events DDL (`scripts/clickhouse-init.sql`). (3) Update Dashboard 2 (Execution & Caching): replace `cache_hit` rate (was execute-based) with intent repetition rate — `% of intent events whose input_hash appeared in a prior 24 h window`. (4) Update Decision Engine auto-cache rule to read from intent event repetition. (5) Update `docs/analytics-consumer.md`, `docs/architecture.md`, `CLAUDE.md` (automated decision rules section). **Verify:** Dashboard 2 renders; repetition rate is non-zero after sending the same intent twice. | REFACTOR-02, REFACTOR-01 |
 
----
+## Intent + Chaining Follow-Ups
 
-| ALIGN-10 | Ada | [~] | Annotate the `codevolve-cache` DynamoDB table in `infra/codevolve-stack.ts`. The table is provisioned but no Lambda currently reads from or writes to it — `src/execution/execute.ts` only increments `execution_count` on the skill record and emits a Kinesis event. Add a code comment on the `CacheTable` construct explaining it is provisioned for future Decision Engine auto-cache use (Rule 1) but is not active. Update the `docs/architecture.md` AWS Resources table row for `codevolve-cache` to note its pending status. | `infra/codevolve-stack.ts` (comment only), `docs/architecture.md` | CacheTable construct has an explanatory comment; architecture doc notes it as provisioned-for-future-use | — |
-| ALIGN-11 | Ada | [~] | Fix the orphaned `/evolve` API Gateway resource in `infra/codevolve-stack.ts`. Line 873 calls `this.api.root.addResource("evolve")` but adds no POST method — no Lambda integration is wired. `evolveFn` is triggered by the SQS gap queue only, not by an HTTP route. A caller POSTing to `/evolve` gets a 403 or 404 with no useful response. Preferred resolution: remove the orphaned `addResource("evolve")` call and update `docs/api.md` to note that POST /evolve has no direct HTTP trigger (it is SQS-only via the Decision Engine gap queue). Alternative: add a stub POST method returning 501 Not Implemented. | `infra/codevolve-stack.ts`, `docs/api.md` | `npx cdk synth` exits 0; `/evolve` either has a wired POST method or the resource declaration is removed and `docs/api.md` is updated | — |
+| ID | Owner | Status | Task | Depends On |
+|----|-------|--------|------|-----------|
+| CHAIN-01 | Jorven (design) -> Ada (implementation) | [x] Complete | **Teach `/intent` to suggest a chain result.** Extend the intent-routing contract so composition-shaped or low-confidence requests can return either a direct skill match or a structured chain suggestion with ordered steps, step-level confidence, and a rationale. Define when chain suggestion is attempted, how it coexists with `best_match`, how analytics distinguish direct vs chain-suggested intent results, and how MCP/tooling should present chain suggestions without implying server-side execution. Update `docs/api.md`, `docs/architecture.md`, router tests, and analytics/event schemas as needed. **Verify:** `/intent` returns a documented chain suggestion for at least one multi-step request while remaining backward compatible for direct single-skill matches. | REFACTOR-02 |
+| CHAIN-02 | Jorven (design) -> Ada (implementation) | [x] Complete | **Add a first-class API endpoint for chaining skills into one result.** Introduce a dedicated endpoint that accepts either explicit chain steps or a prior `/intent` chain suggestion, resolves the sequence, and returns one structured chain result for local execution. Design must define request/response shape, failure behavior when a step cannot be resolved, step I/O mapping semantics, analytics emission, and how this endpoint differs from the MCP `chain_skills` tool. Do not reintroduce server-side `/execute` semantics. Update CDK route wiring, handler implementation, docs, tests, and MCP references. **Verify:** endpoint is documented, tested, and returns a deterministic chain result for a known multi-step example. | CHAIN-01 |

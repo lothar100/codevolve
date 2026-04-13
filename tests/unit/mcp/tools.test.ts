@@ -5,10 +5,10 @@
 import { CodevolveClient } from "../../../src/mcp/client.js";
 import {
   resolveSkill,
-  executeSkill,
   chainSkills,
   getSkill,
   listSkills,
+  feedbackSkill,
   validateSkill,
   submitSkill,
 } from "../../../src/mcp/tools.js";
@@ -76,12 +76,12 @@ describe("callApi error wrapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveSkill", () => {
-  it("sends POST /resolve with intent", async () => {
+  it("sends POST /intent with intent", async () => {
     mockRequest.mockResolvedValueOnce({ skill_id: SKILL_UUID });
 
     await resolveSkill(client, { intent: "find shortest path" });
 
-    expect(mockRequest).toHaveBeenCalledWith("POST", "/resolve", {
+    expect(mockRequest).toHaveBeenCalledWith("POST", "/intent", {
       intent: "find shortest path",
     });
   });
@@ -95,7 +95,7 @@ describe("resolveSkill", () => {
       language: "python",
     });
 
-    expect(mockRequest).toHaveBeenCalledWith("POST", "/resolve", {
+    expect(mockRequest).toHaveBeenCalledWith("POST", "/intent", {
       intent: "sort array",
       tags: ["arrays"],
       language: "python",
@@ -114,62 +114,36 @@ describe("resolveSkill", () => {
 });
 
 // ---------------------------------------------------------------------------
-// execute_skill
-// ---------------------------------------------------------------------------
-
-describe("executeSkill", () => {
-  it("sends POST /execute with skill_id and inputs", async () => {
-    mockRequest.mockResolvedValueOnce({ outputs: { result: 42 } });
-
-    await executeSkill(client, { skill_id: SKILL_UUID, inputs: { n: 5 } });
-
-    expect(mockRequest).toHaveBeenCalledWith("POST", "/execute", {
-      skill_id: SKILL_UUID,
-      inputs: { n: 5 },
-    });
-  });
-
-  it("includes timeout_ms when provided", async () => {
-    mockRequest.mockResolvedValueOnce({});
-
-    await executeSkill(client, {
-      skill_id: SKILL_UUID,
-      inputs: {},
-      timeout_ms: 5000,
-    });
-
-    const body = mockRequest.mock.calls[0][2] as Record<string, unknown>;
-    expect(body["timeout_ms"]).toBe(5000);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // chain_skills
 // ---------------------------------------------------------------------------
 
 describe("chainSkills", () => {
-  it("sends POST /execute/chain with steps and inputs", async () => {
-    mockRequest.mockResolvedValueOnce({ chain_id: "c1" });
+  it("sends POST /chains with ordered intent steps", async () => {
+    mockRequest.mockResolvedValueOnce({ chain_id: "chain-1" });
 
     await chainSkills(client, {
-      steps: [{ skill_id: SKILL_UUID }],
-      inputs: { x: 1 },
+      steps: [
+        { intent: "build frontend", language: "typescript" },
+        { intent: "sync dist to s3", tags: ["aws"] },
+      ],
     });
 
-    expect(mockRequest).toHaveBeenCalledWith("POST", "/execute/chain", {
-      steps: [{ skill_id: SKILL_UUID }],
-      inputs: { x: 1 },
+    expect(mockRequest).toHaveBeenCalledWith("POST", "/chains", {
+      steps: [
+        { intent: "build frontend", language: "typescript" },
+        { intent: "sync dist to s3", tags: ["aws"] },
+      ],
     });
   });
 
   it("rejects when steps is empty — does NOT call HTTP", async () => {
-    await expect(chainSkills(client, { steps: [], inputs: {} })).rejects.toThrow();
+    await expect(chainSkills(client, { steps: [] })).rejects.toThrow();
     expect(mockRequest).not.toHaveBeenCalled();
   });
 
-  it("rejects when steps exceed 10 — does NOT call HTTP", async () => {
-    const steps = Array.from({ length: 11 }, () => ({ skill_id: SKILL_UUID }));
-    await expect(chainSkills(client, { steps, inputs: {} })).rejects.toThrow();
+  it("rejects when more than 10 steps are provided", async () => {
+    const steps = Array.from({ length: 11 }, (_, i) => ({ intent: `step ${i}` }));
+    await expect(chainSkills(client, { steps })).rejects.toThrow();
     expect(mockRequest).not.toHaveBeenCalled();
   });
 });
@@ -222,16 +196,44 @@ describe("listSkills", () => {
 });
 
 // ---------------------------------------------------------------------------
-// validate_skill
+// feedback_skill / validate_skill alias
 // ---------------------------------------------------------------------------
+
+describe("feedbackSkill", () => {
+  it("sends POST /validate/:skill_id with caller-reported feedback", async () => {
+    mockRequest.mockResolvedValueOnce({ pass_count: 5 });
+
+    await feedbackSkill(client, {
+      skill_id: SKILL_UUID,
+      pass_count: 5,
+      fail_count: 0,
+      total_tests: 5,
+    });
+
+    expect(mockRequest).toHaveBeenCalledWith("POST", `/validate/${SKILL_UUID}`, {
+      pass_count: 5,
+      fail_count: 0,
+      total_tests: 5,
+    });
+  });
+});
 
 describe("validateSkill", () => {
   it("sends POST /validate/:skill_id", async () => {
     mockRequest.mockResolvedValueOnce({ pass_count: 5 });
 
-    await validateSkill(client, { skill_id: SKILL_UUID });
+    await validateSkill(client, {
+      skill_id: SKILL_UUID,
+      pass_count: 5,
+      fail_count: 0,
+      total_tests: 5,
+    });
 
-    expect(mockRequest).toHaveBeenCalledWith("POST", `/validate/${SKILL_UUID}`);
+    expect(mockRequest).toHaveBeenCalledWith("POST", `/validate/${SKILL_UUID}`, {
+      pass_count: 5,
+      fail_count: 0,
+      total_tests: 5,
+    });
   });
 });
 

@@ -4,10 +4,10 @@ import { z } from "zod";
 
 import {
   resolveSkill,
-  executeSkill,
   chainSkills,
   getSkill,
   listSkills,
+  feedbackSkill,
   validateSkill,
   submitSkill,
 } from "./tools.js";
@@ -43,7 +43,7 @@ server.registerTool(
   "resolve_skill",
   {
     description:
-      "Route an intent string to the best matching codeVolve skill using embedding search and tag filtering. Returns the matched skill with a confidence score.",
+      "Route an intent string to the best matching codeVolve skill using canonical intent routing and optional metadata filters.",
     inputSchema: {
       intent: z.string().min(1).describe("Natural language description of the problem to solve"),
       tags: z.array(z.string()).optional().describe("Optional list of tags to filter results"),
@@ -54,30 +54,10 @@ server.registerTool(
 );
 
 server.registerTool(
-  "execute_skill",
-  {
-    description:
-      "Execute a codeVolve skill by ID with the given inputs. Returns the skill output or an error. Results may be served from cache.",
-    inputSchema: {
-      skill_id: z.string().uuid().describe("UUID of the skill to execute"),
-      inputs: z.record(z.unknown()).describe("Input parameters matching the skill contract"),
-      timeout_ms: z
-        .number()
-        .int()
-        .min(100)
-        .max(300000)
-        .optional()
-        .describe("Execution timeout in milliseconds (default: 30000)"),
-    },
-  },
-  async (args) => executeSkill(args)
-);
-
-server.registerTool(
   "chain_skills",
   {
     description:
-      "Execute a sequence of codeVolve skills where the output of one step feeds into the next. Supports optional field remapping between steps.",
+      "Build an ordered local execution plan from multiple codeVolve skills. The API returns a chain plan; the caller still executes each step locally.",
     inputSchema: {
       steps: z
         .array(
@@ -106,7 +86,7 @@ server.registerTool(
   "get_skill",
   {
     description:
-      "Retrieve full details of a codeVolve skill by its UUID, including implementation, tests, examples, and confidence metrics.",
+      "Retrieve a codeVolve skill payload by its UUID. Prefer this only when you need the full implementation and metadata, not just routing context.",
     inputSchema: {
       skill_id: z.string().uuid().describe("UUID of the skill to retrieve"),
       version: z.number().int().min(1).optional().describe("Optional specific version number to retrieve"),
@@ -137,10 +117,22 @@ server.registerTool(
 );
 
 server.registerTool(
+  "feedback_skill",
+  {
+    description:
+      "Report local test feedback for a codeVolve skill and update its confidence score.",
+    inputSchema: {
+      skill_id: z.string().uuid().describe("UUID of the skill to send feedback for"),
+    },
+  },
+  async (args) => feedbackSkill(args)
+);
+
+server.registerTool(
   "validate_skill",
   {
     description:
-      "Run the test suite for a codeVolve skill and update its confidence score. Returns pass/fail counts and updated confidence.",
+      "Legacy alias for feedback reporting. Submit local test feedback for a codeVolve skill.",
     inputSchema: {
       skill_id: z.string().uuid().describe("UUID of the skill to validate"),
     },
@@ -152,7 +144,7 @@ server.registerTool(
   "submit_skill",
   {
     description:
-      "Submit a new skill implementation to the codeVolve registry. Requires a complete skill contract including implementation and at least 2 test cases.",
+      "Submit a new skill contract to the codeVolve registry. Requires a complete implementation and at least 2 test cases.",
     inputSchema: {
       problem_id: z.string().uuid().describe("UUID of the problem this skill solves"),
       name: z.string().min(1).describe("Short name for the skill"),

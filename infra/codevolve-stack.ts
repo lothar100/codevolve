@@ -389,20 +389,30 @@ export class CodevolveStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
+    const chainFn = new NodejsFunction(this, "ChainFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-chains",
+      entry: path.join(__dirname, "../src/router/chain.ts"),
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(10),
+    });
+
     // Validation: POST /validate/{skill_id} — accepts caller-provided test results (IMPL-11-B)
+    // Execution: POST /execute - caller-reported local execution telemetry
+    const executeFn = new NodejsFunction(this, "ExecuteFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-execute",
+      entry: path.join(__dirname, "../src/execution/execute.ts"),
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(10),
+    });
+
     const validateFn = new NodejsFunction(this, "ValidateFn", {
       ...commonNodejsProps,
       functionName: "codevolve-validate",
       entry: path.join(__dirname, "../src/validation/handler.ts"),
       memorySize: 256,
       timeout: cdk.Duration.seconds(10),
-    });
-
-    // Analytics: POST /events
-    const emitEventsFn = new NodejsFunction(this, "EmitEventsFn", {
-      ...commonNodejsProps,
-      functionName: "codevolve-emit-events",
-      entry: path.join(__dirname, "../src/analytics/emitEvents.ts"),
     });
 
     // Evolve: POST /evolve
@@ -666,6 +676,7 @@ export class CodevolveStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(240),
       environment: {
         ...lambdaEnvironment,
+        ...clickhouseEnv,
         SKILLS_TABLE: this.skillsTable.tableName,
         GAP_LOG_TABLE: gapLogTable.tableName,
         CONFIG_TABLE: configTable.tableName,
@@ -838,20 +849,25 @@ export class CodevolveStack extends cdk.Stack {
       new apigateway.LambdaIntegration(resolveFn),
     );
 
+    const chainsResource = this.api.root.addResource("chains");
+    chainsResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(chainFn),
+    );
+
+    // /execute - report a local execution; this endpoint never runs skill code
+    const executeResource = this.api.root.addResource("execute");
+    executeResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(executeFn),
+    );
+
     // /validate (IMPL-11-B)
     const validateResource = this.api.root.addResource("validate");
     const validateBySkillIdResource = validateResource.addResource("{skill_id}");
     validateBySkillIdResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(validateFn),
-      withApiKeyAuth,
-    );
-
-    // /events
-    const eventsResource = this.api.root.addResource("events");
-    eventsResource.addMethod(
-      "POST",
-      new apigateway.LambdaIntegration(emitEventsFn),
       withApiKeyAuth,
     );
 
@@ -920,8 +936,6 @@ export class CodevolveStack extends cdk.Stack {
     // -----------------------------------------------------------------------
 
     // healthFn needs no DynamoDB or Kinesis access — it returns a static response
-    this.eventsStream.grantWrite(emitEventsFn);
-
     // Registry function permissions (IMPL-02)
     for (const fn of registryFunctions) {
       this.problemsTable.grantReadWriteData(fn);
@@ -972,6 +986,22 @@ export class CodevolveStack extends cdk.Stack {
         ],
       }),
     );
+
+    this.skillsTable.grantReadData(chainFn);
+    this.eventsStream.grantWrite(chainFn);
+    chainFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel"],
+        resources: [
+          `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+        ],
+      }),
+    );
+
+    // ExecuteFn permissions - read skill metadata, increment execution counters,
+    // and emit telemetry for caller-reported local runs.
+    this.skillsTable.grantReadWriteData(executeFn);
+    this.eventsStream.grantWrite(executeFn);
 
     // ValidateFn permissions (IMPL-11-B)
     this.skillsTable.grantReadWriteData(validateFn);
@@ -1049,6 +1079,7 @@ export class CodevolveStack extends cdk.Stack {
     this.eventsStream.grantWrite(decisionEngineFn);
     archiveQueue.grantSendMessages(decisionEngineFn);
     evolveGapQueue.grantSendMessages(decisionEngineFn);
+    clickhouseSecret.grantRead(decisionEngineFn);
 
     // -----------------------------------------------------------------------
     // Frontend — existing codevolve-dashboard S3 static website bucket

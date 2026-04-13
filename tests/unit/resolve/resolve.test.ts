@@ -67,7 +67,7 @@ function makeEvent(body: unknown): APIGatewayProxyEvent {
     multiValueHeaders: {},
     httpMethod: "POST",
     isBase64Encoded: false,
-    path: "/resolve",
+    path: "/intent",
     stageVariables: null,
     requestContext: {} as never,
     resource: "",
@@ -82,6 +82,22 @@ function makeEvent(body: unknown): APIGatewayProxyEvent {
 function makeUnitVector(dimensions: number): Float32Array {
   const val = 1 / Math.sqrt(dimensions);
   return new Float32Array(dimensions).fill(val);
+}
+
+function makeAxisVector(dimensions: number): Float32Array {
+  const vec = new Float32Array(dimensions);
+  vec[0] = 1;
+  return vec;
+}
+
+function makeVectorWithCosine(similarity: number, dimensions: number): Float32Array {
+  const clamped = Math.max(-1, Math.min(1, similarity));
+  const vec = new Float32Array(dimensions);
+  vec[0] = clamped;
+  if (dimensions > 1) {
+    vec[1] = Math.sqrt(Math.max(0, 1 - clamped * clamped));
+  }
+  return vec;
 }
 
 /**
@@ -155,7 +171,7 @@ const VALID_BODY = {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("POST /resolve", () => {
+describe("POST /intent", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -179,8 +195,9 @@ describe("POST /resolve", () => {
     expect(result.statusCode).toBe(200);
     expect(body.best_match).not.toBeNull();
     expect(body.best_match.confidence).toBeGreaterThanOrEqual(0.70);
+    expect(body.intent_confidence).toBe(body.resolve_confidence);
     expect(body.evolve_triggered).toBe(false);
-    expect(body.matches.length).toBeGreaterThanOrEqual(1);
+    expect(body.matches).toHaveLength(1);
   });
 
   // =========================================================================
@@ -204,6 +221,44 @@ describe("POST /resolve", () => {
     expect(result.statusCode).toBe(200);
     expect(body.best_match).toBeNull();
     expect(body.evolve_triggered).toBe(true);
+  });
+
+  it("returns a chain_suggestion for composition-shaped intents", async () => {
+    const directVec = makeAxisVector(1024);
+    const fetchVec = makeAxisVector(1024);
+    const parseVec = makeAxisVector(1024);
+    const items = [
+      makeSkill({
+        skill_id: "11111111-1111-1111-1111-111111111111",
+        name: "Fetch Repo",
+        embedding: encodeEmbedding(makeVectorWithCosine(0.95, 1024)),
+      }),
+      makeSkill({
+        skill_id: "22222222-2222-2222-2222-222222222222",
+        name: "Parse JSON",
+        embedding: encodeEmbedding(makeVectorWithCosine(0.9, 1024)),
+      }),
+    ];
+
+    mockBedrockSend
+      .mockResolvedValueOnce(bedrockResponse(directVec))
+      .mockResolvedValueOnce(bedrockResponse(fetchVec))
+      .mockResolvedValueOnce(bedrockResponse(parseVec));
+    mockDocSend
+      .mockResolvedValueOnce({ Items: items, LastEvaluatedKey: undefined })
+      .mockResolvedValueOnce({ Items: items, LastEvaluatedKey: undefined })
+      .mockResolvedValueOnce({ Items: items, LastEvaluatedKey: undefined });
+
+    const result = await handler(
+      makeEvent({ intent: "fetch repo then parse json", top_k: 2 }),
+    );
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(body.chain_suggestion).toBeDefined();
+    expect(body.chain_suggestion.steps).toHaveLength(2);
+    expect(body.chain_suggestion.steps[0].best_match).not.toBeNull();
+    expect(body.chain_suggestion.steps[1].best_match).not.toBeNull();
   });
 
   // =========================================================================
@@ -319,6 +374,7 @@ describe("POST /resolve", () => {
     );
     expect(withTagsMatch).toBeDefined();
     expect(noTagsMatch).toBeDefined();
+    expect(body.matches).toHaveLength(2);
     // Skill with matching tags should have higher confidence score due to boost
     expect(withTagsMatch.confidence).toBeGreaterThan(noTagsMatch.confidence);
   });
@@ -462,6 +518,138 @@ describe("POST /resolve", () => {
     expect(vec.length).toBe(dim);
   });
 
+  it.each([
+    { bestScore: 1.0, expectedMatches: 1 },
+    { bestScore: 0.875, expectedMatches: 2 },
+    { bestScore: 0.75, expectedMatches: 3 },
+    { bestScore: 0.625, expectedMatches: 4 },
+    { bestScore: 0.5, expectedMatches: 5 },
+  ])(
+    "adaptive top_k returns $expectedMatches matches when best score is $bestScore",
+    async ({ bestScore, expectedMatches }) => {
+      const intentVec = makeAxisVector(1024);
+      const items = Array.from({ length: 5 }, (_, index) =>
+        makeSkill({
+          skill_id: `skill-${index + 1}`,
+          embedding: encodeEmbedding(
+            makeVectorWithCosine(
+              Math.max(0.1, bestScore - index * 0.02),
+              1024,
+            ),
+          ),
+          tags: [`tag-${index + 1}`],
+        }),
+      );
+
+      mockBedrockSend.mockResolvedValueOnce(bedrockResponse(intentVec));
+      mockDocSend.mockResolvedValueOnce({
+        Items: items,
+        LastEvaluatedKey: undefined,
+      });
+
+      const result = await handler(makeEvent({ intent: "adaptive top k probe" }));
+      const body = JSON.parse(result.body);
+
+      expect(result.statusCode).toBe(200);
+      expect(body.matches).toHaveLength(expectedMatches);
+      expect(body.intent_confidence).toBeCloseTo(bestScore, 5);
+      expect(body.resolve_confidence).toBeCloseTo(bestScore, 5);
+    },
+  );
+
+  it("caller-supplied top_k acts as a hard cap on adaptive matches", async () => {
+    const intentVec = makeAxisVector(1024);
+    const items = Array.from({ length: 5 }, (_, index) =>
+      makeSkill({
+        skill_id: `capped-skill-${index + 1}`,
+        embedding: encodeEmbedding(
+          makeVectorWithCosine(0.5 - index * 0.02, 1024),
+        ),
+      }),
+    );
+
+    mockBedrockSend.mockResolvedValueOnce(bedrockResponse(intentVec));
+    mockDocSend.mockResolvedValueOnce({
+      Items: items,
+      LastEvaluatedKey: undefined,
+    });
+
+    const result = await handler(
+      makeEvent({ intent: "cap adaptive top k", top_k: 2 }),
+    );
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(body.matches).toHaveLength(2);
+  });
+
+  it("emits a stable input_hash for equivalent intent requests", async () => {
+    const intentVec = makeUnitVector(1024);
+    const item = makeSkill({ embedding: encodeEmbedding(intentVec) });
+
+    mockBedrockSend
+      .mockResolvedValueOnce(bedrockResponse(intentVec))
+      .mockResolvedValueOnce(bedrockResponse(intentVec));
+    mockDocSend
+      .mockResolvedValueOnce({ Items: [item], LastEvaluatedKey: undefined })
+      .mockResolvedValueOnce({ Items: [item], LastEvaluatedKey: undefined });
+
+    await handler(makeEvent({
+      intent: "find a sorter",
+      language: "python",
+      domain: ["algorithms", "graphs"],
+      tags: ["stable", "fast"],
+    }));
+    await handler(makeEvent({
+      intent: "find a sorter",
+      language: "python",
+      domain: ["graphs", "algorithms"],
+      tags: ["fast", "stable"],
+    }));
+
+    expect(mockEmitEvent).toHaveBeenCalledTimes(2);
+    const [firstEvent] = mockEmitEvent.mock.calls[0] as [{ input_hash: string }];
+    const [secondEvent] = mockEmitEvent.mock.calls[1] as [{ input_hash: string }];
+
+    expect(firstEvent.input_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(secondEvent.input_hash).toBe(firstEvent.input_hash);
+  });
+
+  it("changes input_hash when the resolved best_match changes", async () => {
+    const intentVec = makeAxisVector(1024);
+
+    mockBedrockSend
+      .mockResolvedValueOnce(bedrockResponse(intentVec))
+      .mockResolvedValueOnce(bedrockResponse(intentVec));
+    mockDocSend
+      .mockResolvedValueOnce({
+        Items: [
+          makeSkill({
+            skill_id: "00000000-0000-0000-0000-000000000001",
+            embedding: encodeEmbedding(makeVectorWithCosine(0.95, 1024)),
+          }),
+        ],
+        LastEvaluatedKey: undefined,
+      })
+      .mockResolvedValueOnce({
+        Items: [
+          makeSkill({
+            skill_id: "00000000-0000-0000-0000-000000000002",
+            embedding: encodeEmbedding(makeVectorWithCosine(0.95, 1024)),
+          }),
+        ],
+        LastEvaluatedKey: undefined,
+      });
+
+    await handler(makeEvent({ intent: "hash by matched skill" }));
+    await handler(makeEvent({ intent: "hash by matched skill" }));
+
+    const [firstEvent] = mockEmitEvent.mock.calls[0] as [{ input_hash: string }];
+    const [secondEvent] = mockEmitEvent.mock.calls[1] as [{ input_hash: string }];
+
+    expect(secondEvent.input_hash).not.toBe(firstEvent.input_hash);
+  });
+
   // =========================================================================
   // Additional: validation error for missing intent
   // =========================================================================
@@ -531,18 +719,19 @@ describe("POST /resolve", () => {
   // =========================================================================
 
   it("pagination: handles LastEvaluatedKey loop correctly", async () => {
-    const intentVec = makeUnitVector(1024);
-    const skillVec = makeUnitVector(1024);
+    const intentVec = makeAxisVector(1024);
+    const page1SkillVec = makeVectorWithCosine(0.625, 1024);
+    const page2SkillVec = makeVectorWithCosine(0.6, 1024);
 
     mockBedrockSend.mockResolvedValueOnce(bedrockResponse(intentVec));
     // First page with LastEvaluatedKey
     mockDocSend.mockResolvedValueOnce({
-      Items: [makeSkill({ skill_id: "page1-skill" })],
+      Items: [makeSkill({ skill_id: "page1-skill", embedding: encodeEmbedding(page1SkillVec) })],
       LastEvaluatedKey: { skill_id: "page1-skill", version_number: 1 },
     });
     // Second page — no more pages
     mockDocSend.mockResolvedValueOnce({
-      Items: [makeSkill({ skill_id: "page2-skill", embedding: encodeEmbedding(skillVec) })],
+      Items: [makeSkill({ skill_id: "page2-skill", embedding: encodeEmbedding(page2SkillVec) })],
       LastEvaluatedKey: undefined,
     });
 
@@ -554,6 +743,7 @@ describe("POST /resolve", () => {
     expect(mockDocSend).toHaveBeenCalledTimes(2);
     // Skills from both pages (that have embeddings) appear in matches
     const skillIds = body.matches.map((m: { skill_id: string }) => m.skill_id);
+    expect(skillIds).toContain("page1-skill");
     expect(skillIds).toContain("page2-skill");
   });
 });

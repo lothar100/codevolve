@@ -11,12 +11,13 @@ vi.mock("../src/client.js", () => ({
 import { client } from "../src/client.js";
 import {
   resolveSkill,
-  executeSkill,
   chainSkills,
   getSkill,
   listSkills,
+  feedbackSkill,
   validateSkill,
   submitSkill,
+  TOOL_DEFINITIONS,
 } from "../src/tools.js";
 
 const mockRequest = vi.mocked(client.request);
@@ -75,12 +76,12 @@ describe("callApi error wrapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveSkill", () => {
-  it("sends POST /resolve with intent", async () => {
+  it("sends POST /intent with intent", async () => {
     mockRequest.mockResolvedValueOnce({ skill_id: SKILL_UUID });
 
     await resolveSkill({ intent: "find shortest path" });
 
-    expect(mockRequest).toHaveBeenCalledWith("POST", "/resolve", {
+    expect(mockRequest).toHaveBeenCalledWith("POST", "/intent", {
       intent: "find shortest path",
     });
   });
@@ -90,7 +91,7 @@ describe("resolveSkill", () => {
 
     await resolveSkill({ intent: "sort array", tags: ["arrays"], language: "python" });
 
-    expect(mockRequest).toHaveBeenCalledWith("POST", "/resolve", {
+    expect(mockRequest).toHaveBeenCalledWith("POST", "/intent", {
       intent: "sort array",
       tags: ["arrays"],
       language: "python",
@@ -109,28 +110,25 @@ describe("resolveSkill", () => {
 });
 
 // ---------------------------------------------------------------------------
-// executeSkill
+// Tool metadata
 // ---------------------------------------------------------------------------
 
-describe("executeSkill", () => {
-  it("sends POST /execute with skill_id and inputs", async () => {
-    mockRequest.mockResolvedValueOnce({ outputs: { result: 42 } });
-
-    await executeSkill({ skill_id: SKILL_UUID, inputs: { n: 5 } });
-
-    expect(mockRequest).toHaveBeenCalledWith("POST", "/execute", {
-      skill_id: SKILL_UUID,
-      inputs: { n: 5 },
-    });
+describe("tool metadata", () => {
+  it("describes resolve_skill as canonical intent routing", () => {
+    const resolveTool = TOOL_DEFINITIONS.find((tool) => tool.name === "resolve_skill");
+    expect(resolveTool?.description).toContain("intent routing");
+    expect(resolveTool?.description).not.toContain("/resolve");
   });
 
-  it("includes timeout_ms when provided", async () => {
-    mockRequest.mockResolvedValueOnce({});
+  it("describes feedback_skill as the preferred feedback surface", () => {
+    const feedbackTool = TOOL_DEFINITIONS.find((tool) => tool.name === "feedback_skill");
+    expect(feedbackTool?.description).toContain("feedback");
+    expect(feedbackTool?.description).toContain("confidence");
+  });
 
-    await executeSkill({ skill_id: SKILL_UUID, inputs: {}, timeout_ms: 5000 });
-
-    const body = mockRequest.mock.calls[0][2] as Record<string, unknown>;
-    expect(body["timeout_ms"]).toBe(5000);
+  it("keeps validate_skill as a legacy alias", () => {
+    const validateTool = TOOL_DEFINITIONS.find((tool) => tool.name === "validate_skill");
+    expect(validateTool?.description).toContain("Legacy alias");
   });
 });
 
@@ -139,7 +137,7 @@ describe("executeSkill", () => {
 // ---------------------------------------------------------------------------
 
 describe("chainSkills", () => {
-  it("sends POST /execute/chain with steps and inputs", async () => {
+  it("sends POST /chains with steps and inputs", async () => {
     mockRequest.mockResolvedValueOnce({ chain_id: "c1" });
 
     await chainSkills({
@@ -147,7 +145,7 @@ describe("chainSkills", () => {
       inputs: { x: 1 },
     });
 
-    expect(mockRequest).toHaveBeenCalledWith("POST", "/execute/chain", {
+    expect(mockRequest).toHaveBeenCalledWith("POST", "/chains", {
       steps: [{ skill_id: SKILL_UUID }],
       inputs: { x: 1 },
     });
@@ -215,6 +213,16 @@ describe("listSkills", () => {
 // ---------------------------------------------------------------------------
 // validateSkill
 // ---------------------------------------------------------------------------
+
+describe("feedbackSkill", () => {
+  it("sends POST /validate/:skill_id", async () => {
+    mockRequest.mockResolvedValueOnce({ pass_count: 5 });
+
+    await feedbackSkill({ skill_id: SKILL_UUID });
+
+    expect(mockRequest).toHaveBeenCalledWith("POST", `/validate/${SKILL_UUID}`);
+  });
+});
 
 describe("validateSkill", () => {
   it("sends POST /validate/:skill_id", async () => {

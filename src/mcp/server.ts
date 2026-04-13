@@ -7,10 +7,10 @@ import type { CodevolveClient } from "./client.js";
 import { createClientFromEnv } from "./client.js";
 import {
   resolveSkill,
-  executeSkill,
   chainSkills,
   getSkill,
   listSkills,
+  feedbackSkill,
   validateSkill,
   submitSkill,
 } from "./tools.js";
@@ -46,7 +46,7 @@ export function createServer(client: CodevolveClient): McpServer {
     "resolve_skill",
     {
       description:
-        "Route an intent string to the best matching codeVolve skill using embedding search and tag filtering. Returns the matched skill with a confidence score.",
+        "Legacy alias for intent routing. Route an intent string to codeVolve's /intent API, which returns an adaptive number of top matches based on confidence and any caller-supplied cap.",
       inputSchema: {
         intent: z.string().min(1).describe("Natural language description of the problem to solve"),
         tags: z.array(z.string()).optional().describe("Optional list of tags to filter results"),
@@ -58,24 +58,10 @@ export function createServer(client: CodevolveClient): McpServer {
   );
 
   server.registerTool(
-    "execute_skill",
-    {
-      description:
-        "Log that a codeVolve skill was executed locally. Skills are local CLI tools — fetch the implementation via get_skill, run it in your environment, then call this to record the execution for analytics.",
-      inputSchema: {
-        skill_id: z.string().uuid().describe("UUID of the skill that was executed"),
-        inputs: z.record(z.unknown()).optional().describe("Input parameters that were used (optional, for analytics)"),
-      },
-    },
-    (args: { skill_id: string; inputs?: Record<string, unknown> }) =>
-      executeSkill(client, args)
-  );
-
-  server.registerTool(
     "chain_skills",
     {
       description:
-        "Resolve a sequence of codeVolve skills in order and return all implementations. Each step is resolved independently via embedding search. Run each implementation locally in sequence, piping one step's outputs as the next step's inputs.",
+        "Build an ordered local execution plan from multiple codeVolve skill intents. The API returns a chain plan; the caller still fetches implementations and runs them locally.",
       inputSchema: {
         steps: z
           .array(
@@ -86,6 +72,7 @@ export function createServer(client: CodevolveClient): McpServer {
             })
           )
           .min(2)
+          .max(10)
           .describe("Ordered list of steps to resolve (minimum 2)"),
       },
     },
@@ -142,10 +129,26 @@ export function createServer(client: CodevolveClient): McpServer {
   );
 
   server.registerTool(
+    "feedback_skill",
+    {
+      description:
+        "Report local test feedback for a codeVolve skill and update its confidence score. Run the skill's tests locally, then call this with pass/fail counts.",
+      inputSchema: {
+        skill_id: z.string().uuid().describe("UUID of the skill to send feedback for"),
+        pass_count: z.number().int().min(0).describe("Number of tests that passed"),
+        fail_count: z.number().int().min(0).describe("Number of tests that failed"),
+        total_tests: z.number().int().min(1).describe("Total number of tests run"),
+      },
+    },
+    (args: { skill_id: string; pass_count: number; fail_count: number; total_tests: number }) =>
+      feedbackSkill(client, args)
+  );
+
+  server.registerTool(
     "validate_skill",
     {
       description:
-        "Report local test results for a codeVolve skill and update its confidence score. Run the skill's tests in your own environment, then call this with the pass/fail counts to update the registry.",
+        "Legacy alias for feedback reporting. Report local test results for a codeVolve skill and update its confidence score.",
       inputSchema: {
         skill_id: z.string().uuid().describe("UUID of the skill to validate"),
         pass_count: z.number().int().min(0).describe("Number of tests that passed"),
@@ -218,7 +221,7 @@ export function createServer(client: CodevolveClient): McpServer {
     new ResourceTemplate("codevolve://skills/{skill_id}", { list: undefined }),
     {
       description:
-        "Full details of a codeVolve skill including implementation, tests, examples, and confidence metrics.",
+        "Full details of a codeVolve skill including implementation, tests, examples, and validation metrics.",
       mimeType: "application/json",
     },
     async (uri: URL, _variables: Variables) => {
