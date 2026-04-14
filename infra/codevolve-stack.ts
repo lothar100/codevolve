@@ -630,6 +630,12 @@ export class CodevolveStack extends cdk.Stack {
       entry: path.join(__dirname, "../src/auth/createApiKey.ts"),
     });
 
+    const registerApiKeyFn = new NodejsFunction(this, "RegisterApiKeyFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-register-api-key",
+      entry: path.join(__dirname, "../src/auth/register.ts"),
+    });
+
     const listApiKeysFn = new NodejsFunction(this, "ListApiKeysFn", {
       ...commonNodejsProps,
       functionName: "codevolve-list-api-keys",
@@ -887,10 +893,13 @@ export class CodevolveStack extends cdk.Stack {
     // exposed over API Gateway.
     // POST /evolve
 
-    // /auth/keys (BETA-03 — API key management)
-    // POST /auth/keys and GET /auth/keys accept both Cognito and API key auth.
-    // DELETE /auth/keys/{key_id} also accepts both.
+    // /auth/register and /auth/keys (BETA-03 — standalone agent registration + API key management)
     const authResource = this.api.root.addResource("auth");
+    const registerResource = authResource.addResource("register");
+    registerResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(registerApiKeyFn),
+    );
     const keysResource = authResource.addResource("keys");
     keysResource.addMethod(
       "POST",
@@ -1067,6 +1076,7 @@ export class CodevolveStack extends cdk.Stack {
     // Authorizer needs read + update (last_used_at fire-and-forget)
     this.apiKeysTable.grantReadWriteData(apiKeyAuthorizerFn);
     // CRUD handlers need read/write
+    this.apiKeysTable.grantReadWriteData(registerApiKeyFn);
     this.apiKeysTable.grantReadWriteData(createApiKeyFn);
     this.apiKeysTable.grantReadWriteData(listApiKeysFn);
     this.apiKeysTable.grantReadWriteData(deleteApiKeyFn);

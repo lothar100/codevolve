@@ -1,11 +1,11 @@
 /**
- * POST /auth/keys — Create a new API key.
+ * POST /auth/register — Public self-serve registration for standalone agents.
  *
- * Auth: Cognito ID token (human) or existing API key (agents can self-issue).
+ * Auth: none.
+ * Creates a new standalone agent principal and its first API key.
  * The raw key is returned exactly once in the response and is never stored.
- * Only the SHA-256 hash is persisted in the codevolve-api-keys table.
  *
- * Response 201 with { key_id, api_key, name, created_at, owner_id }.
+ * Response 201 with { agent_id, key_id, api_key, name, created_at }.
  *
  * Environment variables required:
  *   API_KEYS_TABLE — DynamoDB table name for codevolve-api-keys
@@ -15,21 +15,16 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  AGENT_ID_PREFIX,
   API_KEYS_TABLE,
   buildApiKeyRecord,
-  deriveOwnerId,
   docClient,
+  generateStandaloneAgentId,
 } from "./shared.js";
 import { validate } from "../shared/validation.js";
-import { success, error } from "../shared/response.js";
+import { error, success } from "../shared/response.js";
 
-// ---------------------------------------------------------------------------
-// Request schema
-// ---------------------------------------------------------------------------
-
-const CreateApiKeyRequestSchema = z.object({
-  name: z.string().min(1).max(128),
+const RegisterRequestSchema = z.object({
+  name: z.string().min(1).max(128).default("Initial agent key"),
   description: z.string().max(512).optional(),
 });
 
@@ -37,21 +32,16 @@ export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   try {
-    const ownerId = deriveOwnerId(event);
-
-    if (!ownerId) {
-      return error(401, "UNAUTHORIZED", "Missing or invalid authorization");
+    let body: unknown = {};
+    if (event.body) {
+      try {
+        body = JSON.parse(event.body);
+      } catch {
+        return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+      }
     }
 
-    // Parse and validate request body
-    let body: unknown;
-    try {
-      body = JSON.parse(event.body ?? "{}");
-    } catch {
-      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
-    }
-
-    const validation = validate(CreateApiKeyRequestSchema, body);
+    const validation = validate(RegisterRequestSchema, body);
     if (!validation.success) {
       return error(
         400,
@@ -62,12 +52,14 @@ export const handler = async (
     }
 
     const data = validation.data;
+    const keyName = data.name ?? "Initial agent key";
+    const agentId = generateStandaloneAgentId();
     const issuedKey = buildApiKeyRecord({
-      ownerId,
-      name: data.name,
+      ownerId: agentId,
+      name: keyName,
       description: data.description,
-      ownerType: ownerId.startsWith(AGENT_ID_PREFIX) ? "agent" : "user",
-      createdVia: "authenticated_key_management",
+      ownerType: "agent",
+      createdVia: "self_serve_registration",
     });
 
     await docClient.send(
@@ -78,16 +70,15 @@ export const handler = async (
       }),
     );
 
-    // Return the raw key ONCE — never stored, shown only here
     return success(201, {
+      agent_id: agentId,
       key_id: issuedKey.keyId,
       api_key: issuedKey.rawKey,
-      name: data.name,
+      name: keyName,
       created_at: issuedKey.createdAt,
-      owner_id: ownerId,
     });
   } catch (err) {
-    console.error("createApiKey error:", err);
+    console.error("registerAgent error:", err);
     return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
   }
 };

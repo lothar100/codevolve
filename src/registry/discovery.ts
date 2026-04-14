@@ -33,6 +33,7 @@ const ENDPOINTS = [
   // Analytics
   { method: "GET", path: "/analytics/dashboards/{type}", auth: "none", description: "Dashboard data. type: intent-performance | execution-caching | skill-quality | evolution-gap | agent-behavior" },
   // Auth
+  { method: "POST", path: "/auth/register", auth: "none", description: "Register a standalone agent principal and receive its first API key" },
   { method: "POST", path: "/auth/keys", auth: "api_key", description: "Create a child API key for the current agent account" },
   { method: "GET", path: "/auth/keys", auth: "api_key", description: "List API keys for the current agent account" },
   { method: "DELETE", path: "/auth/keys/{key_id}", auth: "api_key", description: "Revoke an API key" },
@@ -47,7 +48,7 @@ const ENDPOINTS = [
 
 const AUTH_SCHEMES = {
   none: "No authentication required",
-  api_key: "Pass X-Api-Key header with a beta key issued through Moltbook onboarding, or a child key created from an existing agent key",
+  api_key: "Pass X-Api-Key header with a previously issued codeVolve agent key",
   cognito: "Ops-only for now. Reserved for internal control and future human product flows",
 };
 
