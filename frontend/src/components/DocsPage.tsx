@@ -7,10 +7,9 @@ function AuthBadge({ auth }: AuthBadgeProps) {
   const styles: Record<string, React.CSSProperties> = {
     none:    { background: "#1e3a2f", color: "#4ade80", border: "1px solid #166534" },
     api_key: { background: "#1e2a3a", color: "#60a5fa", border: "1px solid #1d4ed8" },
-    cognito: { background: "#2a1e3a", color: "#c084fc", border: "1px solid #7e22ce" },
   };
   const labels: Record<string, string> = {
-    none: "public", api_key: "api-key", cognito: "cognito",
+    none: "public", api_key: "api-key",
   };
   return (
     <span style={{
@@ -65,6 +64,7 @@ const SECTIONS: Section[] = [
     title: "Core Agent Workflow",
     endpoints: [
       { method: "POST",   path: "/intent",        auth: "none",    description: "Route a natural-language intent to the best matching skill via embedding search. Returns implementation ready to run locally." },
+      { method: "POST",   path: "/chains",        auth: "none",    description: "Build an ordered local execution chain from explicit steps or a prior intent chain suggestion." },
       { method: "GET",    path: "/skills/{id}",   auth: "none",    description: "Fetch a skill's full implementation. Automatically records an execute event for analytics — fetching signals intent to run." },
       { method: "POST",   path: "/validate/{id}",  auth: "api_key", description: "Report local test results (pass/fail counts) to update a skill's confidence score (0–1). Run tests yourself, then call this." },
     ],
@@ -77,8 +77,6 @@ const SECTIONS: Section[] = [
       { method: "GET",    path: "/skills/{id}",                   auth: "none",    description: "Get a skill by ID including full implementation. Add ?version= for a specific version." },
       { method: "GET",    path: "/skills/{id}/versions",          auth: "none",    description: "List all versions of a skill, newest first" },
       { method: "POST",   path: "/skills/{id}/promote-canonical", auth: "api_key", description: "Promote to canonical. Requires confidence ≥ 0.85, all tests passing, status verified/optimized." },
-      { method: "POST",   path: "/skills/{id}/archive",           auth: "none",    description: "Soft-archive. Excluded from /intent and list endpoints." },
-      { method: "POST",   path: "/skills/{id}/unarchive",         auth: "none",    description: "Restore an archived skill. Regenerates embedding." },
     ],
   },
   {
@@ -92,7 +90,6 @@ const SECTIONS: Section[] = [
   {
     title: "Analytics",
     endpoints: [
-      { method: "POST",   path: "/events",                              auth: "api_key", description: "Emit up to 100 analytics events to Kinesis in one batch" },
       { method: "GET",    path: "/analytics/dashboards/resolve-performance",  auth: "none", description: "Routing latency p50/p95, high-confidence rate, embedding search time" },
       { method: "GET",    path: "/analytics/dashboards/execution-caching",    auth: "none", description: "Most executed skills, execution frequency, input repetition rate" },
       { method: "GET",    path: "/analytics/dashboards/skill-quality",        auth: "none", description: "Test pass rate, confidence over time, competing implementations" },
@@ -101,17 +98,12 @@ const SECTIONS: Section[] = [
     ],
   },
   {
-    title: "Evolution",
-    endpoints: [
-      { method: "POST",   path: "/evolve",  auth: "none", description: "Trigger async skill generation via Claude agent when no good skill exists for an intent" },
-    ],
-  },
-  {
     title: "Auth & Keys",
     endpoints: [
-      { method: "POST",   path: "/auth/keys",             auth: "api_key", description: "Create a new API key" },
-      { method: "GET",    path: "/auth/keys",             auth: "api_key", description: "List API keys for the calling identity" },
-      { method: "DELETE", path: "/auth/keys/{key_id}",   auth: "api_key", description: "Revoke an API key" },
+      { method: "POST",   path: "/auth/register",         auth: "none",    description: "Register a standalone agent and receive its first API key." },
+      { method: "POST",   path: "/auth/keys",             auth: "api_key", description: "Create an additional API key for the current agent identity." },
+      { method: "GET",    path: "/auth/keys",             auth: "api_key", description: "List API keys that belong to the current agent identity." },
+      { method: "DELETE", path: "/auth/keys/{key_id}",    auth: "api_key", description: "Revoke one API key for the current agent identity." },
     ],
   },
   {
@@ -268,13 +260,7 @@ export function DocsPage() {
             <AuthBadge auth="api_key" />
             <span style={{ color: "#94a3b8" }}>
               Pass <code style={{ color: "#e2e8f0", background: "#1e293b", padding: "1px 5px", borderRadius: 4 }}>X-Api-Key: &lt;key&gt;</code> header.
-              Obtain a key via <code style={{ color: "#e2e8f0", background: "#1e293b", padding: "1px 5px", borderRadius: 4 }}>POST /auth/keys</code>.
-            </span>
-          </div>
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-            <AuthBadge auth="cognito" />
-            <span style={{ color: "#94a3b8" }}>
-              Pass <code style={{ color: "#e2e8f0", background: "#1e293b", padding: "1px 5px", borderRadius: 4 }}>Authorization: Bearer &lt;jwt&gt;</code> (Cognito user pool token)
+              Obtain your first key via <code style={{ color: "#e2e8f0", background: "#1e293b", padding: "1px 5px", borderRadius: 4 }}>POST /auth/register</code>.
             </span>
           </div>
         </div>
