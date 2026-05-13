@@ -1,86 +1,122 @@
-/**
- * Decision Engine — Rule 1: Auto-Cache Trigger
- *
- * Queries codevolve-skills for skills with execution_count >= 50 and
- * auto_cache not already set to true, then marks each qualifying skill
- * with auto_cache = true so that the /execute handler starts caching results.
- *
- * Phase 2 behavior: execution_count threshold only (input_repeat_rate check
- * is deferred to Phase 3 when ClickHouse is live).
- *
- * All writes use a ConditionExpression to make this rule fully idempotent.
- * ConditionalCheckFailedException is caught silently.
- */
-
-import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 
 const SKILLS_TABLE = process.env.SKILLS_TABLE ?? "codevolve-skills";
+const ANALYTICS_BUCKETS_TABLE =
+  process.env.ANALYTICS_BUCKETS_TABLE ?? "codevolve-analytics-buckets";
 
-// GSI-status-updated has status as its partition key. We cannot use IN (...) on
-// a key condition, so we issue one Query per eligible status value.
 const ELIGIBLE_STATUSES = ["partial", "verified", "optimized"] as const;
-
 const EXECUTION_COUNT_THRESHOLD = 50;
+const INTENT_REPEAT_RATE_THRESHOLD = 0.3;
+const INTENT_LOOKBACK_DAYS = 30;
 
 interface SkillRecord {
   skill_id: string;
   version_number: number;
-  execution_count?: number;
-  auto_cache?: boolean;
 }
 
-/**
- * Query all skills for a given status that have execution_count >= threshold
- * and auto_cache not set to true. Uses GSI-status-updated.
- */
+interface Candidate {
+  skill_id: string;
+  total_intents: number;
+  repeated_intents: number;
+  intent_repeat_rate: number;
+}
+
+function analyticsUnavailable(err: unknown) {
+  if (err == null || typeof err !== "object") return false;
+  const name = "name" in err && typeof err.name === "string" ? err.name : "";
+  const message = "message" in err && typeof err.message === "string" ? err.message : "";
+  return name === "ResourceNotFoundException" || name === "AccessDeniedException" || /table.*not found|analytics.*unavailable/i.test(message);
+}
+
 async function queryEligibleSkillsByStatus(
   dynamoClient: DynamoDBDocumentClient,
   status: string,
+  requireExecutionThreshold: boolean,
 ): Promise<SkillRecord[]> {
   const results: SkillRecord[] = [];
   let lastEvaluatedKey: Record<string, unknown> | undefined;
-
+  const expressionAttributeValues: Record<string, unknown> = { ":status": status, ":false": false };
+  if (requireExecutionThreshold) expressionAttributeValues[":threshold"] = EXECUTION_COUNT_THRESHOLD;
   do {
     const response = await dynamoClient.send(
       new QueryCommand({
         TableName: SKILLS_TABLE,
         IndexName: "GSI-status-updated",
         KeyConditionExpression: "#status = :status",
-        FilterExpression:
-          "execution_count >= :threshold AND (attribute_not_exists(auto_cache) OR auto_cache = :false)",
-        ExpressionAttributeNames: {
-          "#status": "status",
-        },
-        ExpressionAttributeValues: {
-          ":status": status,
-          ":threshold": EXECUTION_COUNT_THRESHOLD,
-          ":false": false,
-        },
+        FilterExpression: requireExecutionThreshold
+          ? "execution_count >= :threshold AND (attribute_not_exists(auto_cache) OR auto_cache = :false)"
+          : "(attribute_not_exists(auto_cache) OR auto_cache = :false)",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: expressionAttributeValues,
         ExclusiveStartKey: lastEvaluatedKey,
       }),
     );
-
-    const items = (response.Items ?? []) as SkillRecord[];
-    results.push(...items);
+    results.push(...((response.Items ?? []) as SkillRecord[]));
     lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
   } while (lastEvaluatedKey !== undefined);
-
   return results;
 }
 
-/**
- * Write auto_cache = true on a single skill record. The ConditionExpression
- * makes this safe to run multiple times — if another invocation already set
- * auto_cache = true, the condition fails and is caught silently.
- */
-async function setAutoCache(
-  dynamoClient: DynamoDBDocumentClient,
-  skillId: string,
-  versionNumber: number,
-): Promise<void> {
-  const now = new Date().toISOString();
+async function loadEligibleSkills(dynamoClient: DynamoDBDocumentClient, requireExecutionThreshold: boolean) {
+  const skills: SkillRecord[] = [];
+  for (const status of ELIGIBLE_STATUSES) {
+    skills.push(...(await queryEligibleSkillsByStatus(dynamoClient, status, requireExecutionThreshold)));
+  }
+  return skills;
+}
 
+async function repetitionCandidates(dynamoClient: DynamoDBDocumentClient): Promise<Candidate[]> {
+  const rows: Array<Record<string, unknown>> = [];
+  let lastEvaluatedKey: Record<string, unknown> | undefined;
+  const cutoff = Date.now() - INTENT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+  do {
+    const response = await dynamoClient.send(
+      new ScanCommand({
+        TableName: ANALYTICS_BUCKETS_TABLE,
+        ExclusiveStartKey: lastEvaluatedKey,
+      }),
+    );
+    rows.push(...((response.Items ?? []) as Array<Record<string, unknown>>));
+    lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;
+  } while (lastEvaluatedKey !== undefined);
+
+  const map = new Map<string, { total: number; repeated: number }>();
+  for (const row of rows) {
+    if (row.granularity !== "day" || row.event_type !== "resolve" || row.scope_type !== "skill") continue;
+    const bucketStart = typeof row.bucket_start === "string" ? row.bucket_start : "";
+    if (bucketStart && Date.parse(bucketStart) < cutoff) continue;
+    const skill_id = typeof row.scope_id === "string" ? row.scope_id : "";
+    if (!skill_id) continue;
+    const current = map.get(skill_id) ?? { total: 0, repeated: 0 };
+    current.total += typeof row.total_count === "number" ? row.total_count : Number(row.total_count ?? 0);
+    current.repeated +=
+      typeof row.repeated_input_count === "number"
+        ? row.repeated_input_count
+        : Number(row.repeated_input_count ?? 0);
+    map.set(skill_id, current);
+  }
+
+  return [...map.entries()]
+    .map(([skill_id, summary]) => ({
+      skill_id,
+      total_intents: summary.total,
+      repeated_intents: summary.repeated,
+      intent_repeat_rate: summary.total > 0 ? summary.repeated / summary.total : 0,
+    }))
+    .filter(
+      (candidate) =>
+        candidate.total_intents >= EXECUTION_COUNT_THRESHOLD &&
+        candidate.intent_repeat_rate >= INTENT_REPEAT_RATE_THRESHOLD,
+    )
+    .sort(
+      (left, right) =>
+        right.total_intents * right.intent_repeat_rate -
+        left.total_intents * left.intent_repeat_rate,
+    );
+}
+
+async function setAutoCache(dynamoClient: DynamoDBDocumentClient, skillId: string, versionNumber: number) {
   try {
     await dynamoClient.send(
       new UpdateCommand({
@@ -91,42 +127,29 @@ async function setAutoCache(
         ExpressionAttributeValues: {
           ":true": true,
           ":false": false,
-          ":now": now,
+          ":now": new Date().toISOString(),
         },
       }),
     );
   } catch (err: unknown) {
-    if (
-      err !== null &&
-      typeof err === "object" &&
-      "name" in err &&
-      (err as { name: string }).name === "ConditionalCheckFailedException"
-    ) {
-      // Another invocation already set auto_cache = true — this is fine.
-      return;
-    }
+    if (err && typeof err === "object" && "name" in err && err.name === "ConditionalCheckFailedException") return;
     throw err;
   }
 }
 
-/**
- * Evaluate Rule 1: Auto-Cache Trigger.
- *
- * Queries codevolve-skills via GSI-status-updated for all eligible statuses,
- * then issues an UpdateItem for each matching skill.
- */
 export async function evaluateAutoCache(dynamoClient: DynamoDBDocumentClient): Promise<void> {
-  // Collect all qualifying skills across all eligible statuses.
-  const allSkills: SkillRecord[] = [];
-
-  for (const status of ELIGIBLE_STATUSES) {
-    const skills = await queryEligibleSkillsByStatus(dynamoClient, status);
-    allSkills.push(...skills);
+  let candidates: Set<string>;
+  let skills: SkillRecord[];
+  try {
+    candidates = new Set((await repetitionCandidates(dynamoClient)).map((candidate) => candidate.skill_id));
+    skills = (await loadEligibleSkills(dynamoClient, false)).filter((skill) => candidates.has(skill.skill_id));
+  } catch (err) {
+    if (!analyticsUnavailable(err)) throw err;
+    console.warn("[autoCache] Falling back to execution_count threshold:", err);
+    skills = await loadEligibleSkills(dynamoClient, true);
   }
 
-  // Update each qualifying skill. Failures from ConditionalCheckFailedException
-  // are handled inside setAutoCache and do not interrupt other updates.
-  for (const skill of allSkills) {
+  for (const skill of skills) {
     await setAutoCache(dynamoClient, skill.skill_id, skill.version_number);
   }
 }

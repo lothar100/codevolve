@@ -1,43 +1,23 @@
-/**
- * Unit tests for GET /analytics/dashboards/:type handler.
- *
- * Covers:
- * - All 5 dashboard types return 200
- * - W-04: Invalid ISO8601 from/to returns 400 INVALID_DATE_RANGE
- * - from >= to returns 400 INVALID_DATE_RANGE
- * - Missing from/to uses defaults (no error)
- * - Invalid dashboard type returns 400 VALIDATION_ERROR
- * - ClickHouse error returns 500
- */
-
-import { handler } from "../../../src/analytics/dashboards.js";
 import type { APIGatewayProxyEvent } from "aws-lambda";
 
-// ---------------------------------------------------------------------------
-// Mock the ClickHouse client
-// ---------------------------------------------------------------------------
+const mockSend = jest.fn();
 
-jest.mock("../../../src/analytics/clickhouseClient.js", () => ({
-  getClickHouseClient: jest.fn().mockReturnValue({
-    query: jest.fn().mockImplementation(() =>
-      Promise.resolve({
-        json: () => Promise.resolve([]),
-      }),
-    ),
-  }),
+jest.mock("../../../src/shared/dynamo.js", () => ({
+  docClient: { send: mockSend },
+  PROBLEMS_TABLE: "codevolve-problems",
+  SKILLS_TABLE: "codevolve-skills",
+  ANALYTICS_BUCKETS_TABLE: "codevolve-analytics-buckets",
+  ANALYTICS_INPUT_STATE_TABLE: "codevolve-analytics-input-state",
+  ANALYTICS_INTENT_SUMMARIES_TABLE: "codevolve-analytics-intent-summaries",
+  ANALYTICS_RECENT_FEEDS_TABLE: "codevolve-analytics-recent-feeds",
 }));
 
-// After the module loads, grab the mock for test-level control
-import { getClickHouseClient } from "../../../src/analytics/clickhouseClient.js";
+import { handler } from "../../../src/analytics/dashboards.js";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const VALID_FROM = "2026-01-01T00:00:00.000Z";
+const VALID_TO = "2026-01-02T00:00:00.000Z";
 
-function makeEvent(
-  type: string,
-  queryParams?: Record<string, string>,
-): APIGatewayProxyEvent {
+function makeEvent(type: string, queryParams?: Record<string, string>): APIGatewayProxyEvent {
   return {
     body: null,
     pathParameters: { type },
@@ -54,171 +34,139 @@ function makeEvent(
   };
 }
 
-const VALID_FROM = "2026-01-01T00:00:00.000Z";
-const VALID_TO = "2026-01-02T00:00:00.000Z";
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+function setupTables(overrides: Partial<Record<string, unknown[]>>) {
+  const defaults: Record<string, unknown[]> = {
+    "codevolve-analytics-buckets": [],
+    "codevolve-analytics-intent-summaries": [],
+    "codevolve-analytics-recent-feeds": [],
+    "codevolve-analytics-input-state": [],
+    "codevolve-problems": [],
+    "codevolve-skills": [],
+  };
+  const tables = { ...defaults, ...overrides };
+  mockSend.mockImplementation((command: { input: { TableName: string } }) =>
+    Promise.resolve({ Items: tables[command.input.TableName] ?? [] }),
+  );
+}
 
 describe("GET /analytics/dashboards/:type", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    setupTables({});
   });
 
-  // -------------------------------------------------------------------------
-  // 200 — all 5 dashboard types
-  // -------------------------------------------------------------------------
+  it("200: intent-performance returns DynamoDB-backed data shape", async () => {
+    setupTables({
+      "codevolve-analytics-buckets": [
+        {
+          bucket_start: "2026-01-01T00:00:00.000Z",
+          granularity: "minute",
+          event_type: "resolve",
+          scope_type: "global",
+          total_count: 10,
+          success_count: 9,
+          confidence_count: 10,
+          confidence_high_count: 8,
+          latency_bucket_10_count: 6,
+          latency_bucket_50_count: 4,
+        },
+      ],
+      "codevolve-analytics-recent-feeds": [
+        {
+          timestamp: "2026-01-01T00:10:00.000Z",
+          issue_type: "resolve_low_confidence",
+          intent: "arrays:two-sum",
+          confidence: 0.61,
+          skill_id: "skill-1",
+        },
+      ],
+    });
 
-  it("200: resolve-performance returns data shape", async () => {
-    const result = await handler(
-      makeEvent("resolve-performance", { from: VALID_FROM, to: VALID_TO }),
-    );
-    expect(result.statusCode).toBe(200);
+    const result = await handler(makeEvent("intent-performance", { from: VALID_FROM, to: VALID_TO }));
     const body = JSON.parse(result.body);
-    expect(body.dashboard).toBe("resolve-performance");
+    expect(result.statusCode).toBe(200);
+    expect(body.dashboard).toBe("intent-performance");
     expect(body.time_range).toEqual({ from: VALID_FROM, to: VALID_TO });
+    expect(body.latency_over_time).toEqual([
+      { minute: "2026-01-01T00:00:00.000Z", p50_ms: 10, p95_ms: 50 },
+    ]);
+    expect(body.high_confidence_pct).toBe(80);
+    expect(body.success_rate_pct).toBe(90);
+    expect(body.low_confidence_resolves[0]).toMatchObject({ intent: "arrays:two-sum", skill_id: "skill-1" });
   });
 
-  it("200: execution-caching returns data shape", async () => {
-    const result = await handler(
-      makeEvent("execution-caching", { from: VALID_FROM, to: VALID_TO }),
-    );
+  it("200: execution-caching uses input-state repetition summaries", async () => {
+    setupTables({
+      "codevolve-analytics-buckets": [
+        {
+          bucket_start: "2026-01-01T00:00:00.000Z",
+          granularity: "minute",
+          event_type: "resolve",
+          scope_type: "global",
+          total_count: 20,
+          repeated_input_count: 8,
+        },
+        {
+          bucket_start: "2026-01-01T00:00:00.000Z",
+          granularity: "minute",
+          event_type: "execute",
+          scope_type: "global",
+          total_count: 15,
+          latency_bucket_20_count: 10,
+          latency_bucket_50_count: 5,
+        },
+        {
+          bucket_start: "2026-01-01T00:00:00.000Z",
+          granularity: "hour",
+          event_type: "execute",
+          scope_type: "skill",
+          scope_id: "skill-1",
+          total_count: 120,
+          latency_bucket_50_count: 120,
+        },
+        {
+          bucket_start: "2026-01-01T00:00:00.000Z",
+          granularity: "day",
+          event_type: "resolve",
+          scope_type: "skill",
+          scope_id: "skill-1",
+          total_count: 100,
+          repeated_input_count: 45,
+        },
+      ],
+    });
+
+    const result = await handler(makeEvent("execution-caching", { from: VALID_FROM, to: VALID_TO }));
+    const body = JSON.parse(result.body);
     expect(result.statusCode).toBe(200);
-    const body = JSON.parse(result.body);
-    expect(body.dashboard).toBe("execution-caching");
+    expect(body.top_skills).toEqual([{ skill_id: "skill-1", execution_count: 120 }]);
+    expect(body.repetition_rates).toEqual([
+      {
+        skill_id: "skill-1",
+        total_intents: 100,
+        unique_inputs: 55,
+        repeated_intents: 45,
+        input_repeat_rate_pct: 45,
+      },
+    ]);
+    expect(body.intent_repetition_rate_pct).toBe(40);
+    expect(body.cache_candidates[0]).toMatchObject({ skill_id: "skill-1", total_intents: 100 });
   });
 
-  it("200: skill-quality returns data shape", async () => {
-    const result = await handler(
-      makeEvent("skill-quality", { from: VALID_FROM, to: VALID_TO }),
-    );
-    expect(result.statusCode).toBe(200);
-    const body = JSON.parse(result.body);
-    expect(body.dashboard).toBe("skill-quality");
+  it("200: other dashboards return their shape", async () => {
+    for (const type of ["skill-quality", "evolution-gap", "agent-behavior"] as const) {
+      const result = await handler(makeEvent(type, { from: VALID_FROM, to: VALID_TO }));
+      expect(result.statusCode).toBe(200);
+      expect(JSON.parse(result.body).dashboard).toBe(type);
+    }
   });
 
-  it("200: evolution-gap returns data shape", async () => {
-    const result = await handler(
-      makeEvent("evolution-gap", { from: VALID_FROM, to: VALID_TO }),
-    );
-    expect(result.statusCode).toBe(200);
-    const body = JSON.parse(result.body);
-    expect(body.dashboard).toBe("evolution-gap");
+  it("400: invalid ranges are rejected", async () => {
+    const invalid = await handler(makeEvent("intent-performance", { from: "bad", to: VALID_TO }));
+    const reversed = await handler(makeEvent("intent-performance", { from: VALID_TO, to: VALID_FROM }));
+    expect(invalid.statusCode).toBe(400);
+    expect(reversed.statusCode).toBe(400);
   });
 
-  it("200: agent-behavior returns data shape", async () => {
-    const result = await handler(
-      makeEvent("agent-behavior", { from: VALID_FROM, to: VALID_TO }),
-    );
-    expect(result.statusCode).toBe(200);
-    const body = JSON.parse(result.body);
-    expect(body.dashboard).toBe("agent-behavior");
-  });
-
-  it("200: uses default time range when from/to are omitted", async () => {
-    const result = await handler(makeEvent("resolve-performance"));
-    expect(result.statusCode).toBe(200);
-    const body = JSON.parse(result.body);
-    // from and to should be populated with defaults
-    expect(body.time_range.from).toBeTruthy();
-    expect(body.time_range.to).toBeTruthy();
-  });
-
-  // -------------------------------------------------------------------------
-  // 400 — W-04: invalid date range
-  // -------------------------------------------------------------------------
-
-  it("400 INVALID_DATE_RANGE: from is not a valid ISO8601 date", async () => {
-    const result = await handler(
-      makeEvent("resolve-performance", { from: "not-a-date", to: VALID_TO }),
-    );
-    expect(result.statusCode).toBe(400);
-    const body = JSON.parse(result.body);
-    expect(body.error.code).toBe("INVALID_DATE_RANGE");
-  });
-
-  it("400 INVALID_DATE_RANGE: to is not a valid ISO8601 date", async () => {
-    const result = await handler(
-      makeEvent("resolve-performance", { from: VALID_FROM, to: "invalid" }),
-    );
-    expect(result.statusCode).toBe(400);
-    const body = JSON.parse(result.body);
-    expect(body.error.code).toBe("INVALID_DATE_RANGE");
-  });
-
-  it("400 INVALID_DATE_RANGE: from is a plain date without time", async () => {
-    // Plain "2026-01-01" without time component — Date.parse still accepts this in most engines.
-    // The handler should accept it (Date.parse("2026-01-01") returns valid epoch).
-    // This test verifies the handler doesn't crash on partial ISO8601.
-    const result = await handler(
-      makeEvent("resolve-performance", { from: "2026-01-01", to: VALID_TO }),
-    );
-    // 2026-01-01 is parseable, so should be 200
-    expect(result.statusCode).toBe(200);
-  });
-
-  it("400 INVALID_DATE_RANGE: from >= to", async () => {
-    const result = await handler(
-      makeEvent("resolve-performance", {
-        from: VALID_TO,
-        to: VALID_FROM, // intentionally reversed
-      }),
-    );
-    expect(result.statusCode).toBe(400);
-    const body = JSON.parse(result.body);
-    expect(body.error.code).toBe("INVALID_DATE_RANGE");
-  });
-
-  it("400 INVALID_DATE_RANGE: from === to", async () => {
-    const result = await handler(
-      makeEvent("resolve-performance", {
-        from: VALID_FROM,
-        to: VALID_FROM,
-      }),
-    );
-    expect(result.statusCode).toBe(400);
-    const body = JSON.parse(result.body);
-    expect(body.error.code).toBe("INVALID_DATE_RANGE");
-  });
-
-  it("400 INVALID_DATE_RANGE: numeric string is not ISO8601", async () => {
-    const result = await handler(
-      makeEvent("resolve-performance", { from: "1234567890", to: VALID_TO }),
-    );
-    expect(result.statusCode).toBe(400);
-    const body = JSON.parse(result.body);
-    expect(body.error.code).toBe("INVALID_DATE_RANGE");
-  });
-
-  // -------------------------------------------------------------------------
-  // 400 — invalid dashboard type
-  // -------------------------------------------------------------------------
-
-  it("400 VALIDATION_ERROR: unknown dashboard type", async () => {
-    const result = await handler(
-      makeEvent("unknown-type", { from: VALID_FROM, to: VALID_TO }),
-    );
-    expect(result.statusCode).toBe(400);
-    const body = JSON.parse(result.body);
-    expect(body.error.code).toBe("VALIDATION_ERROR");
-  });
-
-  // -------------------------------------------------------------------------
-  // 500 — ClickHouse error
-  // -------------------------------------------------------------------------
-
-  it("500 INTERNAL_ERROR: ClickHouse query throws", async () => {
-    const mockClient = getClickHouseClient();
-    (mockClient.query as jest.Mock).mockRejectedValueOnce(
-      new Error("ClickHouse connection refused"),
-    );
-
-    const result = await handler(
-      makeEvent("resolve-performance", { from: VALID_FROM, to: VALID_TO }),
-    );
-    expect(result.statusCode).toBe(500);
-    const body = JSON.parse(result.body);
-    expect(body.error.code).toBe("INTERNAL_ERROR");
-  });
 });

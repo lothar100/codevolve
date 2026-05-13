@@ -15,7 +15,6 @@ import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
-import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as events from "aws-cdk-lib/aws-events";
 import * as eventsTargets from "aws-cdk-lib/aws-events-targets";
@@ -211,6 +210,22 @@ export class CodevolveStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    const accountsTable = new dynamodb.Table(this, "AccountsTable", {
+      tableName: "codevolve-accounts",
+      partitionKey: { name: "account_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const registrationLimitsTable = new dynamodb.Table(this, "RegistrationLimitsTable", {
+      tableName: "codevolve-registration-limits",
+      partitionKey: { name: "source_key", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "window_start", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: "expires_at",
+    });
+
     // 9. codevolve-api-keys (BETA-03 — agent-friendly API key system)
     // Stores SHA-256 hashes of API keys. Raw keys are NEVER stored.
     // gsi-key-hash enables O(1) lookup by key hash in the authorizer.
@@ -233,6 +248,56 @@ export class CodevolveStack extends cdk.Stack {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // 10. Analytics aggregate tables
+    const analyticsBucketsTable = new dynamodb.Table(this, "AnalyticsBucketsTable", {
+      tableName: "codevolve-analytics-buckets",
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      timeToLiveAttribute: "ttl",
+    });
+
+    const analyticsIntentSummariesTable = new dynamodb.Table(
+      this,
+      "AnalyticsIntentSummariesTable",
+      {
+        tableName: "codevolve-analytics-intent-summaries",
+        partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+        sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        timeToLiveAttribute: "ttl",
+      },
+    );
+
+    const analyticsRecentFeedsTable = new dynamodb.Table(this, "AnalyticsRecentFeedsTable", {
+      tableName: "codevolve-analytics-recent-feeds",
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      timeToLiveAttribute: "ttl",
+    });
+
+    const analyticsInputStateTable = new dynamodb.Table(this, "AnalyticsInputStateTable", {
+      tableName: "codevolve-analytics-input-state",
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      timeToLiveAttribute: "ttl",
+    });
+
+    const analyticsDedupTable = new dynamodb.Table(this, "AnalyticsDedupTable", {
+      tableName: "codevolve-analytics-dedup",
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      timeToLiveAttribute: "ttl",
     });
 
     // -----------------------------------------------------------------------
@@ -288,6 +353,16 @@ export class CodevolveStack extends cdk.Stack {
       EVENTS_STREAM: this.eventsStream.streamName,
       KINESIS_STREAM_NAME: this.eventsStream.streamName,
       API_KEYS_TABLE: this.apiKeysTable.tableName,
+      ACCOUNTS_TABLE: accountsTable.tableName,
+      REGISTRATION_LIMITS_TABLE: registrationLimitsTable.tableName,
+      ANALYTICS_BUCKETS_TABLE: analyticsBucketsTable.tableName,
+      ANALYTICS_INTENT_SUMMARIES_TABLE:
+        analyticsIntentSummariesTable.tableName,
+      ANALYTICS_RECENT_FEEDS_TABLE: analyticsRecentFeedsTable.tableName,
+      ANALYTICS_INPUT_STATE_TABLE: analyticsInputStateTable.tableName,
+      ANALYTICS_DEDUP_TABLE: analyticsDedupTable.tableName,
+      MAX_REGISTRATIONS_PER_IP_PER_HOUR: "3",
+      MAX_REGISTRATIONS_PER_SOURCE_PER_HOUR: "5",
       AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
     };
 
@@ -397,8 +472,6 @@ export class CodevolveStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
-    // Validation: POST /validate/{skill_id} — accepts caller-provided test results (IMPL-11-B)
-    // Execution: POST /execute - caller-reported local execution telemetry
     const executeFn = new NodejsFunction(this, "ExecuteFn", {
       ...commonNodejsProps,
       functionName: "codevolve-execute",
@@ -407,6 +480,7 @@ export class CodevolveStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
+    // Validation: POST /validate/{skill_id} — accepts caller-provided test results (IMPL-11-B)
     const validateFn = new NodejsFunction(this, "ValidateFn", {
       ...commonNodejsProps,
       functionName: "codevolve-validate",
@@ -422,25 +496,6 @@ export class CodevolveStack extends cdk.Stack {
     // Analytics Consumer (IMPL-08-B)
     // -----------------------------------------------------------------------
 
-    // Import ClickHouse credentials secret (managed outside CDK).
-    // The secret must contain JSON with keys: url, username, password, database.
-    const clickhouseSecret = secretsmanager.Secret.fromSecretNameV2(
-      this,
-      "ClickHouseSecret",
-      "codevolve/clickhouse-credentials",
-    );
-
-    // Shared ClickHouse env vars — injected into every Lambda that queries ClickHouse.
-    // Secret format: { host, port, database, username, password }
-    // Values are resolved at synth/deploy time from Secrets Manager JSON fields.
-    // Rotate credentials via Secrets Manager rotation (no re-deploy required).
-    const clickhouseEnv = {
-      CLICKHOUSE_HOST: clickhouseSecret.secretValueFromJson("host").unsafeUnwrap(),
-      CLICKHOUSE_PORT: clickhouseSecret.secretValueFromJson("port").unsafeUnwrap(),
-      CLICKHOUSE_USER: clickhouseSecret.secretValueFromJson("username").unsafeUnwrap(),
-      CLICKHOUSE_PASSWORD: clickhouseSecret.secretValueFromJson("password").unsafeUnwrap(),
-      CLICKHOUSE_DATABASE: clickhouseSecret.secretValueFromJson("database").unsafeUnwrap(),
-    };
 
     // GET /analytics/dashboards/:type (IMPL-09)
     const dashboardsFn = new NodejsFunction(this, "DashboardsFn", {
@@ -448,11 +503,7 @@ export class CodevolveStack extends cdk.Stack {
       functionName: "codevolve-dashboards",
       entry: path.join(__dirname, "../src/analytics/dashboards.ts"),
       memorySize: 512,
-      timeout: cdk.Duration.seconds(60), // 5 concurrent ClickHouse queries per dashboard; match analyticsConsumerFn
-      environment: {
-        ...lambdaEnvironment,
-        ...clickhouseEnv,
-      },
+      timeout: cdk.Duration.seconds(60),
     });
 
     // DLQ for failed analytics consumer batches
@@ -461,11 +512,8 @@ export class CodevolveStack extends cdk.Stack {
       retentionPeriod: cdk.Duration.days(14),
     });
 
-    // Analytics consumer Lambda — reads from Kinesis, writes to ClickHouse.
-    // CRITICAL fix (REVIEW-08-IMPL08-RECHECK): inject the four env vars that
-    // clickhouseClient.ts reads at runtime. The old CLICKHOUSE_SECRET_ARN env
-    // var has been removed — it was dead after the client was rewritten to use
-    // direct env vars.
+    // Analytics consumer Lambda — reads from Kinesis and projects aggregate
+    // analytics state into DynamoDB tables.
     const analyticsConsumerFn = new NodejsFunction(
       this,
       "AnalyticsConsumerFn",
@@ -475,10 +523,6 @@ export class CodevolveStack extends cdk.Stack {
         entry: path.join(__dirname, "../src/analytics/consumer.ts"),
         memorySize: 512,
         timeout: cdk.Duration.seconds(60), // W-01 fix: spec §3.2 requires 60s, not 300s
-        environment: {
-          ...lambdaEnvironment,
-          ...clickhouseEnv,
-        },
       },
     );
 
@@ -579,7 +623,7 @@ export class CodevolveStack extends cdk.Stack {
       ...commonNodejsProps,
       functionName: "codevolve-unarchive-skill",
       entry: path.join(__dirname, "../src/archive/unarchiveSkill.ts"),
-      timeout: cdk.Duration.seconds(60), // longer timeout for Bedrock embedding regeneration
+      timeout: cdk.Duration.seconds(60),
     });
 
     const archiveHandlerFn = new NodejsFunction(this, "ArchiveHandlerFn", {
@@ -619,6 +663,7 @@ export class CodevolveStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
       environment: {
         API_KEYS_TABLE: this.apiKeysTable.tableName,
+        ACCOUNTS_TABLE: accountsTable.tableName,
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
       },
     });
@@ -646,6 +691,12 @@ export class CodevolveStack extends cdk.Stack {
       ...commonNodejsProps,
       functionName: "codevolve-delete-api-key",
       entry: path.join(__dirname, "../src/auth/deleteApiKey.ts"),
+    });
+
+    const setAccountStatusFn = new NodejsFunction(this, "SetAccountStatusFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-set-account-status",
+      entry: path.join(__dirname, "../src/auth/setAccountStatus.ts"),
     });
 
     // Trusted Mountain: GET/POST/DELETE /users/me/trusted-mountain (IMPL-16)
@@ -682,7 +733,6 @@ export class CodevolveStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(240),
       environment: {
         ...lambdaEnvironment,
-        ...clickhouseEnv,
         SKILLS_TABLE: this.skillsTable.tableName,
         GAP_LOG_TABLE: gapLogTable.tableName,
         CONFIG_TABLE: configTable.tableName,
@@ -716,6 +766,8 @@ export class CodevolveStack extends cdk.Stack {
       description: "codeVolve — AI-native skill registry API",
       deployOptions: {
         stageName: "v1",
+        throttlingRateLimit: 250,
+        throttlingBurstLimit: 500,
       },
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
@@ -769,7 +821,7 @@ export class CodevolveStack extends cdk.Stack {
         handler: apiKeyAuthorizerFn,
         authorizerName: "ApiKeyAuthorizer",
         identitySource: "method.request.header.X-Api-Key",
-        resultsCacheTtl: cdk.Duration.seconds(300),
+        resultsCacheTtl: cdk.Duration.seconds(0),
       },
     );
 
@@ -813,13 +865,6 @@ export class CodevolveStack extends cdk.Stack {
       "GET",
       new apigateway.LambdaIntegration(listSkillVersionsFn),
     );
-    const promoteCanonicalResource =
-      skillByIdResource.addResource("promote-canonical");
-    promoteCanonicalResource.addMethod(
-      "POST",
-      new apigateway.LambdaIntegration(promoteCanonicalFn),
-      withApiKeyAuth,
-    );
     const archiveResource = skillByIdResource.addResource("archive");
     archiveResource.addMethod(
       "POST",
@@ -829,6 +874,13 @@ export class CodevolveStack extends cdk.Stack {
     unarchiveResource.addMethod(
       "POST",
       new apigateway.LambdaIntegration(unarchiveSkillFn),
+    );
+    const promoteCanonicalResource =
+      skillByIdResource.addResource("promote-canonical");
+    promoteCanonicalResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(promoteCanonicalFn),
+      withApiKeyAuth,
     );
 
     // /problems
@@ -861,7 +913,6 @@ export class CodevolveStack extends cdk.Stack {
       new apigateway.LambdaIntegration(chainFn),
     );
 
-    // /execute - report a local execution; this endpoint never runs skill code
     const executeResource = this.api.root.addResource("execute");
     executeResource.addMethod(
       "POST",
@@ -917,6 +968,14 @@ export class CodevolveStack extends cdk.Stack {
       new apigateway.LambdaIntegration(deleteApiKeyFn),
       withApiKeyAuth,
     );
+    const accountsResource = authResource.addResource("accounts");
+    const accountByIdResource = accountsResource.addResource("{account_id}");
+    const accountStatusResource = accountByIdResource.addResource("status");
+    accountStatusResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(setAccountStatusFn),
+      withAuth,
+    );
 
     // /users/me/trusted-mountain (IMPL-16)
     const usersResource = this.api.root.addResource("users");
@@ -971,16 +1030,6 @@ export class CodevolveStack extends cdk.Stack {
       this.eventsStream.grantWrite(fn);
     }
 
-    // Bedrock invoke permission for unarchive (embedding regeneration)
-    unarchiveSkillFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["bedrock:InvokeModel"],
-        resources: [
-          `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
-        ],
-      }),
-    );
-
     // SQS consume permission for archive handler
     archiveQueue.grantConsumeMessages(archiveHandlerFn);
 
@@ -1007,8 +1056,6 @@ export class CodevolveStack extends cdk.Stack {
       }),
     );
 
-    // ExecuteFn permissions - read skill metadata, increment execution counters,
-    // and emit telemetry for caller-reported local runs.
     this.skillsTable.grantReadWriteData(executeFn);
     this.eventsStream.grantWrite(executeFn);
 
@@ -1060,14 +1107,33 @@ export class CodevolveStack extends cdk.Stack {
     // Pass GAP_QUEUE_URL so ValidateFn can enqueue gaps (reuse evolveGapQueue ref)
     validateFn.addEnvironment("GAP_QUEUE_URL", evolveGapQueue.queueUrl);
 
-    // Analytics consumer permissions (IMPL-08-B, W-01/W-02 fixes applied)
-    clickhouseSecret.grantRead(analyticsConsumerFn);
+    // Analytics consumer permissions (IMPL-08-B, aggregate projector storage)
     this.eventsStream.grantRead(analyticsConsumerFn);
+    analyticsBucketsTable.grantReadWriteData(analyticsConsumerFn);
+    analyticsIntentSummariesTable.grantReadWriteData(analyticsConsumerFn);
+    analyticsRecentFeedsTable.grantReadWriteData(analyticsConsumerFn);
+    analyticsInputStateTable.grantReadWriteData(analyticsConsumerFn);
+    analyticsDedupTable.grantReadWriteData(analyticsConsumerFn);
+    analyticsConsumerFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:TransactWriteItems"],
+        resources: [
+          analyticsBucketsTable.tableArn,
+          analyticsIntentSummariesTable.tableArn,
+          analyticsRecentFeedsTable.tableArn,
+          analyticsInputStateTable.tableArn,
+          analyticsDedupTable.tableArn,
+        ],
+      }),
+    );
 
     // Dashboards Lambda permissions (IMPL-09)
-    clickhouseSecret.grantRead(dashboardsFn);
     this.problemsTable.grantReadData(dashboardsFn);
     this.skillsTable.grantReadData(dashboardsFn);
+    analyticsBucketsTable.grantReadData(dashboardsFn);
+    analyticsIntentSummariesTable.grantReadData(dashboardsFn);
+    analyticsRecentFeedsTable.grantReadData(dashboardsFn);
+    analyticsInputStateTable.grantReadData(dashboardsFn);
 
     // Trusted Mountain function permissions (IMPL-16)
     this.trustedMountainTable.grantReadWriteData(trustedMountainFn);
@@ -1075,11 +1141,15 @@ export class CodevolveStack extends cdk.Stack {
     // API Key system permissions (BETA-03)
     // Authorizer needs read + update (last_used_at fire-and-forget)
     this.apiKeysTable.grantReadWriteData(apiKeyAuthorizerFn);
+    accountsTable.grantReadData(apiKeyAuthorizerFn);
     // CRUD handlers need read/write
     this.apiKeysTable.grantReadWriteData(registerApiKeyFn);
+    accountsTable.grantReadWriteData(registerApiKeyFn);
+    registrationLimitsTable.grantReadWriteData(registerApiKeyFn);
     this.apiKeysTable.grantReadWriteData(createApiKeyFn);
     this.apiKeysTable.grantReadWriteData(listApiKeysFn);
     this.apiKeysTable.grantReadWriteData(deleteApiKeyFn);
+    accountsTable.grantReadWriteData(setAccountStatusFn);
 
     // Decision Engine function permissions (IMPL-10 — ARCH-07 §6.5)
     this.skillsTable.grantReadWriteData(decisionEngineFn);
@@ -1089,7 +1159,17 @@ export class CodevolveStack extends cdk.Stack {
     this.eventsStream.grantWrite(decisionEngineFn);
     archiveQueue.grantSendMessages(decisionEngineFn);
     evolveGapQueue.grantSendMessages(decisionEngineFn);
-    clickhouseSecret.grantRead(decisionEngineFn);
+    analyticsIntentSummariesTable.grantReadData(decisionEngineFn);
+    analyticsInputStateTable.grantReadData(decisionEngineFn);
+
+    unarchiveSkillFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel"],
+        resources: [
+          `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+        ],
+      }),
+    );
 
     // -----------------------------------------------------------------------
     // Frontend — existing codevolve-dashboard S3 static website bucket
@@ -1136,3 +1216,4 @@ export class CodevolveStack extends cdk.Stack {
     });
   }
 }
+

@@ -8,8 +8,8 @@
  * fire-and-forget error handling so that a Kinesis outage never crashes
  * a handler.
  *
- * All analytics events flow through Kinesis to the analytics store
- * (ClickHouse / BigQuery). They never touch DynamoDB (ADR-002).
+ * All analytics events flow through Kinesis to the analytics projector.
+ * They are materialized into DynamoDB-derived analytics views downstream.
  *
  * @internal
  */

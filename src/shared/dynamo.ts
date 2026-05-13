@@ -28,3 +28,13 @@ export const SKILLS_TABLE = process.env.SKILLS_TABLE ?? "codevolve-skills";
 export const ARCHIVE_TABLE = process.env.ARCHIVE_TABLE ?? "codevolve-archive";
 export const EVOLVE_JOBS_TABLE =
   process.env.EVOLVE_JOBS_TABLE ?? "codevolve-evolve-jobs";
+export const ANALYTICS_BUCKETS_TABLE =
+  process.env.ANALYTICS_BUCKETS_TABLE ?? "codevolve-analytics-buckets";
+export const ANALYTICS_INTENT_SUMMARIES_TABLE =
+  process.env.ANALYTICS_INTENT_SUMMARIES_TABLE ??
+  "codevolve-analytics-intent-summaries";
+export const ANALYTICS_RECENT_FEEDS_TABLE =
+  process.env.ANALYTICS_RECENT_FEEDS_TABLE ??
+  "codevolve-analytics-recent-feeds";
+export const ANALYTICS_INPUT_STATE_TABLE =
+  process.env.ANALYTICS_INPUT_STATE_TABLE ?? "codevolve-analytics-input-state";

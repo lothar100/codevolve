@@ -12,8 +12,7 @@
  *
  * Idempotent: ConditionalCheckFailedException is caught silently.
  *
- * Data source (Phase 2): codevolve-skills DynamoDB records (denormalized latency EMA).
- * Data source (Phase 3): ClickHouse Query B (true p95 over 7-day window).
+ * Data source: codevolve-skills DynamoDB records (denormalized latency EMA).
  */
 
 import {
