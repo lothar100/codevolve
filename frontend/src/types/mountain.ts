@@ -26,6 +26,7 @@ export interface MountainProblem {
   name: string;
   difficulty: Difficulty;
   domain: string[];
+  tags?: string[];
   skill_count: number;
   dominant_status: DominantStatus;
   skill_status_distribution: SkillStatusDistribution;

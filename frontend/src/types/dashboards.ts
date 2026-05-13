@@ -3,6 +3,11 @@
  * Endpoints: GET /analytics/dashboards/{type}
  */
 
+export interface DashboardMeta {
+  degraded?: boolean;
+  degraded_reason?: string;
+}
+
 // --- Dashboard 1: Resolve Performance ---
 
 export interface ResolveLatencyPoint {
@@ -28,7 +33,7 @@ export interface LowConfidenceResolve {
   timestamp: string;
 }
 
-export interface ResolvePerformanceDashboard {
+export interface ResolvePerformanceDashboard extends DashboardMeta {
   latency_over_time: ResolveLatencyPoint[];
   latency_histogram: LatencyHistogramBucket[];
   high_confidence_pct: number;
@@ -72,7 +77,7 @@ export interface CacheCandidate {
   p95_ms: number;
 }
 
-export interface ExecutionCachingDashboard {
+export interface ExecutionCachingDashboard extends DashboardMeta {
   top_skills: TopSkill[];
   repetition_rates: SkillRepetitionRate[];
   cache_hit_rate_pct: number;
@@ -119,7 +124,7 @@ export interface ConfidenceDegradation {
   confidence_delta: number;
 }
 
-export interface SkillQualityDashboard {
+export interface SkillQualityDashboard extends DashboardMeta {
   test_pass_rates: SkillPassRate[];
   confidence_over_time: SkillConfidencePoint[];
   failure_rates: SkillFailureRate[];
@@ -172,7 +177,7 @@ export interface EvolveEvent {
   latest_failure: string;
 }
 
-export interface EvolutionGapDashboard {
+export interface EvolutionGapDashboard extends DashboardMeta {
   unresolved_intents: UnresolvedIntent[];
   low_confidence_intents: LowConfidenceIntent[];
   low_confidence_volume: LowConfidenceVolumePoint[];
@@ -216,7 +221,7 @@ export interface HourlyUsagePoint {
   event_count: number;
 }
 
-export interface AgentBehaviorDashboard {
+export interface AgentBehaviorDashboard extends DashboardMeta {
   total_resolves: number;
   total_executes: number;
   conversion_rate_pct: number;
