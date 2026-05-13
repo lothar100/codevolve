@@ -229,7 +229,7 @@ export function DocsPage() {
             margin: "0 0 16px",
             overflowX: "auto",
             whiteSpace: "pre-wrap",
-          }}>{`POST ${API_BASE_URL}resolve\n{ "intent": "find shortest path in a weighted graph" }\n→ returns implementation → run locally → done`}</pre>
+          }}>{`POST ${API_BASE_URL}/intent\n{ "intent": "find shortest path in a weighted graph" }\n→ returns implementation → run locally → done`}</pre>
           <ol style={{ color: "#94a3b8", fontSize: 13, paddingLeft: 0, margin: 0, lineHeight: 2.2, listStyle: "none" }}>
             {["POST /resolve with a natural-language intent to get an implementation", "Run the returned script locally — your environment, your credentials", "POST /validate/{id} with test results to update the confidence score"].map((step, i) => (
               <li key={i} style={{ display: "flex", gap: 8 }}>
