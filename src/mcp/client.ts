@@ -36,7 +36,7 @@ export class CodevolveClient {
     };
 
     if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
+      headers["X-Api-Key"] = this.apiKey;
     }
 
     let response: Response;

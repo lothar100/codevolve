@@ -2,12 +2,45 @@
 
 > Maintained by Quimby. Full contracts written by Jorven as part of ARCH-02.
 
-Base URL: `https://api.codevolve.dev/v1`
+Base URL: `https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1`
+
+---
+
+## MCP Quickstart
+
+Public beta supports the same core flow through the MCP server:
+
+`resolve or exact lookup -> fetch skill -> run locally -> report feedback`
+
+Set these environment variables before starting the MCP server:
+
+```powershell
+$env:CODEVOLVE_API_URL = "https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1"
+$env:CODEVOLVE_API_KEY = "<cvk_... key for write actions>"
+```
+
+Read-only routing and fetch actions do not require a key, but `feedback_skill` and `submit_skill` do. A typical first run is:
+
+1. Bootstrap a beta key with `POST /auth/register`.
+2. Call `resolve_skill` for intent routing.
+3. Call `get_skill`, or read `codevolve://skills/{skill_id}`, to inspect the implementation and tests.
+4. Run the implementation locally in your own environment.
+5. Call `feedback_skill` with aggregate `pass_count`, `fail_count`, and `total_tests`.
+
+Preferred MCP surfaces in beta:
+
+- `resolve_skill`: route a natural-language intent through `POST /intent`
+- `get_skill`: fetch one skill by UUID
+- `feedback_skill`: report local test results through `POST /validate/{skill_id}`
+- `codevolve://skills/{skill_id}`: read the full skill payload as a resource
+
+`validate_skill` remains a compatibility alias for `feedback_skill`; use `feedback_skill` in new onboarding and launch materials.
 
 ---
 
 ## Table of Contents
 
+- [MCP Quickstart](#mcp-quickstart)
 - [Common Types](#common-types)
 - [Common Headers](#common-headers)
 - [Common Error Shape](#common-error-shape)
@@ -38,10 +71,21 @@ Base URL: `https://api.codevolve.dev/v1`
 
 const SkillStatus = z.enum(["unsolved", "partial", "verified", "optimized", "archived"]);
 
-const EventType = z.enum(["resolve", "execute", "validate", "fail", "archive", "unarchive"]);
+const EventType = z.enum([
+  "resolve",
+  "execute",
+  "validate",
+  "fail",
+  "archive",
+  "unarchive",
+  "evolve",
+  "evolve_failed",
+  "promote_canonical",
+  "archive_warning",
+]);
 
 const DashboardType = z.enum([
-  "resolve-performance",
+  "intent-performance",
   "execution-caching",
   "skill-quality",
   "evolution-gap",
@@ -57,6 +101,7 @@ const SupportedLanguage = z.enum([
   "java",
   "cpp",
   "c",
+  "shell",
 ]);
 
 // --- Reusable Schemas ---
@@ -168,6 +213,16 @@ All responses include:
 |--------|-------------|
 | `X-Request-Id` | Echo of client header, or server-generated UUID |
 | `X-Response-Time-Ms` | Server-side processing time in milliseconds |
+
+## Auth Posture
+
+Public beta uses a mixed auth model:
+
+- `none`: discovery, health, public registry reads, intent routing, chain planning, local execution telemetry, and analytics dashboard reads
+- `api_key`: skill/problem writes, canonical promotion, validation feedback, and API key management
+- `cognito`: internal or future human-user surfaces such as account status controls and trusted-mountain preferences
+
+The current API Gateway posture intentionally keeps read and routing surfaces open so agents can discover, inspect, and route without prior onboarding. Execution still happens locally even when an endpoint itself is unauthenticated.
 
 ---
 
@@ -449,7 +504,7 @@ const PromoteCanonicalResponse = z.object({
 ### Side Effects
 
 - **DynamoDB writes**: Update promoted skill `is_canonical = true`. If a previous canonical skill existed for same `problem_id` + `language`, update it to `is_canonical = false`.
-- **Cache invalidation**: Invalidate cached resolve results for this `problem_id`.
+- **No server-side cache invalidation in beta**: Public beta does not operate a server-managed execution cache or read-through cache contract.
 
 ---
 
@@ -489,7 +544,7 @@ const ArchiveSkillResponse = z.object({
 ### Side Effects
 
 - **DynamoDB write**: Set `status = "archived"`, set `archived_at`, update `updated_at`.
-- **Cache invalidation**: Invalidate cached resolve results for this skill's `problem_id`.
+- **No server-side cache invalidation in beta**: Public beta does not operate a server-managed execution cache or read-through cache contract.
 - **Embedding removal**: Sets `embedding` to null on the skill record so it no longer appears in intent-routing similarity results.
 
 ---
@@ -842,7 +897,7 @@ const ExecuteResponse = z.object({
 
 ## POST /validate/:skill_id
 
-Record caller-reported test feedback for a skill and update its confidence score. In the current model the caller runs tests locally and reports the results; the API updates the skill record from that feedback report. It does not launch a test runner.
+Record caller-reported test feedback for a skill and update its confidence score. In the current model the caller runs tests locally and reports the results; the API updates the skill record from that feedback report. It does not launch a test runner, compare per-test outputs, or manage a server-side execution cache.
 
 ### Path Parameters
 
@@ -874,15 +929,13 @@ const ValidateResponse = z.object({
   total_tests: z.number().int().nonnegative(),
   pass_count: z.number().int().nonnegative(),
   fail_count: z.number().int().nonnegative(),
-  passed: z.number().int().nonnegative(),     // alias of pass_count
-  failed: z.number().int().nonnegative(),     // alias of fail_count
   pass_rate: z.number().min(0).max(1),
   previous_confidence: z.number().min(0).max(1),
   new_confidence: z.number().min(0).max(1),   // updated confidence based on pass_rate
-  confidence: z.number().min(0).max(1),       // alias of new_confidence for convenience
+  confidence: z.number().min(0).max(1),       // compatibility alias of new_confidence
   status_changed: z.boolean(),
   new_status: SkillStatus,                    // status after validation
-  status: SkillStatus,                        // alias of new_status
+  status: SkillStatus,                        // compatibility alias of new_status
   last_validated_at: z.string().datetime(),
 });
 ```
@@ -890,9 +943,10 @@ const ValidateResponse = z.object({
 **Confidence calculation**: `new_confidence = pass_rate` (simple for now; may incorporate latency and historical factors later).
 
 **Status transitions after validation**:
-- `pass_rate == 0` and no implementation: status stays `unsolved`
-- `pass_rate > 0 && pass_rate < 1.0`: status becomes `partial`
-- `pass_rate == 1.0`: status becomes `verified` (or stays `optimized` if already `optimized`)
+- `current_status == "unsolved"` and `pass_rate == 0`: status stays `unsolved`
+- `fail_count == 0` and `pass_rate == 1.0` and current status is `verified` or `optimized`: status becomes or stays `optimized`
+- `fail_count == 0` and `pass_rate >= 0.85`: status becomes `verified`
+- all other cases: status becomes `partial`
 
 ### Errors
 
@@ -908,7 +962,7 @@ const ValidateResponse = z.object({
 - **DynamoDB write**: Updates `confidence`, `status`, `last_validated_at`, `test_pass_count`, and `test_fail_count` on the Skill record.
 - **Kinesis event**: Emits `validate` event with `skill_id`, `confidence` (new), `latency_ms` (total validation time), `success` (pass_rate == 1.0).
 - **Evolve trigger**: If `new_confidence` < 0.7, asynchronously enqueues `skill_id` for the `/evolve` pipeline to attempt improvement.
-- **Cache invalidation**: Invalidates cached execution results for this `skill_id` (since confidence/status changed).
+- **No server-side execution-cache invalidation in beta**: Public beta does not operate `codevolve-cache`.
 
 ---
 
@@ -963,13 +1017,13 @@ const EmitEventsResponse = z.object({
 
 ## GET /analytics/dashboards/:type
 
-Retrieve pre-aggregated dashboard data from the analytics store.
+Retrieve pre-aggregated dashboard data from the analytics store. These analytics endpoints exist in public beta, but the dashboard/mountain web frontend is not part of the public-beta contract. External beta users should treat these as API surfaces, not a committed hosted UI experience.
 
 ### Path Parameters
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `type` | string | One of: `resolve-performance`, `execution-caching`, `skill-quality`, `evolution-gap`, `agent-behavior` |
+| `type` | string | One of: `intent-performance`, `execution-caching`, `skill-quality`, `evolution-gap`, `agent-behavior` |
 
 ### Query Parameters
 
@@ -995,7 +1049,7 @@ const DashboardResponse = z.object({
 });
 ```
 
-#### `resolve-performance` data
+#### `intent-performance` data
 
 ```typescript
 const ResolvePerformanceData = z.object({
@@ -1154,10 +1208,31 @@ const DiscoveryResponse = z.object({
   version: z.string(),
   description: z.string(),
   base_url: z.string(),
-  docs_url: z.string(),     // https://codevolve.dev/docs
-  openapi_url: z.string(),  // future: https://api.codevolve.dev/v1/openapi.json
+  docs_url: z.string(),     // current public onboarding surface; defaults to the discovery URL unless PUBLIC_DOCS_URL is configured
+  openapi_url: z.string(),  // e.g. https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1/openapi.json
   auth_schemes: z.record(z.string()),
   rate_limits: z.record(z.string()),
+  mcp: z.object({
+    transport: z.literal("stdio"),
+    env: z.object({
+      CODEVOLVE_API_URL: z.string(),
+      CODEVOLVE_API_KEY: z.string(),
+      CODEVOLVE_AGENT_ID: z.string(),
+    }),
+    first_steps: z.array(z.string()).min(1),
+    tools: z.array(z.object({
+      name: z.string(),
+      description: z.string(),
+    })).min(1),
+    resources: z.array(z.object({
+      uri: z.string(),
+      description: z.string(),
+    })).min(1),
+    compatibility_aliases: z.array(z.object({
+      name: z.string(),
+      preferred_replacement: z.string(),
+    })),
+  }),
   endpoints: z.array(z.object({
     method: z.string(),
     path: z.string(),
@@ -1166,6 +1241,14 @@ const DiscoveryResponse = z.object({
   })),
 });
 ```
+
+Discovery reflects the current beta contract:
+
+- `POST /intent` is the primary entry point for routing
+- `POST /execute` records caller-owned local execution telemetry only
+- `POST /validate/:skill_id` records caller-reported feedback counts rather than running tests server-side
+- `mcp` exposes the stdio bootstrap env vars, first-step guidance, primary tools, resource URIs, and the `validate_skill` -> `feedback_skill` compatibility alias
+- no server-managed execution cache is part of the public-beta surface
 
 ### Side Effects
 
@@ -1177,20 +1260,45 @@ None.
 
 | Method | Path | Success | Auth | Emits Event |
 |--------|------|---------|------|-------------|
-| GET | `/` | 200 | No | No |
-| POST | `/skills` | 201 | Yes | No (embedding async) |
-| GET | `/skills/:id` | 200 | Yes | No |
-| GET | `/skills/:id/versions` | 200 | Yes | No |
-| GET | `/skills` | 200 | Yes | No |
-| POST | `/skills/:id/promote-canonical` | 200 | Yes | No |
-| POST | `/skills/:id/archive` | 200 | Yes | No |
-| POST | `/skills/:id/unarchive` | 200 | Yes | No |
-| POST | `/problems` | 201 | Yes | No |
-| GET | `/problems/:id` | 200 | Yes | No |
-| GET | `/problems` | 200 | Yes | No |
-| POST | `/intent` | 200 | Yes | Yes (`resolve`) |
-| POST | `/execute` | 200 | Yes | Yes (`execute`) |
-| POST | `/chains` | 200 | Yes | Yes (`resolve`, `intent` prefixed with `chain:`) |
-| POST | `/validate/:skill_id` | 200 | Yes | Yes (`validate`) |
-| POST | `/events` | 202 | Yes | Yes (passthrough) |
-| GET | `/analytics/dashboards/:type` | 200 | Yes | No |
+| GET | `/` | 200 | `none` | No |
+| POST | `/skills` | 201 | `api_key` | No (embedding async) |
+| GET | `/skills/:id` | 200 | `none` | No |
+| GET | `/skills/:id/versions` | 200 | `none` | No |
+| GET | `/skills` | 200 | `none` | No |
+| POST | `/skills/:id/promote-canonical` | 200 | `api_key` | No |
+| POST | `/skills/:id/archive` | 200 | `none` | No |
+| POST | `/skills/:id/unarchive` | 200 | `none` | No |
+| POST | `/problems` | 201 | `api_key` | No |
+| GET | `/problems/:id` | 200 | `none` | No |
+| GET | `/problems` | 200 | `none` | No |
+| POST | `/intent` | 200 | `none` | Yes (`resolve`) |
+| POST | `/execute` | 200 | `none` | Yes (`execute`) |
+| POST | `/chains` | 200 | `none` | Yes (`resolve`, `intent` prefixed with `chain:`) |
+| POST | `/validate/:skill_id` | 200 | `api_key` | Yes (`validate`) |
+| POST | `/events` | 202 | `none` | Yes (passthrough) |
+| GET | `/analytics/dashboards/:type` | 200 | `none` | No |
+| POST | `/auth/register` | 201 | `none` | No |
+| POST | `/auth/keys` | 201 | `api_key` | No |
+| GET | `/auth/keys` | 200 | `api_key` | No |
+| DELETE | `/auth/keys/:key_id` | 204 | `api_key` | No |
+| POST | `/auth/accounts/:account_id/status` | 200 | `cognito` | No |
+| GET | `/users/me/trusted-mountain` | 200 | `cognito` | No |
+| POST | `/users/me/trusted-mountain` | 200 | `cognito` | No |
+| DELETE | `/users/me/trusted-mountain/:skill_id` | 204 | `cognito` | No |
+| POST | `/skills/:id/unarchive` | `none` |
+| GET | `/problems` | `none` |
+| GET | `/problems/:id` | `none` |
+| POST | `/problems` | `api_key` |
+| POST | `/intent` | `none` |
+| POST | `/chains` | `none` |
+| POST | `/execute` | `none` |
+| POST | `/validate/:skill_id` | `api_key` |
+| GET | `/analytics/dashboards/:type` | `none` |
+| POST | `/auth/register` | `none` |
+| POST | `/auth/keys` | `api_key` |
+| GET | `/auth/keys` | `api_key` |
+| DELETE | `/auth/keys/:key_id` | `api_key` |
+| POST | `/auth/accounts/:account_id/status` | `cognito` |
+| GET | `/users/me/trusted-mountain` | `cognito` |
+| POST | `/users/me/trusted-mountain` | `cognito` |
+| DELETE | `/users/me/trusted-mountain/:skill_id` | `cognito` |

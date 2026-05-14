@@ -215,22 +215,40 @@ describe("listSkills", () => {
 // ---------------------------------------------------------------------------
 
 describe("feedbackSkill", () => {
-  it("sends POST /validate/:skill_id", async () => {
+  it("sends POST /validate/:skill_id with caller-reported feedback counts", async () => {
     mockRequest.mockResolvedValueOnce({ pass_count: 5 });
 
-    await feedbackSkill({ skill_id: SKILL_UUID });
+    await feedbackSkill({
+      skill_id: SKILL_UUID,
+      pass_count: 5,
+      fail_count: 0,
+      total_tests: 5,
+    });
 
-    expect(mockRequest).toHaveBeenCalledWith("POST", `/validate/${SKILL_UUID}`);
+    expect(mockRequest).toHaveBeenCalledWith("POST", `/validate/${SKILL_UUID}`, {
+      pass_count: 5,
+      fail_count: 0,
+      total_tests: 5,
+    });
   });
 });
 
 describe("validateSkill", () => {
-  it("sends POST /validate/:skill_id", async () => {
+  it("sends POST /validate/:skill_id with caller-reported feedback counts", async () => {
     mockRequest.mockResolvedValueOnce({ pass_count: 5 });
 
-    await validateSkill({ skill_id: SKILL_UUID });
+    await validateSkill({
+      skill_id: SKILL_UUID,
+      pass_count: 5,
+      fail_count: 0,
+      total_tests: 5,
+    });
 
-    expect(mockRequest).toHaveBeenCalledWith("POST", `/validate/${SKILL_UUID}`);
+    expect(mockRequest).toHaveBeenCalledWith("POST", `/validate/${SKILL_UUID}`, {
+      pass_count: 5,
+      fail_count: 0,
+      total_tests: 5,
+    });
   });
 });
 

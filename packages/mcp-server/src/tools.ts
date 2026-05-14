@@ -1,6 +1,20 @@
 import { z } from "zod";
 import { client } from "./client.js";
 
+const SUPPORTED_LANGUAGES = [
+  "python",
+  "javascript",
+  "typescript",
+  "go",
+  "rust",
+  "java",
+  "cpp",
+  "c",
+  "shell",
+] as const;
+
+const SUPPORTED_STATUSES = ["unsolved", "partial", "verified", "optimized"] as const;
+
 // ---------------------------------------------------------------------------
 // Shared helper — converts API call result to a text content block.
 // HTTP errors are returned as isError text blocks (not thrown) so agents
@@ -42,7 +56,7 @@ async function callApi(
 export const resolveSkillSchema = z.object({
   intent: z.string().min(1),
   tags: z.array(z.string()).optional(),
-  language: z.string().optional(),
+  language: z.enum(SUPPORTED_LANGUAGES).optional(),
 });
 
 export type ResolveSkillInput = z.infer<typeof resolveSkillSchema>;
@@ -101,9 +115,9 @@ export async function getSkill(raw: unknown): Promise<ToolResult> {
 
 export const listSkillsSchema = z.object({
   tag: z.string().optional(),
-  language: z.string().optional(),
+  language: z.enum(SUPPORTED_LANGUAGES).optional(),
   domain: z.string().optional(),
-  status: z.string().optional(),
+  status: z.enum(SUPPORTED_STATUSES).optional(),
   is_canonical: z.boolean().optional(),
   limit: z.number().int().min(1).max(100).optional(),
   next_token: z.string().optional(),
@@ -130,12 +144,19 @@ export async function listSkills(raw: unknown): Promise<ToolResult> {
 
 export const feedbackSkillSchema = z.object({
   skill_id: z.string().uuid(),
+  pass_count: z.number().int().min(0),
+  fail_count: z.number().int().min(0),
+  total_tests: z.number().int().min(1),
 });
 
 export async function feedbackSkill(raw: unknown): Promise<ToolResult> {
   const input = feedbackSkillSchema.parse(raw);
   return callApi(() =>
-    client.request("POST", `/validate/${input.skill_id}`)
+    client.request("POST", `/validate/${input.skill_id}`, {
+      pass_count: input.pass_count,
+      fail_count: input.fail_count,
+      total_tests: input.total_tests,
+    })
   );
 }
 
@@ -165,7 +186,7 @@ export const submitSkillSchema = z.object({
   problem_id: z.string().uuid(),
   name: z.string().min(1),
   description: z.string().min(1),
-  language: z.string().min(1),
+  language: z.enum(SUPPORTED_LANGUAGES),
   domain: z.array(z.string()).min(1),
   inputs: z.array(ioFieldSchema).min(1),
   outputs: z.array(ioFieldSchema).min(1),
@@ -173,7 +194,7 @@ export const submitSkillSchema = z.object({
   tests: z.array(testCaseSchema).min(2),
   implementation: z.string().min(1),
   tags: z.array(z.string()).optional(),
-  status: z.string().optional(),
+  status: z.enum(SUPPORTED_STATUSES).optional(),
 });
 
 export async function submitSkill(raw: unknown): Promise<ToolResult> {
@@ -311,7 +332,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "feedback_skill",
     description:
-      "Report local test feedback for a codeVolve skill and update its confidence score.",
+      "Report caller-run local test feedback for a codeVolve skill and update its confidence score through the /validate beta contract.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -320,15 +341,30 @@ export const TOOL_DEFINITIONS = [
           format: "uuid",
           description: "UUID of the skill to send feedback for",
         },
+        pass_count: {
+          type: "integer",
+          minimum: 0,
+          description: "Number of local tests that passed",
+        },
+        fail_count: {
+          type: "integer",
+          minimum: 0,
+          description: "Number of local tests that failed",
+        },
+        total_tests: {
+          type: "integer",
+          minimum: 1,
+          description: "Total number of local tests run",
+        },
       },
-      required: ["skill_id"],
+      required: ["skill_id", "pass_count", "fail_count", "total_tests"],
     },
     handler: feedbackSkill,
   },
   {
     name: "validate_skill",
     description:
-      "Legacy alias for feedback reporting. Submit local test feedback for a codeVolve skill.",
+      "Legacy alias for feedback_skill. Submit caller-run local test feedback for a codeVolve skill.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -337,8 +373,23 @@ export const TOOL_DEFINITIONS = [
           format: "uuid",
           description: "UUID of the skill to validate",
         },
+        pass_count: {
+          type: "integer",
+          minimum: 0,
+          description: "Number of local tests that passed",
+        },
+        fail_count: {
+          type: "integer",
+          minimum: 0,
+          description: "Number of local tests that failed",
+        },
+        total_tests: {
+          type: "integer",
+          minimum: 1,
+          description: "Total number of local tests run",
+        },
       },
-      required: ["skill_id"],
+      required: ["skill_id", "pass_count", "fail_count", "total_tests"],
     },
     handler: validateSkill,
   },

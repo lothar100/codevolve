@@ -9,6 +9,13 @@ import { CodevolveClient, createClientFromEnv } from "../../../src/mcp/client.js
 // ---------------------------------------------------------------------------
 
 describe("CodevolveClient", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
   it("constructs with required options", () => {
     const client = new CodevolveClient({
       baseUrl: "https://example.com",
@@ -26,6 +33,31 @@ describe("CodevolveClient", () => {
       timeoutMs: 5000,
     });
     expect(client).toBeDefined();
+  });
+
+  it("sends X-Api-Key instead of Authorization when apiKey is configured", async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ ok: true }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const client = new CodevolveClient({
+      baseUrl: "https://example.com",
+      apiKey: "cvk_test",
+      agentId: "test-agent",
+      timeoutMs: 5000,
+    });
+
+    await client.request("GET", "/skills");
+
+    const options = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(options.headers).toMatchObject({
+      "Content-Type": "application/json",
+      "X-Agent-Id": "test-agent",
+      "X-Api-Key": "cvk_test",
+    });
+    expect((options.headers as Record<string, string>)["Authorization"]).toBeUndefined();
   });
 });
 
