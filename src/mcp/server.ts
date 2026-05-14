@@ -46,7 +46,7 @@ export function createServer(client: CodevolveClient): McpServer {
     "resolve_skill",
     {
       description:
-        "Legacy alias for intent routing. Route an intent string to codeVolve's /intent API, which returns an adaptive number of top matches based on confidence and any caller-supplied cap.",
+        "Compatibility alias for intent routing. Route a natural-language intent to codeVolve's /intent API and return the best matching skills for the caller to inspect and run locally.",
       inputSchema: {
         intent: z.string().min(1).describe("Natural language description of the problem to solve"),
         tags: z.array(z.string()).optional().describe("Optional list of tags to filter results"),
@@ -61,7 +61,7 @@ export function createServer(client: CodevolveClient): McpServer {
     "chain_skills",
     {
       description:
-        "Build an ordered local execution plan from multiple codeVolve skill intents. The API returns a chain plan; the caller still fetches implementations and runs them locally.",
+        "Build an ordered local execution plan from multiple codeVolve skill intents. The API returns routing guidance only; the caller still fetches implementations and executes each step locally.",
       inputSchema: {
         steps: z
           .array(
@@ -84,7 +84,7 @@ export function createServer(client: CodevolveClient): McpServer {
     "get_skill",
     {
       description:
-        "Retrieve full details of a codeVolve skill by its UUID, including implementation, tests, examples, and confidence metrics.",
+        "Retrieve full details of a codeVolve skill by its UUID, including the implementation, tests, examples, and caller-reported validation metrics needed for local execution.",
       inputSchema: {
         skill_id: z.string().uuid().describe("UUID of the skill to retrieve"),
         version: z.number().int().min(1).optional().describe("Optional specific version number to retrieve"),
@@ -132,7 +132,7 @@ export function createServer(client: CodevolveClient): McpServer {
     "feedback_skill",
     {
       description:
-        "Report local test feedback for a codeVolve skill and update its confidence score. Run the skill's tests locally, then call this with pass/fail counts.",
+        "Report caller-run local test feedback for a codeVolve skill and update its confidence score. The caller executes the skill locally, then reports aggregate pass/fail counts through /validate.",
       inputSchema: {
         skill_id: z.string().uuid().describe("UUID of the skill to send feedback for"),
         pass_count: z.number().int().min(0).describe("Number of tests that passed"),
@@ -148,7 +148,7 @@ export function createServer(client: CodevolveClient): McpServer {
     "validate_skill",
     {
       description:
-        "Legacy alias for feedback reporting. Report local test results for a codeVolve skill and update its confidence score.",
+        "Compatibility alias for feedback_skill. Report caller-run local test results for a codeVolve skill through the current /validate feedback contract.",
       inputSchema: {
         skill_id: z.string().uuid().describe("UUID of the skill to validate"),
         pass_count: z.number().int().min(0).describe("Number of tests that passed"),
@@ -221,7 +221,7 @@ export function createServer(client: CodevolveClient): McpServer {
     new ResourceTemplate("codevolve://skills/{skill_id}", { list: undefined }),
     {
       description:
-        "Full details of a codeVolve skill including implementation, tests, examples, and validation metrics.",
+        "Full details of a codeVolve skill including implementation, tests, examples, and caller-reported validation metrics.",
       mimeType: "application/json",
     },
     async (uri: URL, _variables: Variables) => {
@@ -254,7 +254,7 @@ export function createServer(client: CodevolveClient): McpServer {
     "codevolve://skills",
     {
       description:
-        "Paginated list of codeVolve skills. Supports query parameters: tag, language, domain, status, is_canonical, limit, next_token.",
+        "Paginated list of codeVolve skills for intent routing and local execution. Supports query parameters: tag, language, domain, status, is_canonical, limit, next_token.",
       mimeType: "application/json",
     },
     async (uri: URL) => {

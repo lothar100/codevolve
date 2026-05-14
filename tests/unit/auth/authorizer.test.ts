@@ -173,6 +173,7 @@ describe("verifyToken — claim validation", () => {
     const claims = {
       sub: "user-123",
       iss: "https://cognito-idp.us-west-2.amazonaws.com/wrong-pool",
+      token_use: "access",
       exp: Math.floor(Date.now() / 1000) + 3600,
       iat: Math.floor(Date.now() / 1000),
     };
@@ -184,6 +185,7 @@ describe("verifyToken — claim validation", () => {
     const claims = {
       sub: "user-123",
       iss: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
+      token_use: "access",
       exp: Math.floor(Date.now() / 1000) + 3600,
       iat: Math.floor(Date.now() / 1000),
     };
@@ -195,6 +197,7 @@ describe("verifyToken — claim validation", () => {
     const claims = {
       sub: "user-123",
       iss: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
+      token_use: "access",
       exp: Math.floor(Date.now() / 1000) + 3600,
       iat: Math.floor(Date.now() / 1000),
     };
@@ -208,11 +211,24 @@ describe("verifyToken — claim validation", () => {
     const claims = {
       sub: "user-123",
       iss: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
+      token_use: "access",
       exp: Math.floor(Date.now() / 1000) + 3600,
       iat: Math.floor(Date.now() / 1000),
     };
     const token = buildFakeJwt({ kid: "test-kid", alg: "RS256" }, claims);
     await expect(verifyToken(token)).rejects.toThrow("Invalid JWT signature");
+  });
+
+  it("rejects a token with token_use=id", async () => {
+    const claims = {
+      sub: "user-123",
+      iss: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
+      token_use: "id",
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      iat: Math.floor(Date.now() / 1000),
+    };
+    const token = buildFakeJwt({ kid: "test-kid", alg: "RS256" }, claims);
+    await expect(verifyToken(token)).rejects.toThrow("Invalid token_use");
   });
 
   it("accepts a valid token and returns claims", async () => {
@@ -221,6 +237,7 @@ describe("verifyToken — claim validation", () => {
       sub: expectedSub,
       email: "user@example.com",
       iss: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
+      token_use: "access",
       exp: Math.floor(Date.now() / 1000) + 3600,
       iat: Math.floor(Date.now() / 1000),
     };
@@ -251,6 +268,7 @@ describe("handler — IAM policy output", () => {
       sub: userId,
       email: "xyz@example.com",
       iss: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
+      token_use: "access",
       exp: Math.floor(Date.now() / 1000) + 3600,
       iat: Math.floor(Date.now() / 1000),
     };
@@ -275,6 +293,7 @@ describe("handler — IAM policy output", () => {
     const claims = {
       sub: "user-123",
       iss: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
+      token_use: "access",
       exp: Math.floor(Date.now() / 1000) + 3600,
       iat: Math.floor(Date.now() / 1000),
     };

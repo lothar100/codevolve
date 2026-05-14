@@ -22,6 +22,17 @@
 
 ## 1. Overview
 
+This document started as the Phase 4 design for validation, evolve, and canonical promotion. For the public beta, treat the notes in this section and in Section 2 as the authoritative contract when older design details below disagree.
+
+### Beta-facing reality
+
+- Intent routing is exposed through `POST /intent`. In MCP, `resolve_skill` is the compatibility tool name for that route.
+- Local execution is always caller-owned. Callers fetch skill implementations, run them in their own environment, and decide how to compare outputs.
+- Validation is feedback-style. The canonical MCP tool is `feedback_skill`, which posts aggregate local test counts to `POST /validate/:skill_id`. `validate_skill` remains as a compatibility alias for older clients.
+- `chain_skills` returns an ordered plan only. Neither MCP nor the registry executes the chain remotely.
+- `/validate` accepts the canonical request fields `version?`, `pass_count`, `fail_count`, and `total_tests`. The handler still normalizes deprecated aliases `test_pass_count`, `test_fail_count`, and `test_total` for compatibility.
+- `/validate` returns canonical fields plus compatibility aliases: `new_confidence` with `confidence`, and `new_status` with `status`.
+
 Phase 4 closes the feedback loop between execution and quality. The three components designed here are:
 
 - **`/validate`** — accepts caller-reported test results (pass/fail counts and per-test detail), computes a new confidence score, and writes it back to DynamoDB. The caller runs the skill locally in their own environment and POSTs the results. The registry never executes skill implementations server-side.
@@ -36,6 +47,18 @@ All three components are stateless Lambdas. State lives in DynamoDB only.
 - `/evolve` calls the Claude API (`claude-sonnet-4-6`) only from within the async SQS consumer Lambda. No LLM calls occur in the synchronous API path.
 - Canonical promotion uses a DynamoDB `TransactWriteItems` to guarantee atomicity of demote-old + promote-new.
 
+### MCP beta mapping
+
+The current MCP surface maps to this design as follows:
+
+| MCP tool/resource | Beta meaning |
+|-------------------|--------------|
+| `resolve_skill` | Compatibility name for intent routing via `POST /intent` |
+| `chain_skills` | Build a local execution plan only; caller still fetches and runs each skill locally |
+| `get_skill` and `codevolve://skills/{skill_id}` | Fetch implementation, tests, and validation metadata for local execution |
+| `feedback_skill` | Canonical feedback-style validation tool |
+| `validate_skill` | Compatibility alias for `feedback_skill` while older clients migrate |
+
 ---
 
 ## 2. POST /validate/:skill_id
@@ -46,14 +69,14 @@ All three components are stateless Lambdas. State lives in DynamoDB only.
 // Path parameter
 skill_id: string (UUID)
 
-// Request body — caller reports results from their local test run
+// Request body — caller reports aggregate results from their local test run
 const ValidateRequest = z.object({
   version: z.number().int().positive().optional(),
   // When omitted: query codevolve-skills for latest version_number
   // (ScanIndexForward: false, Limit: 1 on skill_id PK)
 
-  total_tests: z.number().int().nonnegative(),
-  // Total number of test cases the caller executed locally.
+  total_tests: z.number().int().positive(),
+  // Total number of test cases the caller executed locally. Must be > 0.
 
   pass_count: z.number().int().nonnegative(),
   // Number of test cases that produced the expected output.
@@ -61,24 +84,19 @@ const ValidateRequest = z.object({
   fail_count: z.number().int().nonnegative(),
   // Number of test cases that produced unexpected output or errored.
   // Invariant: pass_count + fail_count == total_tests
-
-  results: z.array(TestResult).optional(),
-  // Per-test detail, if the caller wishes to supply it.
-  // Does NOT need to match the skill's stored tests array exactly —
-  // callers report what they ran. Stored for observability only.
-
-  latency_p50_ms: z.number().nonnegative().optional(),
-  latency_p95_ms: z.number().nonnegative().optional(),
-  // Caller-reported latency percentiles from their local run.
 });
 ```
 
+Compatibility note: the beta handler also accepts deprecated aliases `test_pass_count`, `test_fail_count`, and `test_total`. Those aliases are normalized server-side for compatibility, but they are not the canonical documented contract.
+
 The caller is expected to:
-1. Fetch the skill implementation via `GET /skills/:id` or `/resolve`.
+1. Fetch the skill implementation via `GET /skills/:id` or `/intent`.
 2. Run the skill's test suite locally against the fetched implementation.
-3. POST the aggregated results (pass/fail counts, optional per-test detail) to `/validate/:skill_id`.
+3. POST the aggregated pass/fail counts to `/validate/:skill_id`.
 
 The registry does not run, schedule, or coordinate test execution. All execution is the caller's responsibility.
+
+MCP follows the same model: `feedback_skill` is the canonical beta tool for this route, and `validate_skill` is the legacy alias with the same payload.
 
 ### 2.2 Execution Flow
 
@@ -88,56 +106,44 @@ POST /validate/:skill_id
     ├── 1. Parse and validate path param (skill_id UUID) and request body
     ├── 2. Fetch skill from codevolve-skills
     │       ├── If not found: return 404 NOT_FOUND
-    │       └── If status == "archived": return 422 PRECONDITION_FAILED (code: SKILL_ARCHIVED)
+    │       └── If status == "archived": return 409 SKILL_ARCHIVED
     ├── 3. Validate counts
     │       └── If pass_count + fail_count != total_tests: return 400 VALIDATION_ERROR
-    │           If total_tests == 0: return 400 VALIDATION_ERROR (code: NO_TESTS_DEFINED)
+    │           If total_tests == 0: return 400 VALIDATION_ERROR
     ├── 4. Compute new confidence score
     │       └── new_confidence = pass_count / total_tests  (see §5)
     ├── 5. Determine new status
     │       └── See §6 — status transition rules
     ├── 6. DynamoDB UpdateItem on codevolve-skills
     │       └── See §2.4 for exact update expression
-    │           Writes: confidence, status, last_validated_at, test_pass_count, test_fail_count,
-    │                   latency_p50_ms (if supplied), latency_p95_ms (if supplied), updated_at
-    ├── 7. Cache invalidation
-    │       └── If confidence or status changed: issue async DeleteItem for all codevolve-cache entries
-    │           for this skill_id (same pattern as archive handler — batch scan then delete)
-    ├── 8. Kinesis event emission
+    │           Writes: confidence, status, last_validated_at, test_pass_count, test_fail_count
+    ├── 7. Kinesis event emission
     │       └── See §2.5 for event shape
-    ├── 9. Evolve trigger
+    ├── 8. Evolve trigger
     │       └── If new_confidence < 0.7: enqueue to codevolve-gap-queue.fifo (async, fire-and-forget)
     │           Message body: { intent: null, skill_id, reason: "low_confidence",
     │                           resolve_confidence: new_confidence, timestamp, original_event_id: null }
-    └── 10. Return ValidateResponse (200 OK)
+    └── 9. Return ValidateResponse (200 OK)
 ```
 
 ### 2.3 Response Contract
 
 Full contract already in `docs/api.md` §POST /validate/:skill_id. Repeated here for completeness:
 
-```typescript
-const TestResult = z.object({
-  test_index: z.number().int().nonnegative(),
-  input: z.record(z.unknown()),
-  expected: z.record(z.unknown()),
-  actual: z.record(z.unknown()).nullable(),
-  passed: z.boolean(),
-  latency_ms: z.number().nonnegative(),
-  error: z.string().nullable(),
-});
-
 const ValidateResponse = z.object({
   skill_id: z.string().uuid(),
+  version: z.number().int().positive(),
   total_tests: z.number().int().nonnegative(),
-  passed: z.number().int().nonnegative(),
-  failed: z.number().int().nonnegative(),
+  pass_count: z.number().int().nonnegative(),
+  fail_count: z.number().int().nonnegative(),
   pass_rate: z.number().min(0).max(1),
   previous_confidence: z.number().min(0).max(1),
   new_confidence: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),  // compatibility alias
   status_changed: z.boolean(),
   new_status: SkillStatus,
-  results: z.array(TestResult),
+  status: SkillStatus,                   // compatibility alias
+  last_validated_at: z.string().datetime(),
 });
 ```
 
@@ -151,13 +157,9 @@ UpdateExpression:
       #status = :new_status,
       last_validated_at = :now,
       test_pass_count = :pass_count,
-      test_fail_count = :fail_count,
-      latency_p50_ms = :p50,
-      latency_p95_ms = :p95,
-      updated_at = :now
+      test_fail_count = :fail_count
 REMOVE optimization_flagged
-  (clear the flag if latency_p95 <= 5000 — Ada: conditionally include the REMOVE clause
-   only when new_latency_p95 <= 5000. If new_latency_p95 > 5000, omit the REMOVE clause.)
+  (clear the flag only when the existing latency-derived optimization flag no longer applies)
 ```
 
 New attributes added to the skill record by this update:
@@ -199,15 +201,17 @@ The `/validate` Lambda handler has no execution timeout concern beyond normal La
 | HTTP | Code | Condition |
 |------|------|-----------|
 | 400 | `VALIDATION_ERROR` | `skill_id` not a valid UUID; `pass_count + fail_count != total_tests`; request body malformed |
-| 400 | `NO_TESTS_DEFINED` | `total_tests` is 0 |
+| 400 | `VALIDATION_ERROR` | `total_tests` is 0 |
 | 404 | `NOT_FOUND` | Skill does not exist |
-| 422 | `PRECONDITION_FAILED` | Skill is archived (`status == "archived"`) |
+| 409 | `SKILL_ARCHIVED` | Skill is archived (`status == "archived"`) |
 
 ---
 
 ## 3. POST /evolve (SQS Consumer)
 
 ### 3.1 Architecture
+
+Beta note: the current beta contract in MCP is centered on intent routing, local execution, and feedback-style validation. This evolve section remains design/reference material and is not part of the MCP beta surface today.
 
 The `/evolve` SQS consumer is a Lambda function triggered by `codevolve-gap-queue.fifo` (the GapQueue defined in ARCH-07). It is NOT an API Gateway endpoint for Phase 4 — the API Gateway endpoint (`POST /evolve`) from Phase 2 enqueues to SQS (fire-and-forget). This Lambda is the async worker that processes those messages.
 
@@ -230,12 +234,12 @@ SQS GapQueue (codevolve-gap-queue.fifo)
 ### 3.2 SQS Message Shape
 
 ```typescript
-// Produced by: /resolve handler (when resolve_confidence < 0.7)
+// Produced by: /intent handler (when resolve_confidence < 0.7)
 //              /validate handler (when new_confidence < 0.7)
 //              Decision Engine (gap detection rule)
 const GapQueueMessage = z.object({
   evolve_id: z.string().uuid(),            // generated by the enqueuer; stored in evolve-jobs
-  intent: z.string().max(1024).nullable(), // natural language intent (from /resolve gap)
+intent: z.string().max(1024).nullable(), // natural language intent (from /intent gap)
   skill_id: z.string().uuid().nullable(),  // existing skill to improve (from /validate gap)
   language: SupportedLanguage,
   domain: z.array(z.string()).min(1),
@@ -370,24 +374,26 @@ The `createSkill` function handles DynamoDB PutItem, Bedrock embedding generatio
 
 ### 3.8 Auto-Triggering /validate
 
-After the skill is written to DynamoDB, trigger validation by invoking the `/validate` Lambda directly (not via HTTP):
+After the skill is written to DynamoDB, trigger validation by submitting caller-reported results to the `/validate` route. The evolve pipeline already has the generated tests and their outcomes, so it should use the same public validation contract as any other caller:
 
 ```typescript
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
-
 const validatePayload = {
-  pathParameters: { skill_id: newSkill.skill_id },
-  body: JSON.stringify({ timeout_ms: 60000 }),
+  pass_count: generatedResults.passCount,
+  fail_count: generatedResults.failCount,
+  total_tests: generatedResults.passCount + generatedResults.failCount,
 };
 
-await lambdaClient.send(new InvokeCommand({
-  FunctionName: process.env.VALIDATE_LAMBDA_NAME,
-  InvocationType: 'Event',  // async — fire-and-forget
-  Payload: Buffer.from(JSON.stringify(validatePayload), 'utf8'),
-}));
+await fetch(`${CODEVOLVE_API_URL}/validate/${newSkill.skill_id}`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Api-Key": CODEVOLVE_API_KEY,
+  },
+  body: JSON.stringify(validatePayload),
+});
 ```
 
-Use `InvocationType: 'Event'` (async). The evolve handler does not wait for validation to complete — it records the job as `"completed"` and lets validation update the confidence score independently.
+The evolve handler can still treat this as fire-and-forget from a product perspective, but it no longer needs a dedicated Lambda-to-Lambda validation path.
 
 ### 3.9 Job Status Tracking
 
@@ -526,9 +532,9 @@ const PromoteCanonicalResponse = z.object({
 
 Return HTTP 200 with the updated skill record (re-fetch after transaction to return current state).
 
-### 4.5 Cache Invalidation
+### 4.5 Cache Posture in Beta
 
-After a successful promotion, invalidate resolve cache for this `problem_id`. This is done by querying `codevolve-cache` for all entries with `skill_id` matching the demoted skill (if any) and deleting them. The new canonical has no cache entries yet (it was not previously routed to), so no invalidation is needed for it.
+Public beta does not operate a server-managed execution cache or read-through cache contract. Canonical promotion does not promise cache invalidation behavior in beta.
 
 ---
 
@@ -551,7 +557,7 @@ Where:
 - `pass_count` is the count of tests where `deepEqual(actual, expected) === true`.
 - `total_tests` includes `additional_tests` passed in the request (they count toward confidence).
 - `additional_tests` do NOT persist to the skill record. Confidence is computed from the combined set, but only the built-in test results are permanently meaningful.
-- If `total_tests === 0`, `new_confidence = 0.0` (this case is blocked by the 400 NO_TESTS_DEFINED guard in §2.2 step 3, but the formula must handle it defensively).
+- If `total_tests === 0`, `new_confidence = 0.0` (this case is blocked by the 400 `VALIDATION_ERROR` guard in §2.2 step 3, but the formula must handle it defensively).
 
 **Rationale:** A simple pass rate ratio is chosen over weighted formulas (e.g., latency-weighted, recency-weighted) for Phase 4 because: (1) it is transparent and auditable, (2) it maps directly to the canonical gate threshold (0.85 = at least 85% of tests passing), and (3) it avoids premature complexity before we have execution history to calibrate weights against. See ADR-009.
 
@@ -565,12 +571,11 @@ The confidence update does not automatically raise or lower status (e.g., `verif
 
 | Condition | New status | Notes |
 |-----------|-----------|-------|
-| `pass_rate == 0.0` AND `implementation` is empty string | `unsolved` | No implementation and all tests fail |
-| `pass_rate == 0.0` AND `implementation` is non-empty | `partial` | Has implementation but nothing passes |
-| `pass_rate > 0.0 AND pass_rate < 1.0` | `partial` | Some tests pass |
-| `pass_rate == 1.0` AND current status is NOT `optimized` | `verified` | All tests pass |
-| `pass_rate == 1.0` AND current status is `optimized` | `optimized` | Stay at optimized — do not downgrade |
-| Skill is `archived` | — | 422 PRECONDITION_FAILED before reaching this logic |
+| `current_status == "unsolved"` AND `pass_rate == 0.0` | `unsolved` | Still unsolved |
+| `fail_count == 0` AND `pass_rate == 1.0` AND current status is `verified` or `optimized` | `optimized` | Preserve optimized status once already reached |
+| `fail_count == 0` AND `pass_rate >= 0.85` | `verified` | Validation clears the verified threshold |
+| All other cases | `partial` | Partial progress or regression |
+| Skill is `archived` | — | 409 SKILL_ARCHIVED before reaching this logic |
 
 **Implementation note:** `status_changed = (new_status !== previous_status)`. Include this in the response.
 
@@ -624,7 +629,7 @@ All new CDK resources are added to `infra/codevolve-stack.ts`.
 | Resource | Type | Config |
 |----------|------|--------|
 | `ValidateFn` | Lambda (NODEJS_22_X) | 256 MB, 5 min timeout, entry: `src/validation/handler.ts` |
-| IAM grants | — | DynamoDB GetItem+UpdateItem on `codevolve-skills` (PK/SK), DynamoDB DeleteItem+Query on `codevolve-cache`, Kinesis PutRecord, SQS SendMessage on `codevolve-gap-queue.fifo` |
+| IAM grants | — | DynamoDB GetItem+UpdateItem on `codevolve-skills` (PK/SK), Kinesis PutRecord, SQS SendMessage on `codevolve-gap-queue.fifo` |
 | Env vars | — | `SKILLS_TABLE`, `CACHE_TABLE`, `KINESIS_STREAM_NAME`, `GAP_QUEUE_URL` |
 | API Gateway route | — | `POST /validate/{skill_id}` → `ValidateFn` |
 
@@ -637,8 +642,8 @@ All new CDK resources are added to `infra/codevolve-stack.ts`.
 | `EvolveDlq` | SQS FIFO Queue | `codevolve-evolve-dlq.fifo`, 14-day retention |
 | SQS event source | — | batchSize: 1 (FIFO), maxConcurrency: 5, onFailure: `EvolveDlq`, reportBatchItemFailures: true |
 | `EvolveJobsTable` | DynamoDB | `codevolve-evolve-jobs`, PK: `evolve_id` (S), on-demand, TTL: `ttl`, GSI: `GSI-status-created` |
-| IAM grants | — | DynamoDB PutItem+UpdateItem on `codevolve-evolve-jobs`, DynamoDB Read on `codevolve-skills` (GSI query), DynamoDB PutItem on `codevolve-skills` (createSkill), Secrets Manager GetSecretValue on `codevolve/anthropic-api-key`, `lambda:InvokeFunction` on `ValidateFn`, Kinesis PutRecord, SQS ReceiveMessage+DeleteMessage on `EvolveGapQueue` |
-| Env vars | — | `ANTHROPIC_SECRET_ARN`, `VALIDATE_LAMBDA_NAME`, `SKILLS_TABLE`, `PROBLEMS_TABLE`, `EVOLVE_JOBS_TABLE`, `KINESIS_STREAM_NAME` |
+| IAM grants | — | DynamoDB PutItem+UpdateItem on `codevolve-evolve-jobs`, DynamoDB Read on `codevolve-skills` (GSI query), DynamoDB PutItem on `codevolve-skills` (createSkill), Secrets Manager GetSecretValue on `codevolve/anthropic-api-key`, Kinesis PutRecord, SQS ReceiveMessage+DeleteMessage on `EvolveGapQueue` |
+| Env vars | — | `ANTHROPIC_SECRET_ARN`, `CODEVOLVE_API_URL`, `CODEVOLVE_API_KEY`, `SKILLS_TABLE`, `PROBLEMS_TABLE`, `EVOLVE_JOBS_TABLE`, `KINESIS_STREAM_NAME` |
 
 **Note on batchSize: 1 for FIFO:** SQS FIFO queues with Lambda event sources process one message at a time per message group. batchSize: 1 simplifies error handling — each Lambda invocation handles exactly one evolve job, and a failure does not block other message groups.
 
@@ -649,7 +654,7 @@ All new CDK resources are added to `infra/codevolve-stack.ts`.
 | Resource | Type | Config |
 |----------|------|--------|
 | `PromoteCanonicalFn` | Lambda (NODEJS_22_X) | 256 MB, 30s timeout, entry: `src/registry/promoteCanonical.ts` |
-| IAM grants | — | DynamoDB TransactWriteItems on `codevolve-skills` + `codevolve-problems`, DynamoDB Query on `GSI-canonical` of `codevolve-skills`, DynamoDB DeleteItem+Query on `codevolve-cache` |
+| IAM grants | — | DynamoDB TransactWriteItems on `codevolve-skills` + `codevolve-problems`, DynamoDB Query on `GSI-canonical` of `codevolve-skills` |
 | Env vars | — | `SKILLS_TABLE`, `PROBLEMS_TABLE`, `CACHE_TABLE` |
 | API Gateway route | — | `POST /skills/{id}/promote-canonical` → `PromoteCanonicalFn` (update existing stub route) |
 
@@ -721,7 +726,7 @@ All new CDK resources are added to `infra/codevolve-stack.ts`.
 5. Confidence calculation (`pass_count / total_tests`).
 6. Status transition logic per §6.
 7. DynamoDB UpdateItem per §2.4 (including conditional REMOVE of `optimization_flagged`).
-8. Cache invalidation (scan `codevolve-cache` by `skill_id`, batch delete).
+8. No server-side cache invalidation in beta.
 9. Kinesis event emission per §2.5.
 10. Evolve trigger if `new_confidence < 0.7`.
 11. Unit tests: mock DynamoDB. Cover all error paths (total_tests=0, count mismatch, archived, not found). Cover status transition logic. Cover confidence = 0, confidence = 1.0, confidence = partial.
@@ -742,8 +747,8 @@ All new CDK resources are added to `infra/codevolve-stack.ts`.
 **What to build:** Integration tests that POST to the live `/validate` endpoint:
 1. Validate a skill with all passing tests → assert `pass_rate == 1.0`, `new_confidence == 1.0`, status `verified`.
 2. Validate a skill with mixed pass/fail tests → assert `pass_rate` is correct ratio, status `partial`.
-3. Validate a skill with no tests → assert 400 NO_TESTS_DEFINED.
-4. Validate an archived skill → assert 422 PRECONDITION_FAILED.
+3. Validate a skill with no tests → assert 400 VALIDATION_ERROR.
+4. Validate an archived skill → assert 409 SKILL_ARCHIVED.
 5. Validate with `additional_tests` → assert they are included in total_tests count.
 
 ---

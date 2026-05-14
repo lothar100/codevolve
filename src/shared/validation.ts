@@ -35,6 +35,7 @@ export const EventTypeSchema = z.enum([
 
 export const DashboardTypeSchema = z.enum([
   "resolve-performance",
+  "intent-performance",
   "execution-caching",
   "skill-quality",
   "evolution-gap",
@@ -51,6 +52,7 @@ export const SupportedLanguageSchema = z.enum([
   "java",
   "cpp",
   "c",
+  "shell",
 ]);
 
 // ---------------------------------------------------------------------------

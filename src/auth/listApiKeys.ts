@@ -11,7 +11,7 @@
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { docClient, API_KEYS_TABLE } from "./shared.js";
+import { deriveAuthContext, docClient, API_KEYS_TABLE } from "./shared.js";
 import { success, error } from "../shared/response.js";
 
 // ---------------------------------------------------------------------------
@@ -47,14 +47,9 @@ export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   try {
-    // Derive owner_id from authorizer context
-    const ownerIdFromApiKey =
-      event.requestContext?.authorizer?.["owner_id"] as string | undefined;
-    const ownerIdFromCognito =
-      event.requestContext?.authorizer?.claims?.["sub"] as string | undefined;
-    const ownerId = ownerIdFromApiKey ?? ownerIdFromCognito;
+    const authContext = deriveAuthContext(event);
 
-    if (!ownerId) {
+    if (!authContext) {
       return error(401, "UNAUTHORIZED", "Missing or invalid authorization");
     }
 
@@ -63,7 +58,7 @@ export const handler = async (
         TableName: API_KEYS_TABLE,
         IndexName: "gsi-owner",
         KeyConditionExpression: "owner_id = :owner",
-        ExpressionAttributeValues: { ":owner": ownerId },
+        ExpressionAttributeValues: { ":owner": authContext.accountId },
       }),
     );
 

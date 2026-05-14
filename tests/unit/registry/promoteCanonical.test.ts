@@ -144,7 +144,7 @@ function setupSuccessWithDemotion() {
 
 describe("POST /skills/:id/promote-canonical", () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    mockSend.mockReset();
   });
 
   // -------------------------------------------------------------------------

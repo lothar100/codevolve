@@ -200,6 +200,10 @@ export async function verifyToken(token: string): Promise<JwtClaims> {
     throw new Error(`Invalid issuer: ${claims.iss}`);
   }
 
+  if (claims.token_use !== "access") {
+    throw new Error(`Invalid token_use: ${String(claims.token_use ?? "")}`);
+  }
+
   // Find matching key
   const keys = await getJwksKeys();
   const matchingKey = keys.find((k) => k.kid === header.kid);

@@ -4,6 +4,8 @@
 **Commit reviewed:** 50b61fa
 **Previous review:** REVIEW-12-IMPL15.md (Rejected)
 
+Historical note: this approval reflects the re-implementation at commit `50b61fa`, which still contained the older MCP tool surface documented in the review. Later cleanup removed `execute_skill` from the canonical package surface and tightened the intent-routing/local-execution story, so the tool inventory below should be read in that commit-local context.
+
 ---
 
 ### Verdict: APPROVED WITH NOTES

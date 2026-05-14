@@ -27,7 +27,7 @@ export type PromptDefinition = {
 const generateSkillPrompt: PromptDefinition = {
   name: "generate_skill",
   description:
-    "Generate a new production-quality codeVolve skill from a problem description. The agent will write the implementation, test cases, and submit it to the registry.",
+    "Generate a new production-quality codeVolve skill from a problem description, then report local validation feedback through the MCP beta contract.",
   arguments: [
     {
       name: "problem_description",
@@ -53,7 +53,7 @@ const generateSkillPrompt: PromptDefinition = {
   ],
   buildMessages(args) {
     const domain = args["domain"] ?? "general";
-    const text = `You are implementing a verified, production-quality algorithmic skill for the codeVolve registry.
+    const text = `You are implementing a production-quality algorithmic skill for the codeVolve registry beta.
 
 Problem:
 ${args["problem_description"]}
@@ -70,9 +70,11 @@ Your task:
 3. Define the inputs array (name + type for each parameter).
 4. Define the outputs array (name + type for each return value).
 5. Write a clear description of the algorithm and its time/space complexity.
+6. Treat codeVolve as a registry plus routing surface only. It does not execute or verify the code for you.
 
 Then call submit_skill with the complete skill contract.
-After submitting, call validate_skill with the returned skill_id to confirm all tests pass.`;
+After submitting, run the tests locally in your own environment and call feedback_skill with the returned skill_id plus aggregate pass_count, fail_count, and total_tests.
+Use validate_skill only if a client still requires the legacy alias.`;
     return [{ role: "user", content: { type: "text", text } }];
   },
 };
@@ -84,7 +86,7 @@ After submitting, call validate_skill with the returned skill_id to confirm all 
 const improveSkillPrompt: PromptDefinition = {
   name: "improve_skill",
   description:
-    "Improve an existing codeVolve skill that is failing tests or has low confidence. The agent will diagnose failures, rewrite the implementation, and validate the fix.",
+    "Improve an existing codeVolve skill that is failing tests or has low confidence, then report local validation feedback through the MCP beta contract.",
   arguments: [
     {
       name: "skill_id",
@@ -103,7 +105,7 @@ const improveSkillPrompt: PromptDefinition = {
     },
     {
       name: "confidence",
-      description: "Current confidence score (0–1)",
+      description: "Current confidence score (0-1)",
       required: false,
     },
   ],
@@ -123,11 +125,13 @@ ${args["failure_cases"]}
 Your task:
 1. Analyze why the current implementation fails these test cases.
 2. Write a corrected implementation that passes all failing cases without breaking passing ones.
-3. Do not change the skill's inputs, outputs, or public interface — only fix the implementation.
+3. Do not change the skill's inputs, outputs, or public interface; only fix the implementation.
 4. If the implementation is fundamentally flawed, rewrite it entirely.
+5. Treat codeVolve as a registry plus routing surface only. It does not execute or verify the code for you.
 
-Call submit_skill with the updated implementation. Use the same problem_id, name, description, inputs, outputs, examples, and tests — only the implementation field should change.
-After submitting, call validate_skill with the returned skill_id to confirm the pass rate has improved.`;
+Call submit_skill with the updated implementation. Use the same problem_id, name, description, inputs, outputs, examples, and tests; only the implementation field should change.
+After submitting, run the tests locally in your own environment and call feedback_skill with the returned skill_id plus aggregate pass_count, fail_count, and total_tests.
+Use validate_skill only if a client still requires the legacy alias.`;
     return [{ role: "user", content: { type: "text", text } }];
   },
 };

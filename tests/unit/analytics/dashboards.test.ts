@@ -56,7 +56,7 @@ describe("GET /analytics/dashboards/:type", () => {
     setupTables({});
   });
 
-  it("200: intent-performance returns DynamoDB-backed data shape", async () => {
+  it("200: resolve-performance returns DynamoDB-backed data shape", async () => {
     setupTables({
       "codevolve-analytics-buckets": [
         {
@@ -83,10 +83,10 @@ describe("GET /analytics/dashboards/:type", () => {
       ],
     });
 
-    const result = await handler(makeEvent("intent-performance", { from: VALID_FROM, to: VALID_TO }));
+    const result = await handler(makeEvent("resolve-performance", { from: VALID_FROM, to: VALID_TO }));
     const body = JSON.parse(result.body);
     expect(result.statusCode).toBe(200);
-    expect(body.dashboard).toBe("intent-performance");
+    expect(body.dashboard).toBe("resolve-performance");
     expect(body.time_range).toEqual({ from: VALID_FROM, to: VALID_TO });
     expect(body.latency_over_time).toEqual([
       { minute: "2026-01-01T00:00:00.000Z", p50_ms: 10, p95_ms: 50 },
@@ -94,6 +94,13 @@ describe("GET /analytics/dashboards/:type", () => {
     expect(body.high_confidence_pct).toBe(80);
     expect(body.success_rate_pct).toBe(90);
     expect(body.low_confidence_resolves[0]).toMatchObject({ intent: "arrays:two-sum", skill_id: "skill-1" });
+  });
+
+  it("200: legacy intent-performance alias still works", async () => {
+    const result = await handler(makeEvent("intent-performance", { from: VALID_FROM, to: VALID_TO }));
+    const body = JSON.parse(result.body);
+    expect(result.statusCode).toBe(200);
+    expect(body.dashboard).toBe("resolve-performance");
   });
 
   it("200: execution-caching uses input-state repetition summaries", async () => {
@@ -163,8 +170,8 @@ describe("GET /analytics/dashboards/:type", () => {
   });
 
   it("400: invalid ranges are rejected", async () => {
-    const invalid = await handler(makeEvent("intent-performance", { from: "bad", to: VALID_TO }));
-    const reversed = await handler(makeEvent("intent-performance", { from: VALID_TO, to: VALID_FROM }));
+    const invalid = await handler(makeEvent("resolve-performance", { from: "bad", to: VALID_TO }));
+    const reversed = await handler(makeEvent("resolve-performance", { from: VALID_TO, to: VALID_FROM }));
     expect(invalid.statusCode).toBe(400);
     expect(reversed.statusCode).toBe(400);
   });

@@ -13,8 +13,9 @@
  *   5. Return acknowledgement
  */
 
+import { createHash, randomUUID } from "node:crypto";
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { docClient, SKILLS_TABLE } from "../shared/dynamo.js";
 import { validate } from "../shared/validation.js";
@@ -23,7 +24,11 @@ import { emitEvent } from "../shared/emitEvent.js";
 
 const ExecuteRequestSchema = z.object({
   skill_id: z.string().uuid(),
+  version: z.number().int().positive().optional(),
   inputs: z.record(z.unknown()).optional().default({}),
+  latency_ms: z.number().nonnegative().optional().default(0),
+  cache_hit: z.boolean().optional().default(false),
+  success: z.boolean().optional().default(true),
 });
 
 export async function handler(
@@ -41,21 +46,45 @@ export async function handler(
     return error(400, validation.error.code, validation.error.message, validation.error.details);
   }
 
-  const { skill_id: skillId } = validation.data as { skill_id: string; inputs: Record<string, unknown> };
+  const {
+    skill_id: skillId,
+    version,
+    inputs,
+    latency_ms: latencyMs,
+    cache_hit: cacheHit,
+    success: executionSuccess,
+  } = validation.data as {
+    skill_id: string;
+    version?: number;
+    inputs: Record<string, unknown>;
+    latency_ms: number;
+    cache_hit: boolean;
+    success: boolean;
+  };
 
   // Verify skill exists
   let skill: Record<string, unknown>;
   try {
-    const result = await docClient.send(
-      new QueryCommand({
-        TableName: SKILLS_TABLE,
-        KeyConditionExpression: "skill_id = :sid",
-        ExpressionAttributeValues: { ":sid": skillId },
-        ScanIndexForward: false,
-        Limit: 1,
-      }),
-    );
-    const item = result.Items?.[0];
+    const item = version
+      ? (
+          await docClient.send(
+            new GetCommand({
+              TableName: SKILLS_TABLE,
+              Key: { skill_id: skillId, version_number: version },
+            }),
+          )
+        ).Item
+      : (
+          await docClient.send(
+            new QueryCommand({
+              TableName: SKILLS_TABLE,
+              KeyConditionExpression: "skill_id = :sid",
+              ExpressionAttributeValues: { ":sid": skillId },
+              ScanIndexForward: false,
+              Limit: 1,
+            }),
+          )
+        ).Items?.[0];
     if (!item) return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
     if (item.status === "archived") return error(404, "NOT_FOUND", `Skill ${skillId} is archived`);
     skill = item as Record<string, unknown>;
@@ -66,6 +95,8 @@ export async function handler(
 
   const versionNumber = skill.version_number as number;
   const skillConfidence = (skill.confidence as number) ?? 0;
+  const inputHash = hashInputs(inputs);
+  const executionId = randomUUID();
 
   // Increment execution_count (fire-and-forget)
   docClient.send(
@@ -82,16 +113,42 @@ export async function handler(
     event_type: "execute",
     skill_id: skillId,
     intent: null,
-    latency_ms: 0,
+    latency_ms: latencyMs,
     confidence: skillConfidence,
-    cache_hit: false,
-    input_hash: null,
-    success: true,
+    cache_hit: cacheHit,
+    input_hash: inputHash,
+    success: executionSuccess,
   }).catch((e) => console.warn("[execute] emitEvent failed (swallowed):", e));
 
   return success(200, {
     skill_id: skillId,
+    version: versionNumber,
+    execution_id: executionId,
+    input_hash: inputHash,
+    cache_hit: cacheHit,
+    success: executionSuccess,
     acknowledged: true,
     message: "Execution logged. Run the implementation locally.",
   });
+}
+
+function hashInputs(inputs: Record<string, unknown>): string {
+  return createHash("sha256").update(stableStringify(inputs)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  return `{${entries
+    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`)
+    .join(",")}}`;
 }

@@ -37,21 +37,27 @@ export function ExecutionCachingDashboard() {
     return <div className="dashboard-empty">No data available.</div>;
   }
 
+  const statLabel =
+    data.cache_hit_rate_pct != null ? "Cache Hit Rate" : "Intent Repetition Rate";
+  const statValue = data.cache_hit_rate_pct ?? data.intent_repetition_rate_pct ?? 0;
+  const cacheRateOverTime = data.cache_rate_over_time ?? [];
+  const repetitionRateOverTime = data.repetition_rate_over_time ?? [];
+  const hasCacheRateSeries = cacheRateOverTime.length > 0;
+
   return (
     <div className="dashboard execution-caching-dashboard">
       <h2>Execution &amp; Caching</h2>
 
       <div className="stat-row">
         <div className="stat-card">
-          <div className="stat-label">Cache Hit Rate</div>
+          <div className="stat-label">{statLabel}</div>
           <div className="stat-value">
-            {data.cache_hit_rate_pct.toFixed(1)}
+            {statValue.toFixed(1)}
             <span className="stat-unit">%</span>
           </div>
         </div>
       </div>
 
-      {/* 2a: Most executed skills — horizontal bar chart */}
       <section>
         <h3>Most Executed Skills (Top 20)</h3>
         <ResponsiveContainer width="100%" height={360}>
@@ -69,37 +75,58 @@ export function ExecutionCachingDashboard() {
         </ResponsiveContainer>
       </section>
 
-      {/* 2c: Cache hit/miss rate — stacked area chart */}
       <section>
-        <h3>Cache Hit / Miss Rate Over Time</h3>
-        <ResponsiveContainer width="100%" height={240}>
-          <AreaChart data={data.cache_rate_over_time}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="minute" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Area
-              type="monotone"
-              dataKey="cache_hits"
-              name="Cache Hits"
-              stackId="a"
-              stroke="#10B981"
-              fill="rgba(16,185,129,0.15)"
-            />
-            <Area
-              type="monotone"
-              dataKey="cache_misses"
-              name="Cache Misses"
-              stackId="a"
-              stroke="#EF4444"
-              fill="rgba(239,68,68,0.15)"
-            />
-          </AreaChart>
-        </ResponsiveContainer>
+        <h3>
+          {hasCacheRateSeries
+            ? "Cache Hit / Miss Rate Over Time"
+            : "Intent Repetition Rate Over Time"}
+        </h3>
+        {hasCacheRateSeries ? (
+          <ResponsiveContainer width="100%" height={240}>
+            <AreaChart data={cacheRateOverTime}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="minute" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Area
+                type="monotone"
+                dataKey="cache_hits"
+                name="Cache Hits"
+                stackId="a"
+                stroke="#10B981"
+                fill="rgba(16,185,129,0.15)"
+              />
+              <Area
+                type="monotone"
+                dataKey="cache_misses"
+                name="Cache Misses"
+                stackId="a"
+                stroke="#EF4444"
+                fill="rgba(239,68,68,0.15)"
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={repetitionRateOverTime}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="minute" />
+              <YAxis unit="%" domain={[0, 100]} />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="intent_repetition_rate_pct"
+                name="Intent Repetition %"
+                stroke="#8B5CF6"
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
       </section>
 
-      {/* 2e: Global execution latency p50/p95 */}
       <section>
         <h3>Execution Latency Over Time (p50 / p95)</h3>
         <ResponsiveContainer width="100%" height={240}>
@@ -127,7 +154,6 @@ export function ExecutionCachingDashboard() {
         </ResponsiveContainer>
       </section>
 
-      {/* 2b: Input repetition rate per skill */}
       <section>
         <h3>Input Repetition Rate Per Skill</h3>
         <table className="dashboard-table">
@@ -142,7 +168,9 @@ export function ExecutionCachingDashboard() {
           <tbody>
             {data.repetition_rates.length === 0 ? (
               <tr>
-                <td colSpan={4} className="section-empty">No executions recorded yet.</td>
+                <td colSpan={4} className="section-empty">
+                  No executions recorded yet.
+                </td>
               </tr>
             ) : (
               data.repetition_rates.map((row, i) => (
@@ -158,7 +186,6 @@ export function ExecutionCachingDashboard() {
         </table>
       </section>
 
-      {/* 2f: Cache candidates */}
       <section>
         <h3>Cache Candidates</h3>
         <table className="dashboard-table">
@@ -174,7 +201,9 @@ export function ExecutionCachingDashboard() {
           <tbody>
             {data.cache_candidates.length === 0 ? (
               <tr>
-                <td colSpan={5} className="section-empty">No cache candidates identified yet.</td>
+                <td colSpan={5} className="section-empty">
+                  No cache candidates identified yet.
+                </td>
               </tr>
             ) : (
               data.cache_candidates.map((row, i) => (

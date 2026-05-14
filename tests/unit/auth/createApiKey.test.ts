@@ -35,6 +35,7 @@ function makeEvent(
   body: unknown,
   ownerIdApiKey?: string,
   ownerIdCognito?: string,
+  authorizerOverrides?: Record<string, unknown>,
 ): APIGatewayProxyEvent {
   return {
     body: JSON.stringify(body),
@@ -52,6 +53,7 @@ function makeEvent(
       authorizer: {
         ...(ownerIdApiKey ? { owner_id: ownerIdApiKey } : {}),
         claims: ownerIdCognito ? { sub: ownerIdCognito } : undefined,
+        ...authorizerOverrides,
       },
     } as unknown as APIGatewayProxyEvent["requestContext"],
   };
@@ -63,7 +65,7 @@ function makeEvent(
 
 describe("createApiKey handler", () => {
   beforeEach(() => {
-    jest.resetAllMocks();
+    mockSend.mockReset();
   });
 
   it("creates a key and returns 201 with the raw key", async () => {
@@ -92,6 +94,52 @@ describe("createApiKey handler", () => {
     expect(result.statusCode).toBe(201);
     const body = JSON.parse(result.body) as Record<string, unknown>;
     expect(body.owner_id).toBe("cognito-sub-456");
+  });
+
+  it("keeps standalone agent ownership for agent-authenticated key creation", async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const event = makeEvent(
+      { name: "Child Agent Key" },
+      "agt_123",
+      undefined,
+      { account_id: "agt_123", agent_id: "agt_123" },
+    );
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(201);
+    const body = JSON.parse(result.body) as Record<string, unknown>;
+    expect(body.owner_id).toBe("agt_123");
+
+    const commandInput = mockSend.mock.calls[0][0].input as {
+      Item: Record<string, unknown>;
+    };
+    expect(commandInput.Item.owner_id).toBe("agt_123");
+    expect(commandInput.Item.account_id).toBe("agt_123");
+    expect(commandInput.Item.agent_id).toBe("agt_123");
+    expect(commandInput.Item.owner_type).toBe("agent");
+    expect(commandInput.Item.created_via).toBe("authenticated_key_management");
+  });
+
+  it("preserves account and agent identity for child keys minted from api-key auth", async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const event = makeEvent(
+      { name: "Rotated Key" },
+      "acct_123",
+      undefined,
+      { account_id: "acct_123", agent_id: "agt_child_1" },
+    );
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(201);
+    const commandInput = mockSend.mock.calls[0][0].input as {
+      Item: Record<string, unknown>;
+    };
+    expect(commandInput.Item.owner_id).toBe("acct_123");
+    expect(commandInput.Item.account_id).toBe("acct_123");
+    expect(commandInput.Item.agent_id).toBe("agt_child_1");
+    expect(commandInput.Item.owner_type).toBe("agent");
   });
 
   it("returns 401 when no owner identity is present", async () => {

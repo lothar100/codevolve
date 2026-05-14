@@ -5,6 +5,8 @@
 **Tasks:** IMPL-06 (`src/execution/`), IMPL-07 (`src/cache/cache.ts`)
 **Verdict:** Request Changes
 
+Historical note: this review was written against the server-side execution phase. The later cleanup effort shifted the canonical agent story toward local execution plus intent routing, so references to runner Lambdas and `/execute` here should be read as the reviewed commit's model, not the current product narrative.
+
 ---
 
 ## Summary

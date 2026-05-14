@@ -34,6 +34,7 @@ export type EventType = (typeof EVENT_TYPES)[number];
 
 export const DASHBOARD_TYPES = [
   "resolve-performance",
+  "intent-performance",
   "execution-caching",
   "skill-quality",
   "evolution-gap",
@@ -50,6 +51,7 @@ export const SUPPORTED_LANGUAGES = [
   "java",
   "cpp",
   "c",
+  "shell",
 ] as const;
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
 
@@ -99,6 +101,7 @@ export interface Skill {
   tests: SkillTest[];
   implementation: string;
   confidence: number;
+  implementation_token_size: number | null;
   latency_p50_ms: number | null;
   latency_p95_ms: number | null;
   created_at: string;

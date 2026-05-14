@@ -18,12 +18,12 @@
 
 ## 1. Overview
 
-`POST /resolve` is the skill routing endpoint. A caller submits a natural-language `intent` (and optional filters: `language`, `domain`, `tags`). The system returns the best matching skill, or `null` if no skill scores above the threshold.
+`POST /intent` is the skill routing endpoint. A caller submits a natural-language `intent` (and optional filters: `language`, `domain`, `tags`). The system returns the best matching skill, or `null` if no skill scores above the threshold.
 
 The routing mechanism is **client-side vector search**:
 
 ```
-POST /resolve
+POST /intent
      │
      ├── 1. Validate request (Zod schema)
      ├── 2. Call AWS Bedrock Titan Embed Text v2 on the intent string
@@ -84,10 +84,10 @@ Rules:
 |-----------|---------|--------|
 | `POST /skills` (create) | After DynamoDB PutItem succeeds | Call Bedrock, store embedding on skill record via UpdateItem |
 | `POST /skills/:id/unarchive` | After status is restored | Regenerate embedding via Bedrock, store via UpdateItem |
-| `POST /resolve` (query) | On each request | Call Bedrock on the `intent` string; result is ephemeral (not stored) |
+| `POST /intent` (query) | On each request | Call Bedrock on the `intent` string; result is ephemeral (not stored) |
 | `POST /skills/:id/archive` | After status set to `archived` | Set `embedding` attribute to null via UpdateItem |
 
-Embedding generation at skill create time is a synchronous write-path step. The `POST /skills` handler must not return 201 until the embedding is written to DynamoDB. If Bedrock fails during create, the skill record is still written (embedding is null), and the handler returns 201 with a response header `X-Embedding-Status: failed`. Ada should note this failure in the Kinesis event for monitoring purposes. The skill will not appear in `/resolve` results until the embedding is populated.
+Embedding generation at skill create time is a synchronous write-path step. The `POST /skills` handler must not return 201 until the embedding is written to DynamoDB. If Bedrock fails during create, the skill record is still written (embedding is null), and the handler returns 201 with a response header `X-Embedding-Status: failed`. Ada should note this failure in the Kinesis event for monitoring purposes. The skill will not appear in `/intent` results until the embedding is populated.
 
 > **Note on embedding update:** If a skill's `name`, `description`, `domain`, or `tags` are modified in the future (via a skill update endpoint, which is not in Phase 2), the embedding must be regenerated. This is a Phase 3+ concern — do not implement now.
 
@@ -129,7 +129,7 @@ This attribute is already declared in `docs/dynamo-schemas.md` §2. No schema ch
 - Each float in DynamoDB's `N` type is stored as a decimal string. A 6-decimal-place float like `-0.023451` occupies ~10 bytes in the wire format.
 - 1024 elements × ~10 bytes = ~10 KB per embedding in DynamoDB item storage.
 - DynamoDB item size limit: 400 KB. A full skill item with embedding occupies roughly 10–15 KB, well within limit.
-- At 5,000 skills: 5,000 × 10 KB = ~50 MB of embedding data scanned per `/resolve` call.
+- At 5,000 skills: 5,000 × 10 KB = ~50 MB of embedding data scanned per `/intent` call.
 - Lambda memory must be provisioned to hold this in-flight. Recommendation: 512 MB for the resolve Lambda.
 
 ### 3.3 Access Pattern for Resolve
@@ -145,12 +145,12 @@ Step-by-step:
 
 ### 3.4 Migration Path to OpenSearch
 
-When the `/resolve` p95 latency exceeds 300ms (a leading indicator that the 500ms p95 budget is at risk), begin the OpenSearch migration process. The hard trigger is **5,000 active skills** in the registry.
+When the `/intent` p95 latency exceeds 300ms (a leading indicator that the 500ms p95 budget is at risk), begin the OpenSearch migration process. The hard trigger is **5,000 active skills** in the registry.
 
 Migration steps (to be designed in a future ARCH task):
 1. Provision an OpenSearch Serverless collection with k-NN index.
 2. Bulk-index all existing skill embeddings from DynamoDB into OpenSearch. The embedding format (1024-dimension float array) is directly compatible — no transformation needed.
-3. Update the `/resolve` Lambda to query OpenSearch instead of scanning DynamoDB.
+3. Update the `/intent` Lambda to query OpenSearch instead of scanning DynamoDB.
 4. Retain DynamoDB embeddings (do not delete the `embedding` attribute) — they serve as the source of truth for re-indexing if needed.
 5. New skills written during migration must be dual-written (DynamoDB + OpenSearch) until the migration is complete.
 
@@ -244,7 +244,7 @@ After ranking all candidates by `confidence` descending:
 
 **Empty result set (zero skills with embeddings):** Treat as confidence = 0. Return HTTP 200 with `best_match: null`, `resolve_confidence: 0`, `evolve_triggered: true`.
 
-**HTTP 404 is never returned for a no-match or below-threshold resolve result.** A no-match is not an error — it is a valid routing outcome that triggers the `/evolve` pipeline. HTTP 404 is reserved for skill-not-found-by-ID operations (e.g. `GET /skills/:id`). See `docs/api.md` POST /resolve: "An empty result set is NOT an error."
+**HTTP 404 is never returned for a no-match or below-threshold intent result.** A no-match is not an error — it is a valid routing outcome that triggers the `/evolve` pipeline. HTTP 404 is reserved for skill-not-found-by-ID operations (e.g. `GET /skills/:id`). See `docs/api.md` POST /intent: "An empty result set is NOT an error."
 
 **`/evolve` async trigger:** Do not await the evolve enqueue. Emit the Kinesis event for the `/evolve` request after the resolve response has been sent (or fire it concurrently without blocking). The resolve handler must not fail if the evolve enqueue fails — log the error and continue.
 
@@ -274,7 +274,7 @@ After ranking all candidates by `confidence` descending:
 - **Phase 2 target (DynamoDB scan + Lambda cosine):** p95 < 500 ms at 5,000 skills.
 - **Post-migration target (OpenSearch Serverless):** p95 < 100 ms. This is the target referenced in ADR-004 and the API contract's `embedding_search_time_p95_ms` dashboard metric.
 
-> **API contract note:** The `resolve-performance` dashboard (`GET /analytics/dashboards/resolve-performance`) currently tracks `latency_p95_ms` and `embedding_search_time_p95_ms` without explicit phase-based targets. Quimby should annotate the Phase 2 acceptable threshold as 500 ms in the dashboard documentation and alert thresholds. The 100 ms target is a Phase 3 post-migration SLO, not a Phase 2 requirement.
+> **API contract note:** The intent-performance dashboard currently tracks `latency_p95_ms` and `embedding_search_time_p95_ms` without explicit phase-based targets. Quimby should annotate the Phase 2 acceptable threshold as 500 ms in the dashboard documentation and alert thresholds. The 100 ms target is a Phase 3 post-migration SLO, not a Phase 2 requirement.
 
 ### 5.3 Lambda Configuration for Resolve
 
@@ -290,7 +290,7 @@ After ranking all candidates by `confidence` descending:
 
 Full text in `docs/decisions.md` under `## ADR-005`.
 
-**Decision:** Use DynamoDB scan + Lambda cosine similarity for `/resolve` in Phase 2 (up to 5,000 skills). No OpenSearch.
+**Decision:** Use DynamoDB scan + Lambda cosine similarity for `/intent` in Phase 2 (up to 5,000 skills). No OpenSearch.
 
 **This ADR clarifies the latency target stated in ADR-004.** ADR-004 references "p95 < 100ms" as the migration trigger. That figure is the post-OpenSearch target, not the Phase 2 acceptable threshold. The Phase 2 p95 target is < 500 ms. Migration to OpenSearch is triggered at 5,000 active skills (not when latency degrades past 100 ms in Phase 2).
 
@@ -306,7 +306,7 @@ The embedding attribute on `codevolve-skills` is `embedding` (lowercase, no pref
 
 ### 7.2 Archived Skill Exclusion
 
-The DynamoDB Scan / GSI Query for `/resolve` must always include the following `FilterExpression`:
+The DynamoDB Scan / GSI Query for `/intent` must always include the following `FilterExpression`:
 
 ```
 attribute_exists(embedding) AND #st <> :archived
@@ -341,7 +341,7 @@ Never return a 200 with a random or arbitrary skill when the similarity computat
 
 ### 7.4 Kinesis Event on Resolve
 
-Every invocation of `POST /resolve` — success or failure — must emit a `resolve` event to Kinesis before returning. Emit the event fire-and-forget (do not await; do not let Kinesis failure block the response).
+Every invocation of `POST /intent` — success or failure — must emit a `resolve` event to Kinesis before returning. Emit the event fire-and-forget (do not await; do not let Kinesis failure block the response).
 
 Required event fields:
 
@@ -363,10 +363,10 @@ Required event fields:
 
 ### 7.5 File Location
 
-The resolve handler lives at:
+The intent router handler lives at:
 
 ```
-src/handlers/resolve.ts
+src/router/resolve.ts
 ```
 
 Shared embedding utility (Bedrock call + Float32Array construction) lives at:

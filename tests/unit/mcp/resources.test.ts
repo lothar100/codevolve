@@ -4,6 +4,7 @@
 
 import { CodevolveClient } from "../../../src/mcp/client.js";
 import {
+  McpResourceError,
   readSkillResource,
   readProblemResource,
   readSkillsListResource,
@@ -54,6 +55,23 @@ describe("readSkillResource", () => {
       "Invalid resource URI"
     );
     expect(mockRequest).not.toHaveBeenCalled();
+  });
+
+  it("wraps API failures in a structured resource error", async () => {
+    mockRequest.mockRejectedValueOnce(
+      Object.assign(new Error("HTTP 404"), {
+        statusCode: 404,
+        body: { error: { code: "NOT_FOUND" } },
+      })
+    );
+
+    await expect(readSkillResource(client, `codevolve://skills/${SKILL_ID}`)).rejects.toMatchObject(
+      {
+        name: "McpResourceError",
+        code: "RESOURCE_READ_FAILED",
+        status: 404,
+      } satisfies Partial<McpResourceError>
+    );
   });
 });
 

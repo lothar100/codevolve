@@ -6,6 +6,7 @@
  */
 
 import {
+  BatchWriteCommand,
   QueryCommand,
   UpdateCommand,
   PutCommand,
@@ -33,13 +34,56 @@ const bedrockClient = new BedrockRuntimeClient({
 const BEDROCK_MODEL_ID = "amazon.titan-embed-text-v2:0";
 
 // ---------------------------------------------------------------------------
-// Cache invalidation (no-op — execution cache removed)
+// Cache invalidation compatibility shim
 // ---------------------------------------------------------------------------
 
-/** No-op: skills are local CLI tools with no server-side execution cache. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export async function invalidateCacheForSkill(_skillId: string): Promise<number> {
-  return 0;
+const EXECUTION_CACHE_TABLE =
+  process.env.EXECUTION_CACHE_TABLE ?? "codevolve-cache";
+
+/**
+ * Public beta no longer depends on a server-side execution cache, but archive
+ * flows still need to clean up any legacy rows that might exist.
+ */
+export async function invalidateCacheForSkill(skillId: string): Promise<number> {
+  let deletedCount = 0;
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+
+  do {
+    const result = await docClient.send(
+      new QueryCommand({
+        TableName: EXECUTION_CACHE_TABLE,
+        KeyConditionExpression: "skill_id = :sid",
+        ExpressionAttributeValues: { ":sid": skillId },
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
+
+    const items = result.Items ?? [];
+    if (items.length > 0) {
+      for (let index = 0; index < items.length; index += 25) {
+        const batch = items.slice(index, index + 25);
+        await docClient.send(
+          new BatchWriteCommand({
+            RequestItems: {
+              [EXECUTION_CACHE_TABLE]: batch.map((item) => ({
+                DeleteRequest: {
+                  Key: {
+                    skill_id: item.skill_id,
+                    input_hash: item.input_hash,
+                  },
+                },
+              })),
+            },
+          }),
+        );
+      }
+      deletedCount += items.length;
+    }
+
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return deletedCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,4 +309,3 @@ export async function unarchiveProblemIfArchived(
     throw err;
   }
 }
-

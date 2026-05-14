@@ -111,6 +111,13 @@ describe("resolveSkill", () => {
     expect("tags" in callArgs).toBe(false);
     expect("language" in callArgs).toBe(false);
   });
+
+  it("rejects unsupported language values before making an API call", async () => {
+    await expect(
+      resolveSkill(client, { intent: "sort array", language: "ruby" })
+    ).rejects.toThrow();
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -192,6 +199,11 @@ describe("listSkills", () => {
     expect(path).toContain("language=python");
     expect(path).toContain("domain=graphs");
     expect(path).toContain("limit=10");
+  });
+
+  it("rejects unsupported status values before making an API call", async () => {
+    await expect(listSkills(client, { status: "archived" })).rejects.toThrow();
+    expect(mockRequest).not.toHaveBeenCalled();
   });
 });
 
@@ -285,6 +297,20 @@ describe("submitSkill Zod enforcement", () => {
   it("rejects when a required field is missing — does NOT call HTTP", async () => {
     const { implementation: _omit, ...withoutImpl } = validSubmit;
     await expect(submitSkill(client, withoutImpl)).rejects.toThrow();
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported language values — does NOT call HTTP", async () => {
+    await expect(
+      submitSkill(client, { ...validSubmit, language: "ruby" })
+    ).rejects.toThrow();
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported status values — does NOT call HTTP", async () => {
+    await expect(
+      submitSkill(client, { ...validSubmit, status: "archived" })
+    ).rejects.toThrow();
     expect(mockRequest).not.toHaveBeenCalled();
   });
 });

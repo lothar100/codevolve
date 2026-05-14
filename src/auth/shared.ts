@@ -17,9 +17,16 @@ export const docClient = DynamoDBDocumentClient.from(ddbClient, {
 
 export const API_KEYS_TABLE =
   process.env.API_KEYS_TABLE ?? "codevolve-api-keys";
+export const ACCOUNTS_TABLE =
+  process.env.ACCOUNTS_TABLE ?? "codevolve-accounts";
 
 export const API_KEY_PREFIX = "cvk_";
 export const AGENT_ID_PREFIX = "agt_";
+
+export interface AuthContext {
+  accountId: string;
+  authSource: "api_key" | "cognito";
+}
 
 export interface ApiKeyWriteInput {
   ownerId: string;
@@ -37,8 +44,19 @@ export interface ApiKeyWriteRecord {
   item: Record<string, unknown>;
 }
 
+export interface StandaloneAccountBootstrapInput {
+  accountId: string;
+  agentId: string;
+  agentName: string;
+  createdAt?: string;
+}
+
 export function generateStandaloneAgentId(): string {
   return `${AGENT_ID_PREFIX}${crypto.randomUUID()}`;
+}
+
+export function generateStandaloneAgentName(): string {
+  return `Standalone agent ${crypto.randomUUID().slice(0, 8)}`;
 }
 
 export function deriveOwnerId(
@@ -46,10 +64,43 @@ export function deriveOwnerId(
 ): string | undefined {
   const ownerIdFromApiKey =
     event.requestContext?.authorizer?.["owner_id"] as string | undefined;
+  const ownerIdFromAuthorizer =
+    event.requestContext?.authorizer?.["userId"] as string | undefined;
   const ownerIdFromCognito =
     event.requestContext?.authorizer?.claims?.["sub"] as string | undefined;
+  const ownerIdFromPrincipal =
+    event.requestContext?.authorizer?.principalId as string | undefined;
 
-  return ownerIdFromApiKey ?? ownerIdFromCognito;
+  return (
+    ownerIdFromApiKey ??
+    ownerIdFromAuthorizer ??
+    ownerIdFromCognito ??
+    ownerIdFromPrincipal
+  );
+}
+
+export function deriveAuthContext(
+  event: APIGatewayProxyEvent,
+): AuthContext | undefined {
+  const ownerIdFromApiKey =
+    event.requestContext?.authorizer?.["owner_id"] as string | undefined;
+
+  if (ownerIdFromApiKey) {
+    return {
+      accountId: ownerIdFromApiKey,
+      authSource: "api_key",
+    };
+  }
+
+  const accountId = deriveOwnerId(event);
+  if (!accountId) {
+    return undefined;
+  }
+
+  return {
+    accountId,
+    authSource: "cognito",
+  };
 }
 
 export function generateRawKey(): string {
@@ -93,5 +144,20 @@ export function buildApiKeyRecord(input: ApiKeyWriteInput): ApiKeyWriteRecord {
     keyHash,
     createdAt,
     item,
+  };
+}
+
+export function buildStandaloneAccountRecord(
+  input: StandaloneAccountBootstrapInput,
+): Record<string, unknown> {
+  const createdAt = input.createdAt ?? new Date().toISOString();
+
+  return {
+    account_id: input.accountId,
+    agent_id: input.agentId,
+    agent_name: input.agentName,
+    status: "active",
+    created_at: createdAt,
+    updated_at: createdAt,
   };
 }

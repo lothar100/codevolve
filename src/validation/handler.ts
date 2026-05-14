@@ -1,14 +1,14 @@
 /**
- * POST /validate/:skill_id — Accept caller-provided test results, update confidence, emit event.
+ * POST /validate/:skill_id — Accept caller-provided test feedback, update confidence, emit event.
  *
  * Skills are local CLI tools — the caller runs the tests in their own environment
- * and reports the results here. This endpoint updates the skill's confidence score
+ * and reports the feedback here. This endpoint updates the skill's confidence score
  * and status based on the reported outcomes.
  *
  * Flow:
  *   1. Extract skill_id from path
  *   2. Fetch skill from DynamoDB → 404 if not found, 409 if archived
- *   3. Parse caller-provided pass_count / fail_count / total_tests
+ *   3. Parse caller-provided pass_count / fail_count / total_tests feedback
  *   4. Compute confidence = pass_count / total_tests
  *   5. Status transition
  *   6. UpdateItem — write confidence, status, test counts, last_validated_at
@@ -24,7 +24,7 @@
  */
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { z } from "zod";
 import { docClient, SKILLS_TABLE } from "../shared/dynamo.js";
@@ -40,6 +40,7 @@ const CONFIDENCE_EVOLVE_THRESHOLD = 0.7;
 const sqsClient = new SQSClient({ region: process.env.AWS_REGION ?? "us-east-2" });
 
 const ValidateRequestSchema = z.object({
+  version: z.number().int().positive().optional(),
   pass_count: z.number().int().min(0),
   fail_count: z.number().int().min(0),
   total_tests: z.number().int().min(1),
@@ -98,19 +99,58 @@ export async function handler(
     return error(400, "VALIDATION_ERROR", "Missing skill_id path parameter");
   }
 
-  // Fetch skill
+  // Parse request body
+  let body: unknown;
+  try {
+    body = JSON.parse(event.body ?? "{}");
+  } catch {
+    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+  }
+
+  const validation = validate(ValidateRequestSchema, normalizeValidationBody(body));
+  if (!validation.success) {
+    return error(400, validation.error.code, validation.error.message, validation.error.details);
+  }
+
+  const {
+    version,
+    pass_count: passCount,
+    fail_count: failCount,
+    total_tests: totalTests,
+  } = validation.data as {
+    version?: number;
+    pass_count: number;
+    fail_count: number;
+    total_tests: number;
+  };
+
+  if (passCount + failCount !== totalTests) {
+    return error(400, "VALIDATION_ERROR", "pass_count + fail_count must equal total_tests");
+  }
+
+  // Fetch skill after request normalization so version pinning can be honored.
   let skill: Record<string, unknown>;
   try {
-    const result = await docClient.send(
-      new QueryCommand({
-        TableName: SKILLS_TABLE,
-        KeyConditionExpression: "skill_id = :sid",
-        ExpressionAttributeValues: { ":sid": skillId },
-        ScanIndexForward: false,
-        Limit: 1,
-      }),
-    );
-    const item = result.Items?.[0];
+    const item = version
+      ? (
+          await docClient.send(
+            new GetCommand({
+              TableName: SKILLS_TABLE,
+              Key: { skill_id: skillId, version_number: version },
+            }),
+          )
+        ).Item
+      : (
+          await docClient.send(
+            new QueryCommand({
+              TableName: SKILLS_TABLE,
+              KeyConditionExpression: "skill_id = :sid",
+              ExpressionAttributeValues: { ":sid": skillId },
+              ScanIndexForward: false,
+              Limit: 1,
+            }),
+          )
+        ).Items?.[0];
     if (!item) return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
     if (item.status === "archived") {
       return error(409, "SKILL_ARCHIVED", `Skill ${skillId} is archived and cannot be validated`);
@@ -121,32 +161,14 @@ export async function handler(
     return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
   }
 
-  // Parse request body
-  let body: unknown;
-  try {
-    body = JSON.parse(event.body ?? "{}");
-  } catch {
-    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
-  }
-
-  const validation = validate(ValidateRequestSchema, body);
-  if (!validation.success) {
-    return error(400, validation.error.code, validation.error.message, validation.error.details);
-  }
-
-  const { pass_count: passCount, fail_count: failCount, total_tests: totalTests } =
-    validation.data as { pass_count: number; fail_count: number; total_tests: number };
-
-  if (passCount + failCount !== totalTests) {
-    return error(400, "VALIDATION_ERROR", "pass_count + fail_count must equal total_tests");
-  }
-
   const versionNumber = skill.version_number as number;
   const currentStatus = (skill.status as SkillStatus) ?? "unsolved";
+  const previousConfidence = (skill.confidence as number) ?? 0;
   const latencyP95 = (skill.latency_p95_ms as number | null) ?? null;
 
   const confidence = passCount / totalTests;
   const newStatus = computeStatus(currentStatus, confidence, failCount);
+  const statusChanged = newStatus !== currentStatus;
   const lastValidatedAt = new Date().toISOString();
 
   const shouldRemoveOptimizationFlag = latencyP95 !== null && latencyP95 <= 5000;
@@ -200,8 +222,40 @@ export async function handler(
     total_tests: totalTests,
     pass_count: passCount,
     fail_count: failCount,
+    passed: passCount,
+    failed: failCount,
+    pass_rate: confidence,
+    previous_confidence: previousConfidence,
+    new_confidence: confidence,
     confidence,
     status: newStatus,
+    status_changed: statusChanged,
+    new_status: newStatus,
     last_validated_at: lastValidatedAt,
   });
+}
+
+function normalizeValidationBody(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return body;
+  }
+
+  const raw = body as Record<string, unknown>;
+  const passCount = numberOrUndefined(raw.pass_count) ?? numberOrUndefined(raw.test_pass_count);
+  const failCount = numberOrUndefined(raw.fail_count) ?? numberOrUndefined(raw.test_fail_count);
+  const totalTests =
+    numberOrUndefined(raw.total_tests) ??
+    numberOrUndefined(raw.test_total) ??
+    (passCount !== undefined && failCount !== undefined ? passCount + failCount : undefined);
+
+  return {
+    version: raw.version,
+    pass_count: passCount,
+    fail_count: failCount,
+    total_tests: totalTests,
+  };
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
 }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CodevolveClient } from "./client.js";
+import { SUPPORTED_LANGUAGES } from "../shared/types.js";
 
 type TextContent = {
   type: "text";
@@ -10,6 +11,9 @@ export type ToolResult = {
   content: TextContent[];
   isError?: boolean;
 };
+
+const mcpLanguageSchema = z.enum(SUPPORTED_LANGUAGES);
+const mcpStatusSchema = z.enum(["unsolved", "partial", "verified", "optimized"]);
 
 export async function callApi(
   fn: () => Promise<unknown>,
@@ -36,7 +40,7 @@ export async function callApi(
 export const resolveSkillSchema = z.object({
   intent: z.string().min(1),
   tags: z.array(z.string()).optional(),
-  language: z.string().optional(),
+  language: mcpLanguageSchema.optional(),
 });
 
 export async function resolveSkill(
@@ -75,9 +79,9 @@ export async function getSkill(
 
 export const listSkillsSchema = z.object({
   tag: z.string().optional(),
-  language: z.string().optional(),
+  language: mcpLanguageSchema.optional(),
   domain: z.string().optional(),
-  status: z.string().optional(),
+  status: mcpStatusSchema.optional(),
   is_canonical: z.boolean().optional(),
   limit: z.number().int().min(1).max(100).optional(),
   next_token: z.string().optional(),
@@ -140,7 +144,9 @@ export const chainSkillsSchema = z.object({
     .array(
       z.object({
         intent: z.string().min(1).describe("Natural-language description of this step"),
-        language: z.string().optional().describe("Preferred language for this step"),
+        language: mcpLanguageSchema
+          .optional()
+          .describe("Preferred language for this step"),
         tags: z.array(z.string()).optional().describe("Optional tags to narrow the search"),
       }),
     )
@@ -180,7 +186,7 @@ export const submitSkillSchema = z.object({
   problem_id: z.string().uuid(),
   name: z.string().min(1),
   description: z.string().min(1),
-  language: z.string().min(1),
+  language: mcpLanguageSchema,
   domain: z.array(z.string()).min(1),
   inputs: z.array(ioFieldSchema).min(1),
   outputs: z.array(ioFieldSchema).min(1),
@@ -188,7 +194,7 @@ export const submitSkillSchema = z.object({
   tests: z.array(testCaseSchema).min(2),
   implementation: z.string().min(1),
   tags: z.array(z.string()).optional(),
-  status: z.string().optional(),
+  status: mcpStatusSchema.optional(),
 });
 
 export async function submitSkill(

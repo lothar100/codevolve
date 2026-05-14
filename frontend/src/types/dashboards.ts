@@ -63,6 +63,13 @@ export interface CacheRatePoint {
   hit_rate_pct: number;
 }
 
+export interface RepetitionRatePoint {
+  minute?: string;
+  hour?: string;
+  input_repeat_rate_pct?: number;
+  intent_repetition_rate_pct?: number;
+}
+
 export interface ExecutionLatencyPoint {
   minute: string;
   p50_ms: number;
@@ -80,8 +87,10 @@ export interface CacheCandidate {
 export interface ExecutionCachingDashboard extends DashboardMeta {
   top_skills: TopSkill[];
   repetition_rates: SkillRepetitionRate[];
-  cache_hit_rate_pct: number;
-  cache_rate_over_time: CacheRatePoint[];
+  cache_hit_rate_pct?: number;
+  intent_repetition_rate_pct?: number;
+  cache_rate_over_time?: CacheRatePoint[];
+  repetition_rate_over_time?: RepetitionRatePoint[];
   execution_latency_over_time: ExecutionLatencyPoint[];
   cache_candidates: CacheCandidate[];
 }

@@ -118,6 +118,7 @@ function mapSkillFromDynamo(item: Record<string, unknown>): Skill {
     tests: (item.tests as Skill["tests"]) ?? [],
     implementation: (item.implementation as string) ?? "",
     confidence: (item.confidence as number) ?? 0,
+    implementation_token_size: (item.implementation_token_size as number) ?? null,
     latency_p50_ms: (item.latency_p50_ms as number) ?? null,
     latency_p95_ms: (item.latency_p95_ms as number) ?? null,
     created_at: item.created_at as string,

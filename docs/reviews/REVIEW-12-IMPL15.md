@@ -1,5 +1,7 @@
 ## Iris Review — IMPL-15 / MCP Server Full Implementation
 
+Historical note: this review captured the older MCP surface, including `execute_skill` as a first-class tool name. The canonical package surface was later cleaned up to align with the intent-routing/local-execution model, so the tool list below is preserved as a historical snapshot of that phase.
+
 ### Verdict: REJECTED
 
 ---

@@ -43,6 +43,29 @@ const SAMPLE_DATA: DashboardData = {
   ],
 };
 
+const CURRENT_API_SAMPLE: DashboardData = {
+  top_skills: [{ skill_id: "skill-001", execution_count: 420 }],
+  repetition_rates: [
+    {
+      skill_id: "skill-001",
+      total_executions: 420,
+      unique_inputs: 42,
+      input_repeat_rate: 0.9,
+    },
+  ],
+  intent_repetition_rate_pct: 72.5,
+  repetition_rate_over_time: [
+    {
+      minute: "2026-01-01T00:00:00Z",
+      intent_repetition_rate_pct: 72.5,
+    },
+  ],
+  execution_latency_over_time: [
+    { minute: "2026-01-01T00:00:00Z", p50_ms: 55, p95_ms: 210 },
+  ],
+  cache_candidates: [],
+};
+
 describe("ExecutionCachingDashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -70,6 +93,12 @@ describe("ExecutionCachingDashboard", () => {
     mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
     render(<ExecutionCachingDashboard />);
     expect(screen.getByText(/cache hit rate/i)).toBeInTheDocument();
+  });
+
+  it("renders current API repetition metric without crashing", () => {
+    mockUse.mockReturnValue({ data: CURRENT_API_SAMPLE, loading: false, error: null, refresh: vi.fn() });
+    render(<ExecutionCachingDashboard />);
+    expect(screen.getAllByText(/intent repetition rate/i).length).toBeGreaterThan(0);
   });
 
   it("renders repetition rate table with skill data", () => {

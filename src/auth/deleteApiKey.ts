@@ -11,7 +11,7 @@
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { docClient, API_KEYS_TABLE } from "./shared.js";
+import { deriveAuthContext, docClient, API_KEYS_TABLE } from "./shared.js";
 import { error } from "../shared/response.js";
 import type { APIGatewayProxyResult as Result } from "aws-lambda";
 
@@ -55,14 +55,9 @@ export const handler = async (
       return error(400, "VALIDATION_ERROR", "key_id path parameter is required");
     }
 
-    // Derive owner_id from authorizer context
-    const ownerIdFromApiKey =
-      event.requestContext?.authorizer?.["owner_id"] as string | undefined;
-    const ownerIdFromCognito =
-      event.requestContext?.authorizer?.claims?.["sub"] as string | undefined;
-    const callerId = ownerIdFromApiKey ?? ownerIdFromCognito;
+    const authContext = deriveAuthContext(event);
 
-    if (!callerId) {
+    if (!authContext) {
       return error(401, "UNAUTHORIZED", "Missing or invalid authorization");
     }
 
@@ -81,7 +76,7 @@ export const handler = async (
     const record = getResult.Item as ApiKeyRecord;
 
     // Ownership check
-    if (record.owner_id !== callerId) {
+    if (record.owner_id !== authContext.accountId) {
       return error(403, "FORBIDDEN", "You do not own this API key");
     }
 

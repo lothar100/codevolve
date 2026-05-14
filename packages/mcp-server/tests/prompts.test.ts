@@ -35,7 +35,7 @@ describe("generate_skill prompt", () => {
     expect(msgs[0].content.text).toContain("Domain: general");
   });
 
-  it("includes submit_skill and validate_skill instructions", () => {
+  it("includes submit_skill and feedback_skill instructions", () => {
     const msgs = generateSkill.buildMessages({
       problem_description: "Test",
       language: "python",
@@ -44,7 +44,7 @@ describe("generate_skill prompt", () => {
 
     const text = msgs[0].content.text;
     expect(text).toContain("submit_skill");
-    expect(text).toContain("validate_skill");
+    expect(text).toContain("feedback_skill");
   });
 
   it("marks domain argument as optional", () => {
@@ -71,17 +71,17 @@ describe("improve_skill prompt", () => {
     expect(text).toContain("[{\"input\"");
   });
 
-  it("uses 'unknown' as confidence default when confidence is omitted", () => {
+  it("uses 'unknown' as validation score default when confidence is omitted", () => {
     const msgs = improveSkill.buildMessages({
       skill_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
       current_implementation: "def solve(): pass",
       failure_cases: "[]",
     });
 
-    expect(msgs[0].content.text).toContain("Current confidence: unknown");
+    expect(msgs[0].content.text).toContain("Current validation score: unknown");
   });
 
-  it("includes submit_skill and validate_skill instructions", () => {
+  it("includes submit_skill and feedback_skill instructions", () => {
     const msgs = improveSkill.buildMessages({
       skill_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
       current_implementation: "def solve(): pass",
@@ -90,7 +90,7 @@ describe("improve_skill prompt", () => {
 
     const text = msgs[0].content.text;
     expect(text).toContain("submit_skill");
-    expect(text).toContain("validate_skill");
+    expect(text).toContain("feedback_skill");
   });
 
   it("marks confidence argument as optional", () => {

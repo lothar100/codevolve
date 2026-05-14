@@ -65,8 +65,8 @@ const SECTIONS: Section[] = [
     endpoints: [
       { method: "POST",   path: "/intent",        auth: "none",    description: "Route a natural-language intent to the best matching skill via embedding search. Returns implementation ready to run locally." },
       { method: "POST",   path: "/chains",        auth: "none",    description: "Build an ordered local execution chain from explicit steps or a prior intent chain suggestion." },
-      { method: "GET",    path: "/skills/{id}",   auth: "none",    description: "Fetch a skill's full implementation. Automatically records an execute event for analytics — fetching signals intent to run." },
-      { method: "POST",   path: "/validate/{id}",  auth: "api_key", description: "Report local test results (pass/fail counts) to update a skill's confidence score (0–1). Run tests yourself, then call this." },
+      { method: "GET",    path: "/skills/{id}",   auth: "none",    description: "Fetch a skill's full implementation. Automatically records an execute event for analytics \u2014 fetching signals intent to run." },
+      { method: "POST",   path: "/validate/{id}",  auth: "api_key", description: "Report local test results (pass/fail counts) to update a skill's confidence score (0\u20131). Run tests yourself, then call this." },
     ],
   },
   {
@@ -76,7 +76,7 @@ const SECTIONS: Section[] = [
       { method: "POST",   path: "/skills",                        auth: "api_key", description: "Create a skill. Generates Bedrock embedding on write." },
       { method: "GET",    path: "/skills/{id}",                   auth: "none",    description: "Get a skill by ID including full implementation. Add ?version= for a specific version." },
       { method: "GET",    path: "/skills/{id}/versions",          auth: "none",    description: "List all versions of a skill, newest first" },
-      { method: "POST",   path: "/skills/{id}/promote-canonical", auth: "api_key", description: "Promote to canonical. Requires confidence ≥ 0.85, all tests passing, status verified/optimized." },
+      { method: "POST",   path: "/skills/{id}/promote-canonical", auth: "api_key", description: "Promote to canonical. Requires confidence \u2265 0.85, all tests passing, status verified/optimized." },
     ],
   },
   {
@@ -94,7 +94,7 @@ const SECTIONS: Section[] = [
       { method: "GET",    path: "/analytics/dashboards/execution-caching",    auth: "none", description: "Most executed skills, execution frequency, input repetition rate" },
       { method: "GET",    path: "/analytics/dashboards/skill-quality",        auth: "none", description: "Test pass rate, confidence over time, competing implementations" },
       { method: "GET",    path: "/analytics/dashboards/evolution-gap",        auth: "none", description: "Unresolved intents, low-confidence resolves, evolve queue depth" },
-      { method: "GET",    path: "/analytics/dashboards/agent-behavior",       auth: "none", description: "resolve→fetch conversion, chain usage, repeated resolves" },
+      { method: "GET",    path: "/analytics/dashboards/agent-behavior",       auth: "none", description: "resolve\u2192fetch conversion, chain usage, repeated resolves" },
     ],
   },
   {
@@ -109,14 +109,16 @@ const SECTIONS: Section[] = [
   {
     title: "Meta",
     endpoints: [
-      { method: "GET", path: "/",       auth: "none", description: "Machine-readable discovery document — all endpoints and auth schemes" },
+      { method: "GET", path: "/",       auth: "none", description: "Machine-readable discovery document \u2014 all endpoints and auth schemes" },
       { method: "GET", path: "/health", auth: "none", description: "Service health check" },
     ],
   },
 ];
 
-
 type Viewer = "human" | "agent";
+
+const HUMAN_EMOJI = "\u{1F464}";
+const AGENT_EMOJI = "\u{1F916}";
 
 export function DocsPage() {
   const [viewer, setViewer] = useState<Viewer>("human");
@@ -150,7 +152,7 @@ export function DocsPage() {
             gap: 8,
           }}
         >
-          <span style={{ fontSize: 17 }}>👤</span> I'm a Human
+          <span style={{ fontSize: 17 }}>{HUMAN_EMOJI}</span> I'm a Human
         </button>
         <button
           onClick={() => setViewer("agent")}
@@ -169,7 +171,7 @@ export function DocsPage() {
             gap: 8,
           }}
         >
-          <span style={{ fontSize: 17 }}>🤖</span> I'm an Agent
+          <span style={{ fontSize: 17 }}>{AGENT_EMOJI}</span> I'm an Agent
         </button>
       </div>
 
@@ -229,9 +231,9 @@ export function DocsPage() {
             margin: "0 0 16px",
             overflowX: "auto",
             whiteSpace: "pre-wrap",
-          }}>{`POST ${API_BASE_URL}/intent\n{ "intent": "find shortest path in a weighted graph" }\n→ returns implementation → run locally → done`}</pre>
+          }}>{`POST ${API_BASE_URL}/intent\n{ "intent": "find shortest path in a weighted graph" }\n\u2192 returns implementation \u2192 run locally \u2192 done`}</pre>
           <ol style={{ color: "#94a3b8", fontSize: 13, paddingLeft: 0, margin: 0, lineHeight: 2.2, listStyle: "none" }}>
-            {["POST /resolve with a natural-language intent to get an implementation", "Run the returned script locally — your environment, your credentials", "POST /validate/{id} with test results to update the confidence score"].map((step, i) => (
+            {["POST /resolve with a natural-language intent to get an implementation", "Run the returned script locally \u2014 your environment, your credentials", "POST /validate/{id} with test results to update the confidence score"].map((step, i) => (
               <li key={i} style={{ display: "flex", gap: 8 }}>
                 <span style={{ color: "#06b6d4", fontWeight: 700, minWidth: 18 }}>{i + 1}.</span>
                 <span>{step}</span>
@@ -305,13 +307,13 @@ export function DocsPage() {
         </h2>
         <div style={{ color: "#94a3b8", fontSize: 13, display: "flex", flexDirection: "column", gap: 8 }}>
           <div>
-            <code style={{ color: "#e2e8f0" }}>X-Request-Id</code> — Client-supplied UUID for request tracing. Server echoes it back; generates one if absent.
+            <code style={{ color: "#e2e8f0" }}>X-Request-Id</code> \u2014 Client-supplied UUID for request tracing. Server echoes it back; generates one if absent.
           </div>
           <div>
-            <code style={{ color: "#e2e8f0" }}>X-Agent-Id</code> — Identifies the calling agent (e.g. <code>claude-code-1.0</code>). Used for agent-behavior analytics.
+            <code style={{ color: "#e2e8f0" }}>X-Agent-Id</code> \u2014 Identifies the calling agent (e.g. <code>claude-code-1.0</code>). Used for agent-behavior analytics.
           </div>
           <div>
-            <code style={{ color: "#e2e8f0" }}>X-Response-Time-Ms</code> — Server-side processing time, present on all responses.
+            <code style={{ color: "#e2e8f0" }}>X-Response-Time-Ms</code> \u2014 Server-side processing time, present on all responses.
           </div>
         </div>
       </section>
@@ -340,11 +342,11 @@ export function DocsPage() {
 }`}
         </pre>
         <div style={{ fontSize: 13, color: "#94a3b8", marginTop: 12, display: "flex", flexDirection: "column", gap: 4 }}>
-          <div><code style={{ color: "#e2e8f0" }}>400 VALIDATION_ERROR</code> — Schema / param validation failed</div>
-          <div><code style={{ color: "#e2e8f0" }}>404 NOT_FOUND</code> — Resource does not exist (or is archived)</div>
-          <div><code style={{ color: "#e2e8f0" }}>409 CONFLICT</code> — Duplicate or state conflict</div>
-          <div><code style={{ color: "#e2e8f0" }}>422 PRECONDITION_FAILED</code> — Business rule violated</div>
-          <div><code style={{ color: "#e2e8f0" }}>500 INTERNAL_ERROR</code> — Unexpected server error</div>
+          <div><code style={{ color: "#e2e8f0" }}>400 VALIDATION_ERROR</code> \u2014 Schema / param validation failed</div>
+          <div><code style={{ color: "#e2e8f0" }}>404 NOT_FOUND</code> \u2014 Resource does not exist (or is archived)</div>
+          <div><code style={{ color: "#e2e8f0" }}>409 CONFLICT</code> \u2014 Duplicate or state conflict</div>
+          <div><code style={{ color: "#e2e8f0" }}>422 PRECONDITION_FAILED</code> \u2014 Business rule violated</div>
+          <div><code style={{ color: "#e2e8f0" }}>500 INTERNAL_ERROR</code> \u2014 Unexpected server error</div>
         </div>
       </section>
     </div>

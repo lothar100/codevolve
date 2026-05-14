@@ -11,6 +11,8 @@
 - `docs/api.md` (POST /resolve, POST /execute contracts)
 - `CLAUDE.md` (key design rules)
 
+Historical note: this review reflects the older hosted-execution / server-side runner phase of the project. The current agent-facing cleanup has since normalized the intent-routing surface and local-execution framing, so treat `/resolve`, `/execute`, and runner terminology below as phase-specific historical context rather than the current canonical product model.
+
 ---
 
 ## Overall Verdict: APPROVED WITH NOTES

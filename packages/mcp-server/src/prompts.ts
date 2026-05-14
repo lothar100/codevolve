@@ -72,7 +72,7 @@ Your task:
 5. Write a clear description of the algorithm and its time/space complexity.
 
 Then call submit_skill with the complete skill contract.
-After submitting, call validate_skill with the returned skill_id to confirm all tests pass.`;
+After submitting, call feedback_skill with the returned skill_id to report the local test results and confirm all tests pass.`;
     return [{ role: "user", content: { type: "text", text } }];
   },
 };
@@ -103,7 +103,7 @@ const improveSkillPrompt: PromptDefinition = {
     },
     {
       name: "confidence",
-      description: "Current confidence score (0–1)",
+      description: "Current validation score (0–1)",
       required: false,
     },
   ],
@@ -112,7 +112,7 @@ const improveSkillPrompt: PromptDefinition = {
     const text = `You are improving an existing codeVolve skill that is failing tests or has low confidence.
 
 Skill ID: ${args["skill_id"]}
-Current confidence: ${confidence}
+Current validation score: ${confidence}
 
 Current implementation:
 ${args["current_implementation"]}
@@ -127,7 +127,7 @@ Your task:
 4. If the implementation is fundamentally flawed, rewrite it entirely.
 
 Call submit_skill with the updated implementation. Use the same problem_id, name, description, inputs, outputs, examples, and tests — only the implementation field should change.
-After submitting, call validate_skill with the returned skill_id to confirm the pass rate has improved.`;
+After submitting, call feedback_skill with the returned skill_id to report the local test results and confirm the pass rate has improved.`;
     return [{ role: "user", content: { type: "text", text } }];
   },
 };

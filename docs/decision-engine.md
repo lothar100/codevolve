@@ -186,9 +186,9 @@ HAVING COUNT(*) >= 10
 
 ## 4. Rule Logic
 
-### 4.1 Rule 1: Auto-Cache Trigger
+### 4.1 Rule 1: Auto-Cache Advisory Flag
 
-**Purpose:** Identify skills where a meaningful proportion of callers submit the same inputs repeatedly. These skills benefit from caching because the cache hit rate will be high, amortizing the cache write cost across many cache hits.
+**Purpose:** Identify skills where a meaningful proportion of callers submit the same inputs repeatedly and mark them with advisory metadata. In public beta this does not activate a hosted execution cache or cause request-path cache writes.
 
 #### 4.1.1 Thresholds
 
@@ -201,9 +201,9 @@ HAVING COUNT(*) >= 10
 
 #### 4.1.2 Phase 2 Data Source
 
-In Phase 2, `execution_count` is read from `codevolve-skills.execution_count` (DynamoDB). `input_repeat_rate` is approximated from the `codevolve-gap-log` table's `input_hash` diversity column. This approximation is coarse — the gap-log is not designed for this purpose. The Phase 2 behavior is: if `execution_count >= 50`, set `auto_cache = true` without checking `input_repeat_rate`. The repeat rate check is fully enforced in Phase 3 via ClickHouse.
+In Phase 2, `execution_count` is read from `codevolve-skills.execution_count` (DynamoDB). `input_repeat_rate` is approximated from the `codevolve-gap-log` table's `input_hash` diversity column. This approximation is coarse — the gap-log is not designed for this purpose. The Phase 2 behavior is: if `execution_count >= 50`, set `auto_cache = true` as advisory metadata without checking `input_repeat_rate`. The repeat rate check is fully enforced in Phase 3 via ClickHouse.
 
-This conservative Phase 2 behavior means more skills may receive `auto_cache = true` than strictly necessary, causing some extra cache writes in `/execute`. This is acceptable — a slightly over-eager cache is preferable to a missed cache for high-traffic skills.
+This conservative Phase 2 behavior means more skills may receive `auto_cache = true` than strictly necessary, but in beta that flag is descriptive only. It should not be documented as creating cache entries, warming a cache, or changing `/execute` runtime behavior.
 
 #### 4.1.3 DynamoDB Query
 
@@ -313,7 +313,7 @@ Because ClickHouse is not live in Phase 2, resolve events with `success = false`
 | `last_evolve_queued_at` | S | ISO 8601. When this intent was last sent to GapQueue. Null if never. |
 | `ttl` | N | Unix epoch seconds. Auto-expire after 7 days of no new occurrences. |
 
-**Who writes to `codevolve-gap-log`:** The `/resolve` Lambda (IMPL-05). When a resolve attempt returns `success = false` (confidence below threshold or no match), `/resolve` writes or updates an item in `codevolve-gap-log` via `UpdateItem` with `ADD miss_count :one` and `SET last_seen_at = :now`. This write is fire-and-forget.
+**Who writes to `codevolve-gap-log`:** The `/intent` Lambda (IMPL-05). When an intent routing attempt returns `success = false` (confidence below threshold or no match), `/intent` writes or updates an item in `codevolve-gap-log` via `UpdateItem` with `ADD miss_count :one` and `SET last_seen_at = :now`. This write is fire-and-forget.
 
 **Who reads from `codevolve-gap-log`:** The Decision Engine (Rule 3). This is the only reader.
 
@@ -456,7 +456,7 @@ Condition: zero resolve attempts in 90 days AND no active skills with confidence
 
 **How to check:** Query `GSI-problem-status` for the problem to count non-archived skills with `confidence > 0.50`. If count == 0, and `last_resolve_at` on the problem record is more than 90 days ago (or null), enqueue the problem.
 
-**`last_resolve_at` tracking:** The `/resolve` Lambda must write `last_resolve_at` to the matching problem record on every successful resolve. This is not currently specified in `docs/dynamo-schemas.md`. **Ada must add `last_resolve_at` (S, ISO 8601) to the `codevolve-problems` table schema as part of IMPL-10.** The field is set by `/resolve` (UpdateItem, fire-and-forget) and read by the Decision Engine.
+**`last_resolve_at` tracking:** The `/intent` Lambda must write `last_resolve_at` to the matching problem record on every successful intent result. This is not currently specified in `docs/dynamo-schemas.md`. **Ada must add `last_resolve_at` (S, ISO 8601) to the `codevolve-problems` table schema as part of IMPL-10.** The field name is retained for compatibility; it is set by `/intent` (UpdateItem, fire-and-forget) and read by the Decision Engine.
 
 #### 4.4.5 Per-Cycle Limit
 
@@ -650,7 +650,7 @@ All resources are added to `infra/codevolve-stack.ts`. The following table lists
 | DynamoDB write | `codevolve-gap-log` | `UpdateItem`, `PutItem` |
 | DynamoDB read | `codevolve-config` | `GetItem` |
 | DynamoDB write | `codevolve-config` | `UpdateItem` (for `last_archive_evaluation`) |
-| DynamoDB read/write | `codevolve-problems` | `Query` (for problem archive trigger), `UpdateItem` (last_resolve_at update not done here — `/resolve` does it) |
+| DynamoDB read/write | `codevolve-problems` | `Query` (for problem archive trigger), `UpdateItem` (last_resolve_at update not done here — `/intent` does it) |
 | DynamoDB write | `codevolve-archive-dry-run` | `PutItem` (dry-run mode only) |
 | SQS send | `codevolve-gap-queue.fifo` | `SendMessage` |
 | SQS send | `codevolve-archive-queue` | `SendMessage` |
@@ -670,9 +670,9 @@ archiveHandlerFn.addEventSource(new SqsEventSource(archiveQueue, {
 }));
 ```
 
-**`/resolve` Lambda — additional grant needed:**
+**`/intent` Lambda — additional grant needed:**
 
-The existing `/resolve` Lambda (IMPL-05) needs DynamoDB `UpdateItem` on `codevolve-gap-log` and `codevolve-problems` (for `last_resolve_at`). This is specified here so CDK grants are not missed when IMPL-05 is implemented.
+The existing `/intent` Lambda (IMPL-05) needs DynamoDB `UpdateItem` on `codevolve-gap-log` and `codevolve-problems` (for `last_resolve_at`). This is specified here so CDK grants are not missed when IMPL-05 is implemented.
 
 ---
 

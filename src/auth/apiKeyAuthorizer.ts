@@ -7,25 +7,28 @@
  * Rules:
  * - Key must exist in the table.
  * - Key must not be revoked.
+ * - Key must belong to an active account when account metadata is present.
  * - Key must have the cvk_ prefix (malformed keys are denied immediately).
  *
- * This handler NEVER throws — it always returns Allow or Deny.
+ * This handler NEVER throws - it always returns Allow or Deny.
  *
  * Environment variables required:
- *   API_KEYS_TABLE — DynamoDB table name for codevolve-api-keys
+ *   API_KEYS_TABLE - DynamoDB table name for codevolve-api-keys
+ *   ACCOUNTS_TABLE - DynamoDB table name for codevolve accounts
  */
 
 import * as crypto from "crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  QueryCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import type {
   APIGatewayAuthorizerResult,
   APIGatewayTokenAuthorizerEvent,
 } from "aws-lambda";
-
-// ---------------------------------------------------------------------------
-// DynamoDB client
-// ---------------------------------------------------------------------------
 
 const ddbClient = new DynamoDBClient({
   region: process.env.AWS_REGION ?? "us-east-2",
@@ -35,23 +38,19 @@ const docClient = DynamoDBDocumentClient.from(ddbClient, {
   marshallOptions: { removeUndefinedValues: true },
 });
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const API_KEYS_TABLE =
   process.env.API_KEYS_TABLE ?? "codevolve-api-keys";
+const ACCOUNTS_TABLE =
+  process.env.ACCOUNTS_TABLE ?? "codevolve-accounts";
 
 const KEY_PREFIX = "cvk_";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 interface ApiKeyRecord {
   key_id: string;
   api_key_hash: string;
   owner_id: string;
+  account_id?: string;
+  agent_id?: string;
   name: string;
   description?: string;
   created_at: string;
@@ -60,9 +59,11 @@ interface ApiKeyRecord {
   revoked_at?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+interface AccountRecord {
+  account_id: string;
+  status?: string;
+  suspended_at?: string;
+}
 
 function hashKey(rawKey: string): string {
   return crypto.createHash("sha256").update(rawKey).digest("hex");
@@ -86,9 +87,17 @@ async function lookupKeyByHash(hash: string): Promise<ApiKeyRecord | null> {
   return result.Items[0] as ApiKeyRecord;
 }
 
-/**
- * Fire-and-forget last_used_at update. Never awaited, never crashes the handler.
- */
+async function lookupAccountById(accountId: string): Promise<AccountRecord | null> {
+  const result = await docClient.send(
+    new GetCommand({
+      TableName: ACCOUNTS_TABLE,
+      Key: { account_id: accountId },
+    }),
+  );
+
+  return (result.Item as AccountRecord | undefined) ?? null;
+}
+
 function updateLastUsed(keyId: string): void {
   const now = new Date().toISOString();
   docClient
@@ -104,10 +113,6 @@ function updateLastUsed(keyId: string): void {
       console.error("[apiKeyAuthorizer] Failed to update last_used_at:", String(err));
     });
 }
-
-// ---------------------------------------------------------------------------
-// IAM policy builder
-// ---------------------------------------------------------------------------
 
 function buildPolicy(
   principalId: string,
@@ -131,16 +136,11 @@ function buildPolicy(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Lambda handler
-// ---------------------------------------------------------------------------
-
 export const handler = async (
   event: APIGatewayTokenAuthorizerEvent,
 ): Promise<APIGatewayAuthorizerResult> => {
   const rawKey = event.authorizationToken ?? "";
 
-  // Reject keys without the expected prefix immediately
   if (!rawKey.startsWith(KEY_PREFIX)) {
     console.warn("[apiKeyAuthorizer] Key missing cvk_ prefix");
     return buildPolicy("anonymous", "Deny", event.methodArn);
@@ -160,12 +160,21 @@ export const handler = async (
       return buildPolicy("anonymous", "Deny", event.methodArn);
     }
 
-    // Fire-and-forget last_used_at update — do not await
+    if (record.account_id) {
+      const account = await lookupAccountById(record.account_id);
+      if (account?.status === "suspended") {
+        console.warn("[apiKeyAuthorizer] Account is suspended:", record.account_id);
+        return buildPolicy("anonymous", "Deny", event.methodArn);
+      }
+    }
+
     updateLastUsed(record.key_id);
 
     console.info("[apiKeyAuthorizer] Key accepted for owner:", record.owner_id);
     return buildPolicy(record.owner_id, "Allow", event.methodArn, {
       owner_id: record.owner_id,
+      account_id: record.account_id ?? record.owner_id,
+      ...(record.agent_id ? { agent_id: record.agent_id } : {}),
       key_id: record.key_id,
     });
   } catch (err) {

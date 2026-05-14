@@ -18,6 +18,7 @@ jest.mock("@aws-sdk/lib-dynamodb", () => ({
   DynamoDBDocumentClient: {
     from: jest.fn().mockReturnValue({ send: mockSend }),
   },
+  GetCommand: jest.fn().mockImplementation((params) => ({ input: params })),
   QueryCommand: jest.fn().mockImplementation((params) => ({ input: params })),
   UpdateCommand: jest.fn().mockImplementation((params) => ({ input: params })),
 }));
@@ -58,7 +59,9 @@ describe("apiKeyAuthorizer", () => {
       Items: [
         {
           key_id: "key-123",
-          owner_id: "user-abc",
+          owner_id: "acct-abc",
+          account_id: "acct-abc",
+          agent_id: "agt-123",
           revoked: false,
           api_key_hash: "somehash",
           name: "test key",
@@ -66,13 +69,19 @@ describe("apiKeyAuthorizer", () => {
         },
       ],
     });
+    mockSend.mockResolvedValueOnce({
+      Item: {
+        account_id: "acct-abc",
+        status: "active",
+      },
+    });
     // fire-and-forget UpdateCommand
     mockSend.mockResolvedValueOnce({});
 
     const result = await handler(makeEvent(VALID_KEY));
 
     expect(result.policyDocument.Statement[0].Effect).toBe("Allow");
-    expect(result.principalId).toBe("user-abc");
+    expect(result.principalId).toBe("acct-abc");
   });
 
   it("denies a revoked key", async () => {
@@ -89,6 +98,34 @@ describe("apiKeyAuthorizer", () => {
         },
       ],
     });
+
+    const result = await handler(makeEvent(VALID_KEY));
+
+    expect(result.policyDocument.Statement[0].Effect).toBe("Deny");
+    expect(result.principalId).toBe("anonymous");
+  });
+
+  it("denies a key for a suspended account", async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Items: [
+          {
+            key_id: "key-999",
+            owner_id: "acct-suspended",
+            account_id: "acct-suspended",
+            revoked: false,
+            api_key_hash: "somehash",
+            name: "suspended key",
+            created_at: new Date().toISOString(),
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        Item: {
+          account_id: "acct-suspended",
+          status: "suspended",
+        },
+      });
 
     const result = await handler(makeEvent(VALID_KEY));
 
@@ -135,13 +172,20 @@ describe("apiKeyAuthorizer", () => {
         Items: [
           {
             key_id: "key-789",
-            owner_id: "user-xyz",
+            owner_id: "acct-xyz",
+            account_id: "acct-xyz",
             revoked: false,
             api_key_hash: "somehash",
             name: "test key",
             created_at: new Date().toISOString(),
           },
         ],
+      })
+      .mockResolvedValueOnce({
+        Item: {
+          account_id: "acct-xyz",
+          status: "active",
+        },
       })
       .mockRejectedValueOnce(new Error("Update failed"));
 

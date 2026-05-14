@@ -4,6 +4,8 @@
 **Date:** 2026-03-21
 **Verdict:** Approved with notes
 
+Historical note: this review uses `/resolve` because that was the endpoint name at the time of review. The later cleanup work normalized the public intent-routing naming toward `/intent`; the analysis below remains accurate for the reviewed commit, but the route label is historical.
+
 ---
 
 ## Summary

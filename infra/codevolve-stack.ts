@@ -641,7 +641,8 @@ export class CodevolveStack extends cdk.Stack {
       }),
     );
 
-    // Auth: custom JWT authorizer Lambda (IMPL-16 — backup for non-APIGW contexts)
+    // Auth: standalone JWT authorizer Lambda for non-APIGW callers.
+    // REST API routes use CognitoUserPoolsAuthorizer as the primary beta path.
     const authorizerFn = new NodejsFunction(this, "AuthorizerFn", {
       ...commonNodejsProps,
       functionName: "codevolve-authorizer",

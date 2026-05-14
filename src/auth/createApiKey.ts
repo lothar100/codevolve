@@ -18,7 +18,7 @@ import {
   AGENT_ID_PREFIX,
   API_KEYS_TABLE,
   buildApiKeyRecord,
-  deriveOwnerId,
+  deriveAuthContext,
   docClient,
 } from "./shared.js";
 import { validate } from "../shared/validation.js";
@@ -37,9 +37,9 @@ export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   try {
-    const ownerId = deriveOwnerId(event);
+    const authContext = deriveAuthContext(event);
 
-    if (!ownerId) {
+    if (!authContext) {
       return error(401, "UNAUTHORIZED", "Missing or invalid authorization");
     }
 
@@ -52,7 +52,7 @@ export const handler = async (
     }
 
     const validation = validate(CreateApiKeyRequestSchema, body);
-    if (!validation.success) {
+    if (validation.success === false) {
       return error(
         400,
         validation.error.code,
@@ -62,13 +62,29 @@ export const handler = async (
     }
 
     const data = validation.data;
+    const ownerId = authContext.accountId;
+    const accountId =
+      (event.requestContext?.authorizer?.["account_id"] as string | undefined) ??
+      ownerId;
+    const agentId =
+      (event.requestContext?.authorizer?.["agent_id"] as string | undefined) ??
+      (ownerId.startsWith(AGENT_ID_PREFIX) ? ownerId : undefined);
     const issuedKey = buildApiKeyRecord({
       ownerId,
       name: data.name,
       description: data.description,
-      ownerType: ownerId.startsWith(AGENT_ID_PREFIX) ? "agent" : "user",
+      ownerType:
+        authContext.authSource === "api_key" || ownerId.startsWith(AGENT_ID_PREFIX)
+          ? "agent"
+          : "user",
       createdVia: "authenticated_key_management",
     });
+    if (authContext.authSource === "api_key") {
+      issuedKey.item["account_id"] = accountId;
+      if (agentId) {
+        issuedKey.item["agent_id"] = agentId;
+      }
+    }
 
     await docClient.send(
       new PutCommand({

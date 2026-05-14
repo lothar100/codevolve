@@ -88,7 +88,18 @@ function analyticsUnavailable(err: unknown) {
 
 function degraded(type: z.infer<typeof DashboardTypeSchema>, from: string, to: string): APIGatewayProxyResult {
   const base = { degraded: true, degraded_reason: "analytics_unavailable", time_range: { from, to } };
-  if (type === "intent-performance") return success(200, { dashboard: type, ...base, latency_over_time: [], latency_histogram: [], high_confidence_pct: 0, high_confidence_over_time: [], success_rate_pct: 0, low_confidence_resolves: [] });
+  if (type === "resolve-performance" || type === "intent-performance") {
+    return success(200, {
+      dashboard: "resolve-performance",
+      ...base,
+      latency_over_time: [],
+      latency_histogram: [],
+      high_confidence_pct: 0,
+      high_confidence_over_time: [],
+      success_rate_pct: 0,
+      low_confidence_resolves: [],
+    });
+  }
   if (type === "execution-caching") return success(200, { dashboard: type, ...base, top_skills: [], repetition_rates: [], repetition_rate_over_time: [], intent_repetition_rate_pct: 0, execution_latency_over_time: [], cache_candidates: [] });
   if (type === "skill-quality") return success(200, { dashboard: type, ...base, test_pass_rates: [], confidence_over_time: [], failure_rates: [], competing_implementations: [], confidence_degradation: [] });
   if (type === "evolution-gap") return success(200, { dashboard: type, ...base, unresolved_intents: [], low_confidence_intents: [], low_confidence_volume: [], failed_executions: [], domain_coverage_gaps: [], evolve_pipeline: [] });
@@ -254,7 +265,7 @@ async function intentPerformance(from: string, to: string) {
   const rows = bucketRows(buckets, "minute", "resolve", "global");
   const totals = aggregate(rows);
   return success(200, {
-    dashboard: "intent-performance",
+    dashboard: "resolve-performance",
     time_range: { from, to },
     latency_over_time: rows.map((r) => ({ minute: s(r, "bucket_start"), p50_ms: pct(latency(r), 0.5), p95_ms: pct(latency(r), 0.95) })),
     latency_histogram: totals.hist.map((b) => ({ bucket_ms: b.start, request_count: b.count })),
@@ -386,7 +397,9 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const { from, to } = resolved;
     fallback = { from, to };
     if (dashboardType === "mountain") return mountainDashboard(event.queryStringParameters ?? {});
-    if (dashboardType === "intent-performance") return intentPerformance(from, to);
+    if (dashboardType === "resolve-performance" || dashboardType === "intent-performance") {
+      return intentPerformance(from, to);
+    }
     if (dashboardType === "execution-caching") return executionCaching(from, to);
     if (dashboardType === "skill-quality") return skillQuality(from, to);
     if (dashboardType === "evolution-gap") return evolutionGap(from, to);

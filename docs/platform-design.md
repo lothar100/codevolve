@@ -35,11 +35,11 @@ When a contributor POSTs to `POST /skills`, fields fall into three categories: *
 | `is_canonical` | Inferred | `false` | Always `false` on creation. Set via `POST /skills/:id/promote-canonical`. |
 | `is_archived` | Inferred | `false` | Always `false` on creation. Set via `POST /skills/:id/archive`. |
 | `confidence` | Inferred | `0` | Set to 0 on creation. Updated by `POST /validate/:skill_id`. |
-| `latency_p50_ms` | Inferred | `null` | Populated after first execution via `/execute`. |
-| `latency_p95_ms` | Inferred | `null` | Populated after first execution via `/execute`. |
+| `latency_p50_ms` | Inferred | `null` | Populated from local execution feedback or validation telemetry. |
+| `latency_p95_ms` | Inferred | `null` | Populated from local execution feedback or validation telemetry. |
 | `embedding` | Inferred | 1024-dim vector | Generated server-side via Bedrock Titan v2 from `name`, `description`, `domain`, and `tags`. |
-| `execution_count` | Inferred | `0` | Incremented by `/execute`. |
-| `last_executed_at` | Inferred | `null` | Updated by `/execute`. |
+| `execution_count` | Inferred | `0` | Incremented from local execution feedback events. |
+| `last_executed_at` | Inferred | `null` | Updated from local execution feedback events. |
 | `optimization_flagged` | Inferred | `false` | Set by Decision Engine. |
 | `created_at` | Inferred | Current ISO 8601 timestamp | Server-generated. |
 | `updated_at` | Inferred | Current ISO 8601 timestamp | Server-generated. Same as `created_at` on initial creation. |
@@ -171,7 +171,7 @@ Every validation rule produces a specific, actionable error message. Errors are 
 | `problem_id` not found | 404 | `NOT_FOUND` | `"No problem found with id '{problem_id}'. Verify the problem exists via GET /problems/:id."` |
 | `problem_id` is archived | 404 | `NOT_FOUND` | `"Problem '{problem_id}' is archived. Skills cannot be added to archived problems."` |
 | Duplicate skill (same problem_id + name + language + version) | 409 | `CONFLICT` | `"A skill named '{name}' in {language} version {version} already exists for problem '{problem_id}'. Use a different version number or update the existing skill."` |
-| Embedding generation failure | 500 | `INTERNAL_ERROR` | `"Skill was saved but embedding generation failed. The skill will not appear in /resolve results until the embedding is regenerated. Contact support or retry by updating the skill."` |
+| Embedding generation failure | 500 | `INTERNAL_ERROR` | `"Skill was saved but embedding generation failed. The skill will not appear in /intent results until the embedding is regenerated. Contact support or retry by updating the skill."` |
 
 ---
 
@@ -334,7 +334,7 @@ Skills use a composite DynamoDB key `(skill_id, version)`. Each version is an im
 |-------------|--------|-------------|
 | **Functional change** -- implementation, inputs, outputs, tests, examples | New version | New sort key entry under the same `skill_id`. Previous version remains in DynamoDB. |
 | **Metadata-only change** -- tags, description, name | New version | Even metadata changes create a new version for auditability. The description change affects embedding quality, so re-embedding is triggered. |
-| **System-managed fields** -- confidence, latency, execution_count, embedding, optimization_flagged | In-place update | `UpdateItem` on the current `(skill_id, version)`. These are not contributor-controlled. |
+| **System-managed fields** -- confidence, latency, execution_count, embedding, optimization_flagged | In-place update | `UpdateItem` on the current `(skill_id, version)`. These are not contributor-controlled and are updated from validation or execution feedback, not from hosted runs inside codeVolve. |
 | **Status transitions** -- via `/validate`, promote-canonical, archive | In-place update | Status is a system-managed lifecycle field, updated on the current version. |
 
 #### 4.2 Creating a New Version
@@ -435,7 +435,7 @@ X-Response-Time-Ms: 128
 }
 ```
 
-**Note:** This minimal skill will not appear in `/resolve` results until its embedding is generated (async, typically within 1-2 seconds of creation). It cannot become canonical until it has tests, a passing implementation, and confidence >= 0.85.
+**Note:** This minimal skill will not appear in `/intent` results until its embedding is generated (async, typically within 1-2 seconds of creation). It cannot become canonical until it has tests, a passing implementation, and confidence >= 0.85.
 
 ---
 
@@ -1045,7 +1045,7 @@ LIMIT 50;
 
 **5d. Skill chaining patterns -- skills frequently executed in sequence (chord diagram or sankey chart)**
 
-Note: Chaining is detected by looking at execute events within a short time window for the same intent prefix or session. The `/execute/chain` endpoint should emit events with a shared `chain_id` in the intent field (e.g., `chain:abc123:step:1`). The following uses temporal proximity as an approximation.
+Note: Chaining is detected by looking at execute events within a short time window for the same intent prefix or session. The chain planner should emit events with a shared `chain_id` so the following uses temporal proximity as an approximation.
 
 ```sql
 WITH ordered_executions AS (
@@ -1228,9 +1228,9 @@ This mirrors the codeVolve HTTP API error shape exactly so agents do not need se
 
 #### Tool: `resolve_skill`
 
-**Description:** Map a natural-language intent to the best matching skill in the registry. Returns the top match with its confidence score. Agents should check `confidence` before proceeding to `execute_skill` — a confidence below 0.7 means the match is unreliable.
+**Description:** Map a natural-language intent to the best matching skill in the registry. This is the discovery step only. Canonical HTTP route is `POST /intent`; `resolve_skill` is retained as the MCP compatibility name.
 
-**Wraps:** `POST /resolve`
+**Wraps:** `POST /intent`
 
 **Input schema:**
 
@@ -1260,7 +1260,7 @@ This mirrors the codeVolve HTTP API error shape exactly so agents do not need se
 ```
 
 **Output description:** JSON object with fields:
-- `skill_id` (string, UUID) — ID of the best matching skill. Pass to `execute_skill`.
+- `skill_id` (string, UUID) — ID of the best matching skill.
 - `name` (string) — human-readable skill name.
 - `confidence` (number, 0-1) — skill's stored confidence score from validation history.
 - `similarity_score` (number, 0-1) — cosine similarity of the intent against this skill's embedding. Higher is a better semantic match.
@@ -1269,59 +1269,15 @@ This mirrors the codeVolve HTTP API error shape exactly so agents do not need se
 - `evolve_triggered` (boolean) — true if the platform has already queued this intent for `/evolve` because confidence is low.
 - `no_match` (boolean) — true if no skill was found. All other fields will be null.
 
-**Rationale:** Returns one best match, not a ranked list. Agents should not implement their own ranking logic. The `confidence` vs `similarity_score` distinction matters: `confidence` is about the skill's historical quality; `similarity_score` is about how well it matches this intent. Agents should gate on `similarity_score >= 0.7` for execution trust.
-
----
-
-#### Tool: `execute_skill`
-
-**Description:** Run a skill with the provided inputs. Returns the skill's typed outputs. Automatically uses the cache when available.
-
-**Wraps:** `POST /execute`
-
-**Input schema:**
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "skill_id": {
-      "type": "string",
-      "format": "uuid",
-      "description": "UUID of the skill to execute. Obtain from resolve_skill."
-    },
-    "inputs": {
-      "type": "object",
-      "description": "Key-value pairs matching the skill's declared input schema. Field names and types must match the skill's inputs array."
-    },
-    "timeout_ms": {
-      "type": "integer",
-      "minimum": 100,
-      "maximum": 300000,
-      "description": "Optional. Execution timeout in milliseconds. Defaults to 30000 (30 seconds)."
-    }
-  },
-  "required": ["skill_id", "inputs"]
-}
-```
-
-**Output description:** JSON object with fields:
-- `outputs` (object) — key-value pairs matching the skill's declared output schema.
-- `cache_hit` (boolean) — whether this result was served from cache.
-- `latency_ms` (number) — total execution time in milliseconds.
-- `execution_id` (string, UUID) — unique trace ID for this execution.
-- `skill_id` (string, UUID) — echoed from input.
-- `version` (integer) — the version of the skill that was executed.
-
-**Rationale:** `outputs` is always a typed object, never free-form text. Agents can destructure outputs directly. The `cache_hit` field allows agents to log or report cache behavior without inspecting headers.
+**Rationale:** Returns one best match, not a ranked list. Agents should not implement their own ranking logic. The `confidence` vs `similarity_score` distinction matters: `confidence` is about the skill's historical quality; `similarity_score` is about how well it matches this intent. Agents should use this to decide whether to fetch the skill summary and implementation, or to fall back to their own reasoning.
 
 ---
 
 #### Tool: `chain_skills`
 
-**Description:** Execute a sequence of skills in order, automatically piping outputs from one step to the inputs of the next. Use this when you have a known multi-step pipeline. If any step fails, execution halts and partial results are returned.
+**Description:** Describe a known multi-step workflow. Each step is resolved independently and the caller executes the underlying implementations locally. Use this when the pipeline is known upfront and the agent wants a compact, correlated plan rather than ad hoc repeated routing.
 
-**Wraps:** `POST /execute/chain`
+**Wraps:** Legacy compatibility route `POST /execute/chain`; semantics are local planning only.
 
 **Input schema:**
 
@@ -1367,21 +1323,19 @@ This mirrors the codeVolve HTTP API error shape exactly so agents do not need se
 ```
 
 **Output description:** JSON object with fields:
-- `chain_id` (string, UUID) — unique ID for this chain execution.
-- `steps` (array) — per-step results, each with `skill_id`, `outputs`, `latency_ms`, `cache_hit`, `success`, `error`.
-- `final_outputs` (object or null) — outputs from the last successful step. Null if the first step failed.
-- `total_latency_ms` (number) — sum of all step latencies.
-- `completed_steps` (integer) — number of steps that ran before failure or completion.
+- `chain_id` (string, UUID) — unique ID for this chain plan.
+- `steps` (array) — per-step routing results, each with `skill_id`, `name`, `confidence`, `similarity_score`, `status`, and any resolution error.
+- `final_outputs` (object or null) — reserved for caller-generated local execution summaries.
 - `total_steps` (integer) — total steps in the chain.
-- `success` (boolean) — true only if all steps completed without error.
+- `success` (boolean) — true only if all steps resolved successfully.
 
-**Rationale:** `chain_skills` is preferred over multiple sequential `execute_skill` calls when the pipeline is known upfront. It avoids round-trip latency between steps, uses the server-side input mapping DSL, and emits a single correlated chain event to analytics. See Section 5 (Agent Ergonomics) for guidance on when to choose `chain_skills` vs sequential `execute_skill`.
+**Rationale:** `chain_skills` is a coordination aid, not an execution engine. It helps agents keep multi-step workflows compact and correlated while still running the actual skill code in their own environment.
 
 ---
 
 #### Tool: `get_skill`
 
-**Description:** Retrieve full details for a skill by ID, including its implementation, tests, examples, and confidence score. Use this when you need to inspect a skill before executing it, or when building a prompt for improvement.
+**Description:** Retrieve full details for a skill by ID, including its implementation, tests, examples, and confidence score. Use this after discovery when you need to inspect a skill before local execution, or when building a prompt for improvement.
 
 **Wraps:** `GET /skills/:id`
 
@@ -1780,62 +1734,62 @@ After submitting, call validate_skill with the returned skill_id to confirm the 
 
 ### 4. Agent Ergonomics
 
-#### Standard Flow: resolve then execute
+#### Canonical Flow: intent or exact lookup -> summary -> implementation fetch if needed -> local execution -> feedback
 
-The canonical agent pattern is two tool calls:
+The canonical agent pattern is:
 
 ```
-1. resolve_skill(intent="...", language="python")
-   → Returns: { skill_id, similarity_score, confidence, status }
+1. Resolve the need.
+   - If you know the skill already, use `get_skill` or `list_skills` for exact lookup.
+   - If you do not, use `resolve_skill(intent="...", language="python")`.
 
-2. IF similarity_score >= 0.7 AND status != "archived":
-      execute_skill(skill_id=..., inputs={...})
-      → Returns: { outputs, cache_hit, latency_ms }
+2. Inspect the summary.
+   - Review the skill metadata, examples, and tests first.
+   - Fetch the implementation only if the agent actually needs to run it.
+
+3. Execute locally.
+   - Run the implementation in the agent's own environment.
+   - codeVolve does not host the primary execution path in this model.
+
+4. Feed back results.
+   - Use `validate_skill` for built-in test results.
+   - Report runtime/usage telemetry separately so the platform can track quality and adoption.
 ```
 
-Agents must check `similarity_score` (the semantic match quality for this specific intent) before executing. The `confidence` field reflects historical test-pass quality and should inform trust in the output, but `similarity_score` is the gating condition for whether to execute at all.
+Agents should treat `similarity_score` as the routing quality signal. If `similarity_score < 0.7`, they should refine the intent, browse alternatives with `list_skills`, or continue with their own reasoning if no suitable skill exists.
 
-If `similarity_score < 0.7`, the agent should not blindly execute. It should either:
-- Refine the intent and resolve again.
-- Call `list_skills` with known domain/language filters to browse alternatives.
-- Accept that no suitable skill exists and proceed with its own reasoning (the `/evolve` pipeline will be triggered automatically by the platform).
-
-#### When to use `chain_skills` vs multiple `execute_skill` calls
+#### When to use `chain_skills`
 
 Use `chain_skills` when:
-- The full pipeline is known before the first step runs (all `skill_id`s are resolved upfront).
-- Steps have a clear, static input/output dependency (step N's output feeds step N+1's input with a predictable mapping).
-- You want correlated analytics across all steps under one `chain_id`.
-- You want total timeout enforcement across the chain rather than per-step management.
+- The full multi-step workflow is known before the first step is executed.
+- The agent wants a single correlated plan for a static sequence of skill lookups.
+- Each step can be resolved independently from the others.
 
-Use sequential `execute_skill` calls when:
-- The `skill_id` for step N depends on the output of step N-1 (dynamic routing — you cannot know all steps upfront).
-- A step's failure should trigger fallback logic rather than halting the chain.
-- Steps are conditionally executed based on intermediate results.
+Use direct step-by-step resolution when:
+- The next step depends on the output of the previous step.
+- The agent needs branching or dynamic selection between steps.
+- The workflow should be assembled opportunistically from local reasoning.
 
-**Rule of thumb:** If you would write the pipeline as a static list, use `chain_skills`. If the pipeline requires branching or dynamic skill selection, use sequential `execute_skill`.
+**Rule of thumb:** If the pipeline is static, use `chain_skills` to keep the plan compact. If the pipeline is dynamic, resolve each step separately and keep execution local.
 
 #### Error handling
 
-**404 / `SKILL_NOT_FOUND`:** The skill_id from a prior resolve is no longer valid (archived or deleted between resolve and execute). Agents should re-run `resolve_skill` with the same intent to get a current match. Do not retry the execute with the same skill_id.
+**404 / `SKILL_NOT_FOUND`:** The `skill_id` from a prior lookup is no longer valid (archived or deleted between discovery and local execution). Agents should refresh by re-running `resolve_skill` with the same intent or by performing an exact lookup again.
 
 **`similarity_score < 0.7` (soft miss):** Not an error code — the API returns 200 but the match is weak. Agents should treat this as a "no confident match" state. The platform will automatically enqueue the intent for `/evolve` (indicated by `evolve_triggered: true`). Agents should fall back to their own reasoning rather than blindly executing a low-confidence skill.
 
 **`best_match: null` (hard miss):** No skill exists for the intent. `evolve_triggered` will be `true`. Agents must handle this without executing — there is nothing to execute.
 
-**408 / `EXECUTION_TIMEOUT`:** The skill took longer than `timeout_ms`. Agents should not retry immediately without increasing the timeout. For most skills, the default 30-second timeout is sufficient. If a skill consistently times out, it is a signal to the platform that the skill needs optimization — the Decision Engine will flag it automatically.
+**Local execution failure:** If the implementation fails in the agent's environment, the agent should surface the runtime error, avoid looping on the same inputs, and either fetch a different skill or re-check the implementation version. This failure is outside the core codeVolve API path.
 
-**422 / `EXECUTION_FAILED`:** The skill's implementation threw a runtime error. The `error.details` field contains the error message. Agents should not retry with the same inputs — the failure is deterministic. Log the failure and consider calling `resolve_skill` again to find an alternative implementation.
+**429 / `RATE_LIMITED`:** Per-agent rate limits are enforced by API Gateway. Limits are: 100 req/min for `resolve_skill`, 50 req/min for `get_skill`, 20 req/min for `chain_skills`, 30 req/min for `validate_skill`, 200 req/min for `submit_skill`, and 200 req/min for `list_skills`. Agents should implement exponential backoff starting at 1 second. MCP tool calls that hit rate limits will return an error with code `RATE_LIMITED` — agents must not retry in a tight loop.
 
-**429 / `RATE_LIMITED`:** Per-agent rate limits are enforced by API Gateway. Limits are: 100 req/min for `resolve_skill`, 50 req/min for `execute_skill`, 20 req/min for `chain_skills`. Agents should implement exponential backoff starting at 1 second. MCP tool calls that hit rate limits will return an error with code `RATE_LIMITED` — agents must not retry in a tight loop.
+#### Rate limits reference (MCP tool → HTTP endpoint or local role)
 
-#### Rate limits reference (MCP tool → HTTP endpoint)
-
-| MCP Tool | Underlying endpoint | Rate limit |
-|----------|---------------------|------------|
-| `resolve_skill` | `POST /resolve` | 100 req/min |
-| `execute_skill` | `POST /execute` | 50 req/min |
-| `chain_skills` | `POST /execute/chain` | 20 req/min |
+| MCP Tool | Underlying endpoint or role | Rate limit |
+|----------|----------------------------|------------|
+| `resolve_skill` | `POST /intent` | 100 req/min |
+| `chain_skills` | Local chain planning helper | 20 req/min |
 | `validate_skill` | `POST /validate/:skill_id` | 30 req/min |
 | `submit_skill` | `POST /skills` | 200 req/min |
 | `get_skill` | `GET /skills/:id` | 200 req/min |
@@ -1908,12 +1862,12 @@ The MCP server binary is expected to live at `packages/mcp-server/` in this repo
 
 | Scenario | Behavior |
 |----------|----------|
-| `resolve_skill` returns `best_match: null` | `no_match: true` in response. `evolve_triggered: true`. Agent must not call `execute_skill`. |
-| Agent calls `execute_skill` with an archived skill_id | HTTP returns 404 `NOT_FOUND`. MCP tool returns error with code `SKILL_NOT_FOUND`. Agent should re-resolve. |
-| `chain_skills` step 2 fails | `success: false`, `completed_steps: 1`, `final_outputs: null` (if step 1 succeeded, `final_outputs` holds step 1's outputs). Agent inspects `steps[1].error`. |
+| `resolve_skill` returns `best_match: null` | `no_match: true` in response. `evolve_triggered: true`. Agent must not proceed as if a skill exists. |
+| A discovered skill becomes archived before local execution | HTTP returns 404 `NOT_FOUND` on the next `get_skill` call. The agent should re-run intent routing or exact lookup. |
+| `chain_skills` step resolution fails | The returned plan includes the failed step and the agent should stop or re-route that step locally. |
 | `submit_skill` called without tests | MCP tool validation rejects before HTTP call with: `"tests must contain at least 2 items"`. HTTP API is not called. |
 | `validate_skill` called on a skill with no built-in tests | HTTP returns 422 `PRECONDITION_FAILED`. MCP tool surfaces this as an error. |
-| Rate limit hit mid-chain | `chain_skills` fails at the rate-limited step. The chain does not retry automatically. Agent receives the partial result and the `RATE_LIMITED` error. |
+| Rate limit hit mid-chain planning | `chain_skills` fails at the rate-limited step. The plan does not retry automatically. Agent receives the partial result and the `RATE_LIMITED` error. |
 | `CODEVOLVE_API_URL` not set | MCP server fails to start with a clear error: `"CODEVOLVE_API_URL is required but not set."` |
 
 ---
@@ -1934,7 +1888,7 @@ The MCP server binary is expected to live at `packages/mcp-server/` in this repo
 
 **Experience goal (for human):** A developer or platform operator opens the mountain view and immediately sees the health of the full registry at a glance — color tells them skill quality, brightness tells them activity, and clusters orient them within a domain. Clicking a brick opens a skill detail panel. Filtering narrows the view without a page reload.
 
-**Experience goal (for agent):** This endpoint is not agent-facing. No agent tool call maps to `/analytics/dashboards/mountain`. The mountain visualization is exclusively a human observability surface. Agents use `/resolve` and `/skills` for programmatic access.
+**Experience goal (for agent):** This endpoint is not agent-facing. No agent tool call maps to `/analytics/dashboards/mountain`. The mountain visualization is exclusively a human observability surface. Agents use `/intent` and `/skills` for programmatic access.
 
 **Design decision:** The mountain endpoint returns per-problem aggregates only. It does not return full skill records, embedding vectors, or implementation code. A follow-up `GET /problems/:id` call (existing endpoint, not part of this spec) provides skill-level detail when a user clicks a brick.
 
@@ -2239,31 +2193,30 @@ Ada implements this endpoint in IMPL-09 (Phase 3, after analytics infrastructure
 
 ---
 
-## DESIGN-05: Execution Tiers & Cost Model
+## DESIGN-05: Access Tiers & Cost Model
 
 ### Overview
 
-`/execute` runs skill implementations on Lambda — the platform pays compute costs. Without controls, open access creates unbounded cost exposure. This design defines two execution modes and a subscription boundary that aligns cost with revenue.
+The core agent flow is lookup and local execution: the platform helps the agent find the right skill, fetch the right implementation, and record feedback. Without controls, open access still creates routing and retrieval cost exposure, so this design defines the access boundary and telemetry model that align cost with product value.
 
 ---
 
-### Execution Modes
+### Access Modes
 
-#### Local Execution (free)
-1. Client calls `POST /resolve` → receives best `skill_id` + metadata
-2. Client calls `GET /skills/:id` → receives implementation (inline string or S3 presigned URL)
-3. Client runs the implementation in their own environment
+#### Discovery and retrieval
+1. Client calls `POST /intent` or an exact lookup endpoint when the skill is already known.
+2. Client calls `GET /skills/:id` to inspect the summary and fetch the implementation only if needed.
+3. Client runs the implementation in their own environment.
 
-**Platform cost:** one DynamoDB read (resolve) + one DynamoDB read (skill fetch). Effectively free at any scale.
+**Platform cost:** intent routing plus skill fetch. The platform's job is to make the lookup path shorter, smaller, and more accurate than ad hoc local searching.
 
-**Use cases:** Claude Code agents, CI pipelines, developers who can run JS/Python locally.
+**Use cases:** Claude Code agents, CI pipelines, and developers who can run JS/Python locally.
 
-#### Cloud Execution (paid)
-1. Client calls `POST /execute` with inputs
-2. Lambda fetches skill (DynamoDB or S3), runs it in a sandbox, returns output
-3. Result is cached in DynamoDB by `input_hash` — subsequent callers with identical inputs pay only a cache read
+#### Feedback and validation
+1. Client calls `POST /validate/:skill_id` after running the skill's built-in tests or their own checks.
+2. Client may report runtime telemetry separately so the platform can maintain latency and adoption signals.
 
-**Platform cost:** Lambda compute + DynamoDB write (first execution), DynamoDB read only (cache hits). Popular skills become progressively cheaper to serve.
+**Platform cost:** validation and telemetry writes only. There is no hosted skill execution in the core flow.
 
 ---
 
@@ -2271,20 +2224,19 @@ Ada implements this endpoint in IMPL-09 (Phase 3, after analytics infrastructure
 
 | Tier | Access | Limits |
 |------|--------|--------|
-| Free | `/resolve`, `GET /skills/:id` (local execution) | Rate-limited at API Gateway |
-| Pro | All of the above + `POST /execute`, `POST /validate` | Monthly execution quota |
-| Enterprise | Full access + SLA, dedicated concurrency | Custom |
+| Free | `/intent`, `GET /skills/:id`, `GET /skills` | Rate-limited at API Gateway |
+| Pro | All of the above + `POST /validate`, `POST /skills` | Higher write and validation quota |
+| Enterprise | Full access + SLA, dedicated support, custom retention | Custom |
 
 ---
 
 ### Cost Protection Mechanisms
 
-- **API Gateway rate limiting** — caps requests per second per API key, free to configure
-- **Lambda concurrency limit** — hard ceiling on parallel executions regardless of tier
-- **Result cache** — `input_hash` → cached output in DynamoDB (TTL-based); cache hits skip Lambda entirely
-- **Implementation cache** — Lambda in-process cache of loaded skill code; S3 download only on first call per warm container
-- **Quota enforcement** — Pro tier tracked via usage counter in DynamoDB; execution rejected (402) when quota exceeded
-- **Canonical promotion gate** — only skills with confidence ≥ 0.85 and zero test failures can be promoted canonical. This prevents low-quality skills from being the first result returned by /resolve for high-traffic problems, which would drive execution costs up.
+- **API Gateway rate limiting** — caps requests per second per API key, free to configure.
+- **Summary cache** — cache intent resolutions and skill summaries so repeated agent lookups return smaller responses faster.
+- **Implementation fetch discipline** — keep full implementations out of the first response and only fetch them when the agent actually needs to run code.
+- **Quota enforcement** — Pro tier tracked via usage counter in DynamoDB; read and write limits are enforced separately.
+- **Canonical promotion gate** — only skills with confidence ≥ 0.85 and zero test failures can be promoted canonical. This prevents low-quality skills from being the first result returned by `/intent` for high-traffic problems, which would drive avoidable churn.
 
 ---
 
@@ -2293,15 +2245,15 @@ Ada implements this endpoint in IMPL-09 (Phase 3, after analytics infrastructure
 Skills use `"implementation": "string | s3_ref"` (already in schema):
 
 - **Inline string:** small algorithmic implementations stored directly in DynamoDB. Fast, no extra hop.
-- **s3_ref:** large, multi-file, or binary implementations. Lambda downloads on first execution and caches in-process. Adds ~10–50ms on cold fetch; negligible on warm Lambda.
+- **s3_ref:** large, multi-file, or binary implementations stored externally and fetched by the agent when needed.
 
-The execution Lambda should maintain an in-process LRU cache keyed by `skill_id + version` to avoid repeated S3 fetches within a warm container lifetime.
+The platform should keep summary payloads small and stable so agents do not pay the implementation-fetch cost until they have already chosen a skill.
 
 ---
 
 ### Relationship to Agent SDK (Phase 5)
 
-The MCP server / agent SDK wraps local execution by default — agents resolve and download skills, then run them locally. This is the zero-cost path and the primary driver of analytics telemetry. Cloud execution is the premium path for environments where running code locally is not possible or not desired.
+The MCP server / agent SDK wraps intent routing and skill retrieval by default. Agents resolve, fetch only the implementation they need, and then run the code locally. This is the zero-cost path and the primary driver of analytics telemetry.
 
 *Last updated: 2026-03-22 — DESIGN-05*
 
@@ -2488,7 +2440,7 @@ This endpoint is called when a user clicks a brick. It is not called during init
 <App>
   └── <MountainPage>
         ├── <MountainControls />          (filter panel sidebar)
-        ├── <SearchBar />                 (intent search, calls /resolve)
+        ├── <SearchBar />                 (intent search, calls /intent)
         ├── <Canvas>                      (@react-three/fiber canvas root)
         │     └── <MountainScene>
         │           ├── <PerspectiveCamera />
@@ -2593,7 +2545,7 @@ Closing the panel (X button or pressing Escape) clears the Zustand `selectedProb
 #### `<SearchBar>`
 
 An input field (outside `<Canvas>`, positioned at the top of the mountain page). On submit (Enter or search button):
-1. Calls `POST /resolve` with `{ "intent": "<user input>" }`.
+1. Calls `POST /intent` with `{ "intent": "<user input>" }`.
 2. If a match is returned with `confidence >= 0.5`, extracts `skill_id`, finds the corresponding `problem_id` from the loaded problem list, and triggers a camera animation to that brick's 3D position.
 3. If no match or confidence < 0.5, shows a "No matching problem found" message beneath the search bar.
 4. On successful match, also opens the `<SkillInfoPanel>` for the matching problem (same behavior as clicking the brick).
@@ -2640,7 +2592,7 @@ An input field (outside `<Canvas>`, positioned at the top of the mountain page).
 #### Search
 
 1. User types in `<SearchBar>` and submits.
-2. `POST /resolve` is called with the intent string.
+2. `POST /intent` is called with the intent string.
 3. On success (confidence >= 0.5): camera animates to the brick. `<SkillInfoPanel>` opens.
 4. On no match: search bar shows inline error message. No camera animation.
 5. Search does not modify the filter state — a search result is highlighted on top of whatever filters are active, even if the target brick would normally be hidden by a filter. The target brick is temporarily un-hidden for the duration of the selection.
@@ -2784,7 +2736,7 @@ The mountain endpoint failing silently (returning stale cache without alerting) 
 
 **Experience goal (for human):** A platform operator opens the analytics view from the same frontend app as the mountain visualization and immediately sees the health of the platform across five focused dashboards. Each dashboard auto-refreshes. Date range is adjustable. No external Grafana installation is required — the dashboards are part of the mountain frontend app.
 
-**Experience goal (for agent):** There is no agent-facing surface in this design. The analytics frontend is a human observability tool only. Agents do not call dashboard endpoints directly; they use `/resolve`, `/execute`, and `/skills`.
+**Experience goal (for agent):** There is no agent-facing surface in this design. The analytics frontend is a human observability tool only. Agents do not call dashboard endpoints directly; they use `/intent`, `GET /skills/:id`, and local execution.
 
 **Design decision:** Add analytics dashboards as a second view within the existing Vite + React 18 + TypeScript frontend at `frontend/`. Navigation between the mountain view and analytics view is a top-level tab bar. No separate app or build target is needed.
 
@@ -2909,9 +2861,9 @@ No other charting library is added. The heatmap panels (Dashboard 5, usage patte
 
 ---
 
-#### Dashboard 1: Resolve Performance
+#### Dashboard 1: Intent Performance
 
-**API endpoint:** `GET /analytics/dashboards/resolve-performance`
+**API endpoint:** `GET /analytics/dashboards/intent-performance`
 
 **Response fields used:**
 - `latency_over_time` — array of `{ minute, p50_ms, p95_ms }`

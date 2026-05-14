@@ -4,7 +4,6 @@
  * All 9 required test cases from docs/vector-search.md §7.6.
  */
 
-import { handler } from "../../../src/router/resolve.js";
 import type { APIGatewayProxyEvent } from "aws-lambda";
 
 // ---------------------------------------------------------------------------
@@ -52,6 +51,8 @@ jest.mock("../../../src/shared/emitEvent.js", () => ({
   emitEvent: (...args: unknown[]) => mockEmitEvent(...args),
   EVENTS_STREAM: "codevolve-events",
 }));
+
+import { handler } from "../../../src/router/resolve.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

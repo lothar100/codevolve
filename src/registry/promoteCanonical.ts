@@ -146,6 +146,26 @@ export async function handler(
       demotedVersionNumber = prevCanonical.version_number as number;
     }
 
+    // Beta fallback: if token-size metadata is missing, compare on confidence only
+    // instead of blocking promotion on metadata completeness.
+    if (prevCanonical) {
+      const challengerScore = computeCanonicalScore(skillItem);
+      const incumbentScore = computeCanonicalScore(prevCanonical);
+
+      if (
+        challengerScore !== null &&
+        incumbentScore !== null &&
+        challengerScore <= incumbentScore
+      ) {
+        return error(
+          422,
+          "OUTSCORED_BY_INCUMBENT",
+          `Challenger canonical score (${challengerScore.toFixed(4)}) must exceed incumbent (${incumbentScore.toFixed(4)}). ` +
+            `Improve confidence or reduce implementation size.`,
+        );
+      }
+    }
+
     // Step 5: TransactWriteItems — atomic promote + demote + problems update
     // The is_canonical_status composite attribute powers the GSI-canonical sparse index.
     const isCanonicalStatus = `true#optimized`; // Promotion always sets status to optimized.
@@ -342,9 +362,21 @@ function mapSkillFromDynamo(item: Record<string, unknown>): Skill {
     tests: (item.tests as Skill["tests"]) ?? [],
     implementation: (item.implementation as string) ?? "",
     confidence: (item.confidence as number) ?? 0,
+    implementation_token_size: (item.implementation_token_size as number) ?? null,
     latency_p50_ms: (item.latency_p50_ms as number) ?? null,
     latency_p95_ms: (item.latency_p95_ms as number) ?? null,
     created_at: item.created_at as string,
     updated_at: item.updated_at as string,
   };
+}
+
+function computeCanonicalScore(item: Record<string, unknown>): number | null {
+  const confidence = typeof item.confidence === "number" ? item.confidence : 0;
+  const tokenSize = item.implementation_token_size;
+
+  if (typeof tokenSize === "number" && Number.isFinite(tokenSize) && tokenSize > 0) {
+    return confidence / Math.sqrt(tokenSize);
+  }
+
+  return null;
 }

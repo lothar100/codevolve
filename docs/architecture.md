@@ -57,7 +57,7 @@ Client / Agent
 |----------|------|---------|
 | `codevolve-problems` | DynamoDB | Problem records |
 | `codevolve-skills` | DynamoDB | Skill records |
-| `codevolve-cache` | DynamoDB (TTL) | Input/output cache - provisioned for future caller-reported or decision-engine use, but not part of the current local-execution hot path. No Lambda reads from or writes to this table today. |
+| `codevolve-cache` | DynamoDB (TTL) | Provisioned legacy/deferred table. Not part of the public beta contract and not used by the current request path. No current Lambda reads from or writes to it. |
 | `codevolve-archive` | DynamoDB | Archived problems and skills |
 | OpenSearch Serverless | OpenSearch | Skill embeddings for intent routing |
 | Kinesis Data Stream | Kinesis | Analytics event pipeline |
@@ -119,6 +119,22 @@ tasks/            ← Task tracker and lessons
 ---
 
 *Last updated: 2026-04-12 - local execution model clarified*
+
+## Beta Scope Notes
+
+Public beta commitments are the API, discovery surface, MCP, auth, and local-execution workflow. The dashboard/mountain web frontend is not part of the public-beta promise.
+
+### Beta Cache Posture
+
+Public beta does not operate a server-managed execution cache, read-through cache, or edge-cache contract. Cache-related data is caller-reported telemetry only, such as `cache_hit` on `/execute`.
+
+`codevolve-cache` remains provisioned as dormant internal infrastructure. No current request-path Lambda reads from it or writes to it, and beta-facing behavior must not depend on it.
+
+All cache architecture material below this note describes deferred post-beta design work unless and until it is actually deployed.
+
+### Frontend Scope
+
+The `/mountain*` frontend deployment path is an internal/operator-facing UI surface and is not in the public-beta promise. External beta users should rely on the documented API, discovery, and MCP surfaces rather than a hosted UI contract.
 
 ### Overview
 
