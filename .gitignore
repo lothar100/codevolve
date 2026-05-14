@@ -24,3 +24,19 @@ npm-debug.log*
 
 # CDK asset staging
 cdk.staging/
+
+# Additional generated infrastructure outputs
+cdk.out2/
+
+# Local IDE state
+.vs/
+
+# Local agent/tool state
+.claire/
+.claude/agent-memory/
+.claude/worktrees/
+frontend/.claude/
+.codex/
+
+# Local temp/work artifacts
+.tmp-*/

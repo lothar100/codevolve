@@ -1,1 +1,0 @@
-// placeholder — actual file is in .claude not .claire
