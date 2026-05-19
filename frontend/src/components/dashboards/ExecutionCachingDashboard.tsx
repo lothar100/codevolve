@@ -21,14 +21,14 @@ export function ExecutionCachingDashboard() {
 
   if (loading) {
     return (
-      <div className="dashboard-loading">Loading Execution &amp; Caching...</div>
+      <div className="dashboard-loading">Loading Reported Runs &amp; Caching...</div>
     );
   }
 
   if (error != null) {
     return (
       <div className="dashboard-error">
-        Error loading Execution &amp; Caching: {error}
+        Error loading Reported Runs &amp; Caching: {error}
       </div>
     );
   }
@@ -46,7 +46,10 @@ export function ExecutionCachingDashboard() {
 
   return (
     <div className="dashboard execution-caching-dashboard">
-      <h2>Execution &amp; Caching</h2>
+      <h2>Reported Runs &amp; Caching</h2>
+      <p className="dashboard-note">
+        Run metrics on this screen come from optional caller reports to <code>/feedback</code> and may undercount real local usage.
+      </p>
 
       <div className="stat-row">
         <div className="stat-card">
@@ -59,7 +62,7 @@ export function ExecutionCachingDashboard() {
       </div>
 
       <section>
-        <h3>Most Executed Skills (Top 20)</h3>
+        <h3>Most Reported Skills (Top 20)</h3>
         <ResponsiveContainer width="100%" height={360}>
           <BarChart
             layout="vertical"
@@ -70,7 +73,7 @@ export function ExecutionCachingDashboard() {
             <XAxis type="number" />
             <YAxis type="category" dataKey="skill_id" width={120} />
             <Tooltip />
-            <Bar dataKey="execution_count" name="Executions" fill="#3B82F6" />
+            <Bar dataKey="execution_count" name="Reported Runs" fill="#3B82F6" />
           </BarChart>
         </ResponsiveContainer>
       </section>
@@ -128,7 +131,7 @@ export function ExecutionCachingDashboard() {
       </section>
 
       <section>
-        <h3>Execution Latency Over Time (p50 / p95)</h3>
+        <h3>Reported Run Latency Over Time (p50 / p95)</h3>
         <ResponsiveContainer width="100%" height={240}>
           <LineChart data={data.execution_latency_over_time}>
             <CartesianGrid strokeDasharray="3 3" />
@@ -160,7 +163,7 @@ export function ExecutionCachingDashboard() {
           <thead>
             <tr>
               <th>Skill ID</th>
-              <th>Total Executions</th>
+              <th>Total Reported Runs</th>
               <th>Unique Inputs</th>
               <th>Repeat Rate</th>
             </tr>
@@ -169,7 +172,7 @@ export function ExecutionCachingDashboard() {
             {data.repetition_rates.length === 0 ? (
               <tr>
                 <td colSpan={4} className="section-empty">
-                  No executions recorded yet.
+                  No reported runs recorded yet.
                 </td>
               </tr>
             ) : (
@@ -192,7 +195,7 @@ export function ExecutionCachingDashboard() {
           <thead>
             <tr>
               <th>Skill ID</th>
-              <th>Executions</th>
+              <th>Reported Runs</th>
               <th>Unique Inputs</th>
               <th>Repeat Rate</th>
               <th>p95 Latency</th>

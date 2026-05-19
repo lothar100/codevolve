@@ -1,9 +1,9 @@
 /**
- * POST /execute — Log that a skill was run locally and emit an analytics event.
+ * POST /feedback — Record caller-reported local run feedback and emit analytics.
  *
  * Skills are local CLI tools — the caller fetches the implementation via /skills/:id
- * and runs it in their own environment. This endpoint acknowledges the execution
- * and records it in the analytics pipeline.
+ * and runs it in their own environment. This endpoint does not execute code.
+ * It acknowledges caller-reported run metadata and records it in the analytics pipeline.
  *
  * Flow:
  *   1. Parse request (skill_id + optional inputs/notes)
@@ -128,7 +128,7 @@ export async function handler(
     cache_hit: cacheHit,
     success: executionSuccess,
     acknowledged: true,
-    message: "Execution logged. Run the implementation locally.",
+    message: "Local run feedback recorded.",
   });
 }
 

@@ -27,7 +27,7 @@ type AnalyticsTabId =
 
 const ANALYTICS_TABS: { id: AnalyticsTabId; label: string }[] = [
   { id: "resolve-performance", label: "Resolve Performance" },
-  { id: "execution-caching", label: "Execution & Caching" },
+  { id: "execution-caching", label: "Reported Runs & Caching" },
   { id: "skill-quality", label: "Skill Quality" },
   { id: "evolution-gap", label: "Evolution / Gap" },
   { id: "agent-behavior", label: "Agent Behavior" },

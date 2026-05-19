@@ -63,10 +63,11 @@ const SECTIONS: Section[] = [
   {
     title: "Core Agent Workflow",
     endpoints: [
-      { method: "POST",   path: "/intent",        auth: "none",    description: "Route a natural-language intent to the best matching skill via embedding search. Returns implementation ready to run locally." },
+      { method: "POST",   path: "/intent",        auth: "none",    description: "Route a natural-language intent to the best matching skill via embedding search. Returns a skill to fetch and run locally." },
       { method: "POST",   path: "/chains",        auth: "none",    description: "Build an ordered local execution chain from explicit steps or a prior intent chain suggestion." },
-      { method: "GET",    path: "/skills/{id}",   auth: "none",    description: "Fetch a skill's full implementation. Automatically records an execute event for analytics \u2014 fetching signals intent to run." },
-      { method: "POST",   path: "/validate/{id}",  auth: "api_key", description: "Report local test results (pass/fail counts) to update a skill's confidence score (0\u20131). Run tests yourself, then call this." },
+      { method: "GET",    path: "/skills/{id}",   auth: "none",    description: "Fetch a skill's full implementation, tests, and examples. Fetching does not report a run." },
+      { method: "POST",   path: "/feedback",      auth: "none",    description: "Optionally report local run feedback such as latency, cache hit, and success. This endpoint does not execute code." },
+      { method: "POST",   path: "/validate/{id}", auth: "api_key", description: "Report local test results (pass/fail counts) to update a skill's confidence score (0\u20131). Run tests yourself, then call this." },
     ],
   },
   {
@@ -91,10 +92,10 @@ const SECTIONS: Section[] = [
     title: "Analytics",
     endpoints: [
       { method: "GET",    path: "/analytics/dashboards/resolve-performance",  auth: "none", description: "Routing latency p50/p95, high-confidence rate, embedding search time" },
-      { method: "GET",    path: "/analytics/dashboards/execution-caching",    auth: "none", description: "Most executed skills, execution frequency, input repetition rate" },
+      { method: "GET",    path: "/analytics/dashboards/execution-caching",    auth: "none", description: "Caller-reported local run volume, input repetition rate, and cache candidates. Incomplete when clients skip /feedback." },
       { method: "GET",    path: "/analytics/dashboards/skill-quality",        auth: "none", description: "Test pass rate, confidence over time, competing implementations" },
       { method: "GET",    path: "/analytics/dashboards/evolution-gap",        auth: "none", description: "Unresolved intents, low-confidence resolves, evolve queue depth" },
-      { method: "GET",    path: "/analytics/dashboards/agent-behavior",       auth: "none", description: "resolve\u2192fetch conversion, chain usage, repeated resolves" },
+      { method: "GET",    path: "/analytics/dashboards/agent-behavior",       auth: "none", description: "Resolve volume, caller-reported run feedback rate, chain usage, repeated resolves" },
     ],
   },
   {
@@ -199,7 +200,7 @@ export function DocsPage() {
             whiteSpace: "pre-wrap",
           }}>{`Read ${API_BASE_URL} and follow the instructions to start using codeVolve`}</pre>
           <ol style={{ color: "#94a3b8", fontSize: 13, paddingLeft: 0, margin: 0, lineHeight: 2.2, listStyle: "none" }}>
-            {["Send this to your agent", "They resolve skills and run them locally", "Results and confidence scores flow back into the registry"].map((step, i) => (
+            {["Send this to your agent", "They resolve skills and run them locally", "Optional run feedback and validation results flow back into the registry"].map((step, i) => (
               <li key={i} style={{ display: "flex", gap: 8 }}>
                 <span style={{ color: "#ef4444", fontWeight: 700, minWidth: 18 }}>{i + 1}.</span>
                 <span>{step}</span>
@@ -231,9 +232,9 @@ export function DocsPage() {
             margin: "0 0 16px",
             overflowX: "auto",
             whiteSpace: "pre-wrap",
-          }}>{`POST ${API_BASE_URL}/intent\n{ "intent": "find shortest path in a weighted graph" }\n\u2192 returns implementation \u2192 run locally \u2192 done`}</pre>
+          }}>{`POST ${API_BASE_URL}/intent\n{ "intent": "find shortest path in a weighted graph" }\n\u2192 fetch skill \u2192 run locally \u2192 optionally POST /feedback or /validate/{id}`}</pre>
           <ol style={{ color: "#94a3b8", fontSize: 13, paddingLeft: 0, margin: 0, lineHeight: 2.2, listStyle: "none" }}>
-            {["POST /resolve with a natural-language intent to get an implementation", "Run the returned script locally \u2014 your environment, your credentials", "POST /validate/{id} with test results to update the confidence score"].map((step, i) => (
+            {["POST /intent with a natural-language intent to find a skill", "Run the fetched script locally \u2014 your environment, your credentials", "Optionally POST /feedback for run telemetry and POST /validate/{id} for test results"].map((step, i) => (
               <li key={i} style={{ display: "flex", gap: 8 }}>
                 <span style={{ color: "#06b6d4", fontWeight: 700, minWidth: 18 }}>{i + 1}.</span>
                 <span>{step}</span>
@@ -246,6 +247,9 @@ export function DocsPage() {
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>API Reference</h1>
       <div style={{ color: "#94a3b8", marginTop: 0, marginBottom: 32 }}>
         Machine-readable discovery: <code style={{ color: "#60a5fa" }}>GET {API_BASE_URL}/</code>
+      </div>
+      <div style={{ color: "#94a3b8", marginBottom: 24, fontSize: 13 }}>
+        Resolve analytics are server-observed. Run analytics are caller-reported through <code style={{ color: "#e2e8f0", background: "#1e293b", padding: "1px 5px", borderRadius: 4 }}>/feedback</code> and may be incomplete when clients skip reporting.
       </div>
 
       {/* Auth */}

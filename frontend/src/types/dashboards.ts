@@ -42,7 +42,7 @@ export interface ResolvePerformanceDashboard extends DashboardMeta {
   low_confidence_resolves: LowConfidenceResolve[];
 }
 
-// --- Dashboard 2: Execution & Caching ---
+// --- Dashboard 2: Reported Runs & Caching ---
 
 export interface TopSkill {
   skill_id: string;

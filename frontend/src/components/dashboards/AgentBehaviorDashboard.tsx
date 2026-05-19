@@ -35,17 +35,20 @@ export function AgentBehaviorDashboard() {
 
   const funnelData = [
     { stage: "Resolves", count: data.total_resolves },
-    { stage: "Executes", count: data.total_executes },
+    { stage: "Reported Runs", count: data.total_executes },
   ];
 
   return (
     <div className="dashboard agent-behavior-dashboard">
       <h2>Agent Behavior</h2>
+      <p className="dashboard-note">
+        Resolve counts are platform-observed. Run counts depend on optional caller reports to <code>/feedback</code>.
+      </p>
 
       {/* 5a single stat */}
       <div className="stat-row">
         <div className="stat-card">
-          <div className="stat-label">Resolve&#x2192;Execute Conversion</div>
+          <div className="stat-label">Resolve&#x2192;Reported Run Rate</div>
           <div className="stat-value">
             {data.conversion_rate_pct.toFixed(1)}
             <span className="stat-unit">%</span>
@@ -56,14 +59,14 @@ export function AgentBehaviorDashboard() {
           <div className="stat-value">{data.total_resolves}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Total Executes</div>
+          <div className="stat-label">Total Reported Runs</div>
           <div className="stat-value">{data.total_executes}</div>
         </div>
       </div>
 
       {/* 5a: Funnel chart (horizontal bar chart) */}
       <section>
-        <h3>Resolve &rarr; Execute Funnel</h3>
+        <h3>Resolve &rarr; Reported Run Funnel</h3>
         <ResponsiveContainer width="100%" height={160}>
           <BarChart layout="vertical" data={funnelData}>
             <CartesianGrid strokeDasharray="3 3" />
@@ -77,7 +80,7 @@ export function AgentBehaviorDashboard() {
 
       {/* 5a: Conversion rate over time */}
       <section>
-        <h3>Conversion Rate Over Time</h3>
+        <h3>Reported Run Rate Over Time</h3>
         <ResponsiveContainer width="100%" height={240}>
           <LineChart data={data.conversion_over_time}>
             <CartesianGrid strokeDasharray="3 3" />
@@ -88,7 +91,7 @@ export function AgentBehaviorDashboard() {
             <Line
               type="monotone"
               dataKey="conversion_rate_pct"
-              name="Conversion Rate %"
+              name="Reported Run Rate %"
               stroke="#10B981"
               dot={false}
             />
@@ -129,20 +132,20 @@ export function AgentBehaviorDashboard() {
 
       {/* 5c: Abandoned executions */}
       <section>
-        <h3>Abandoned Executions</h3>
+        <h3>Unreported or Abandoned Runs</h3>
         <table className="dashboard-table">
           <thead>
             <tr>
               <th>Intent</th>
               <th>Resolves</th>
-              <th>Executes</th>
+              <th>Reported Runs</th>
               <th>Abandoned</th>
             </tr>
           </thead>
           <tbody>
             {data.abandoned_executions.length === 0 ? (
               <tr>
-                <td colSpan={4} className="section-empty">No abandoned executions detected yet.</td>
+                <td colSpan={4} className="section-empty">No unreported or abandoned run patterns detected yet.</td>
               </tr>
             ) : (
               data.abandoned_executions.map((row, i) => (

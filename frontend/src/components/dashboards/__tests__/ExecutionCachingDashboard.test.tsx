@@ -74,19 +74,19 @@ describe("ExecutionCachingDashboard", () => {
   it("renders loading state", () => {
     mockUse.mockReturnValue({ data: null, loading: true, error: null, refresh: vi.fn() });
     render(<ExecutionCachingDashboard />);
-    expect(screen.getByText(/loading execution/i)).toBeInTheDocument();
+    expect(screen.getByText(/loading reported runs/i)).toBeInTheDocument();
   });
 
   it("renders error state", () => {
     mockUse.mockReturnValue({ data: null, loading: false, error: "Timeout", refresh: vi.fn() });
     render(<ExecutionCachingDashboard />);
-    expect(screen.getByText(/error loading execution/i)).toBeInTheDocument();
+    expect(screen.getByText(/error loading reported runs/i)).toBeInTheDocument();
   });
 
   it("renders dashboard heading when data is present", () => {
     mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
     render(<ExecutionCachingDashboard />);
-    expect(screen.getByText(/execution.*caching/i)).toBeInTheDocument();
+    expect(screen.getByText(/reported runs.*caching/i)).toBeInTheDocument();
   });
 
   it("renders cache hit rate stat card", () => {

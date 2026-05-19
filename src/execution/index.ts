@@ -1,8 +1,8 @@
 /**
- * Execution Layer module — POST /execute
+ * Local run feedback module — POST /feedback
  *
- * Logs local skill executions for analytics. Skills are run by the caller
- * in their own environment; this endpoint acknowledges and records the event.
+ * Logs caller-reported local run metadata for analytics. Skills are run by the
+ * caller in their own environment; this endpoint acknowledges and records the event.
  */
 
 export { handler } from "./execute.js";

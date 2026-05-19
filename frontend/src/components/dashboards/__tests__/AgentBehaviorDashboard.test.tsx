@@ -70,7 +70,7 @@ describe("AgentBehaviorDashboard", () => {
   it("renders conversion rate stat card", () => {
     mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
     render(<AgentBehaviorDashboard />);
-    expect(screen.getByText(/resolve.*execute conversion/i)).toBeInTheDocument();
+    expect(screen.getByText(/resolve.*reported run rate/i)).toBeInTheDocument();
   });
 
   it("renders total resolves stat", () => {

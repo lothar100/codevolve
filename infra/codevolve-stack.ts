@@ -914,6 +914,13 @@ export class CodevolveStack extends cdk.Stack {
       new apigateway.LambdaIntegration(chainFn),
     );
 
+    const feedbackResource = this.api.root.addResource("feedback");
+    feedbackResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(executeFn),
+    );
+
+    // Backwards-compatible alias for the older route name.
     const executeResource = this.api.root.addResource("execute");
     executeResource.addMethod(
       "POST",
