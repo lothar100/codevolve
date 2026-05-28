@@ -82,6 +82,7 @@ describe("apiKeyAuthorizer", () => {
 
     expect(result.policyDocument.Statement[0].Effect).toBe("Allow");
     expect(result.principalId).toBe("acct-abc");
+    expect(result.context?.["response_format"]).toBe("json");
   });
 
   it("denies a revoked key", async () => {
@@ -193,5 +194,35 @@ describe("apiKeyAuthorizer", () => {
 
     // Should still allow despite the fire-and-forget update failing
     expect(result.policyDocument.Statement[0].Effect).toBe("Allow");
+  });
+
+  it("injects the stored response format into authorizer context", async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Items: [
+          {
+            key_id: "key-toon",
+            owner_id: "acct-toon",
+            account_id: "acct-toon",
+            revoked: false,
+            api_key_hash: "somehash",
+            name: "toon key",
+            created_at: new Date().toISOString(),
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        Item: {
+          account_id: "acct-toon",
+          status: "active",
+          response_format: "toon",
+        },
+      })
+      .mockResolvedValueOnce({});
+
+    const result = await handler(makeEvent(VALID_KEY));
+
+    expect(result.policyDocument.Statement[0].Effect).toBe("Allow");
+    expect(result.context?.["response_format"]).toBe("toon");
   });
 });

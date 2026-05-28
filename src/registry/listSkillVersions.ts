@@ -36,7 +36,7 @@ export async function handler(
       id: event.pathParameters?.id,
     });
     if (!pathValidation.success) {
-      return error(400, "VALIDATION_ERROR", "Invalid skill ID format");
+      return error(400, "VALIDATION_ERROR", "Invalid skill ID format", undefined, event);
     }
 
     const skillId = pathValidation.data.id;
@@ -52,6 +52,7 @@ export async function handler(
         "VALIDATION_ERROR",
         "Invalid pagination parameters",
         paginationValidation.error.details,
+        event,
       );
     }
 
@@ -65,7 +66,7 @@ export async function handler(
           Buffer.from(next_token, "base64").toString("utf-8"),
         );
       } catch {
-        return error(400, "VALIDATION_ERROR", "Invalid next_token");
+        return error(400, "VALIDATION_ERROR", "Invalid next_token", undefined, event);
       }
     }
 
@@ -87,7 +88,7 @@ export async function handler(
 
     // 404 if no versions exist and this is the first page
     if (items.length === 0 && !next_token) {
-      return error(404, "NOT_FOUND", `No skill found with id ${skillId}`);
+      return error(404, "NOT_FOUND", `No skill found with id ${skillId}`, undefined, event);
     }
 
     // Map DynamoDB items to SkillVersionSummary
@@ -115,9 +116,9 @@ export async function handler(
         limit,
         next_token: nextToken,
       },
-    });
+    }, event);
   } catch (err) {
     console.error("listSkillVersions error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 }

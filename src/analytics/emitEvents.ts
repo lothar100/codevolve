@@ -64,14 +64,14 @@ export async function handler(
   try {
     body = JSON.parse(event.body ?? "{}");
   } catch {
-    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
   }
 
   // Validate request
   const validation = validate(EmitEventsRequestSchema, body);
   if (!validation.success) {
     const { code, message, details } = validation.error;
-    return error(400, code, message, details);
+    return error(400, code, message, details, event);
   }
 
   const { events: clientEvents } = validation.data;
@@ -105,9 +105,9 @@ export async function handler(
     return success(202, {
       accepted: clientEvents.length,
       kinesis_sequence_number: sequenceNumber,
-    });
+    }, event);
   } catch (err) {
     console.error("[POST /events] Kinesis PutRecords failed:", err);
-    return error(500, "INTERNAL_ERROR", "Failed to write events to stream");
+    return error(500, "INTERNAL_ERROR", "Failed to write events to stream", undefined, event);
   }
 }

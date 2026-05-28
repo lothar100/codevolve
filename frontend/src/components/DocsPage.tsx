@@ -7,9 +7,10 @@ function AuthBadge({ auth }: AuthBadgeProps) {
   const styles: Record<string, React.CSSProperties> = {
     none:    { background: "#1e3a2f", color: "#4ade80", border: "1px solid #166534" },
     api_key: { background: "#1e2a3a", color: "#60a5fa", border: "1px solid #1d4ed8" },
+    cognito: { background: "#3a241e", color: "#f59e0b", border: "1px solid #b45309" },
   };
   const labels: Record<string, string> = {
-    none: "public", api_key: "api-key",
+    none: "public", api_key: "api-key", cognito: "cognito",
   };
   return (
     <span style={{
@@ -105,6 +106,8 @@ const SECTIONS: Section[] = [
       { method: "POST",   path: "/auth/keys",             auth: "api_key", description: "Create an additional API key for the current agent identity." },
       { method: "GET",    path: "/auth/keys",             auth: "api_key", description: "List API keys that belong to the current agent identity." },
       { method: "DELETE", path: "/auth/keys/{key_id}",    auth: "api_key", description: "Revoke one API key for the current agent identity." },
+      { method: "GET",    path: "/settings/response-format", auth: "api_key", description: "Get the current account's default response format." },
+      { method: "PUT",    path: "/settings/response-format", auth: "api_key", description: "Set the current account's default response format to JSON or TOON." },
     ],
   },
   {
@@ -248,9 +251,6 @@ export function DocsPage() {
       <div style={{ color: "#94a3b8", marginTop: 0, marginBottom: 32 }}>
         Machine-readable discovery: <code style={{ color: "#60a5fa" }}>GET {API_BASE_URL}/</code>
       </div>
-      <div style={{ color: "#94a3b8", marginBottom: 24, fontSize: 13 }}>
-        Resolve analytics are server-observed. Run analytics are caller-reported through <code style={{ color: "#e2e8f0", background: "#1e293b", padding: "1px 5px", borderRadius: 4 }}>/feedback</code> and may be incomplete when clients skip reporting.
-      </div>
 
       {/* Auth */}
       <section style={{ marginBottom: 40 }}>
@@ -269,6 +269,36 @@ export function DocsPage() {
               Obtain your first key via <code style={{ color: "#e2e8f0", background: "#1e293b", padding: "1px 5px", borderRadius: 4 }}>POST /auth/register</code>.
             </span>
           </div>
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 40 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, borderBottom: "1px solid #334155", paddingBottom: 8, marginBottom: 16 }}>
+          Response Formats
+        </h2>
+        <div style={{ color: "#94a3b8", fontSize: 13, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div>
+            Authenticated accounts default to <code style={{ color: "#e2e8f0" }}>application/json</code>.
+          </div>
+          <div>
+            TOON responses are available with <code style={{ color: "#e2e8f0" }}>Accept: text/toon</code> or by saving a per-account default through <code style={{ color: "#e2e8f0" }}>GET/PUT /settings/response-format</code>.
+          </div>
+          <div>
+            Precedence is <code style={{ color: "#e2e8f0" }}>Accept override</code> → <code style={{ color: "#e2e8f0" }}>account response_format</code> → <code style={{ color: "#e2e8f0" }}>json</code>.
+          </div>
+          <pre style={{
+            background: "#0f172a",
+            border: "1px solid #1e293b",
+            borderRadius: 8,
+            padding: 16,
+            fontSize: 12,
+            color: "#94a3b8",
+            overflowX: "auto",
+            margin: 0,
+          }}>
+{`PUT ${API_BASE_URL}/settings/response-format
+{ "response_format": "toon" }`}
+          </pre>
         </div>
       </section>
 

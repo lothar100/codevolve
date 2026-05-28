@@ -59,7 +59,11 @@ function iso(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}/.test(value) && !Number.isNaN(Date.parse(value));
 }
 
-function range(from?: string, to?: string) {
+function range(
+  event: APIGatewayProxyEvent,
+  from?: string,
+  to?: string,
+) {
   const now = new Date();
   const resolvedTo = to ?? now.toISOString();
   const resolvedFrom = from ?? new Date(now.getTime() - DEFAULT_WINDOW_MS).toISOString();
@@ -70,11 +74,22 @@ function range(from?: string, to?: string) {
         400,
         "INVALID_DATE_RANGE",
         "Query parameters 'from' and 'to' must be valid ISO8601 timestamps (e.g. 2026-01-01T00:00:00.000Z)",
+        undefined,
+        event,
       ),
     };
   }
   if (Date.parse(resolvedFrom) >= Date.parse(resolvedTo)) {
-    return { ok: false as const, response: error(400, "INVALID_DATE_RANGE", "'from' must be earlier than 'to'") };
+    return {
+      ok: false as const,
+      response: error(
+        400,
+        "INVALID_DATE_RANGE",
+        "'from' must be earlier than 'to'",
+        undefined,
+        event,
+      ),
+    };
   }
   return { ok: true as const, from: resolvedFrom, to: resolvedTo };
 }
@@ -86,7 +101,12 @@ function analyticsUnavailable(err: unknown) {
   return name === "ResourceNotFoundException" || name === "AccessDeniedException" || /table.*not found|analytics.*unavailable/i.test(message);
 }
 
-function degraded(type: z.infer<typeof DashboardTypeSchema>, from: string, to: string): APIGatewayProxyResult {
+function degraded(
+  event: APIGatewayProxyEvent,
+  type: z.infer<typeof DashboardTypeSchema>,
+  from: string,
+  to: string,
+): APIGatewayProxyResult {
   const base = { degraded: true, degraded_reason: "analytics_unavailable", time_range: { from, to } };
   if (type === "resolve-performance" || type === "intent-performance") {
     return success(200, {
@@ -98,12 +118,12 @@ function degraded(type: z.infer<typeof DashboardTypeSchema>, from: string, to: s
       high_confidence_over_time: [],
       success_rate_pct: 0,
       low_confidence_resolves: [],
-    });
+    }, event);
   }
-  if (type === "execution-caching") return success(200, { dashboard: type, ...base, top_skills: [], repetition_rates: [], repetition_rate_over_time: [], intent_repetition_rate_pct: 0, execution_latency_over_time: [], cache_candidates: [] });
-  if (type === "skill-quality") return success(200, { dashboard: type, ...base, test_pass_rates: [], confidence_over_time: [], failure_rates: [], competing_implementations: [], confidence_degradation: [] });
-  if (type === "evolution-gap") return success(200, { dashboard: type, ...base, unresolved_intents: [], low_confidence_intents: [], low_confidence_volume: [], failed_executions: [], domain_coverage_gaps: [], evolve_pipeline: [] });
-  return success(200, { dashboard: type, ...base, total_resolves: 0, total_executes: 0, conversion_rate_pct: 0, conversion_over_time: [], repeated_resolves: [], abandoned_executions: [], skill_chain_patterns: [], hourly_usage: [] });
+  if (type === "execution-caching") return success(200, { dashboard: type, ...base, top_skills: [], repetition_rates: [], repetition_rate_over_time: [], intent_repetition_rate_pct: 0, execution_latency_over_time: [], cache_candidates: [] }, event);
+  if (type === "skill-quality") return success(200, { dashboard: type, ...base, test_pass_rates: [], confidence_over_time: [], failure_rates: [], competing_implementations: [], confidence_degradation: [] }, event);
+  if (type === "evolution-gap") return success(200, { dashboard: type, ...base, unresolved_intents: [], low_confidence_intents: [], low_confidence_volume: [], failed_executions: [], domain_coverage_gaps: [], evolve_pipeline: [] }, event);
+  return success(200, { dashboard: type, ...base, total_resolves: 0, total_executes: 0, conversion_rate_pct: 0, conversion_over_time: [], repeated_resolves: [], abandoned_executions: [], skill_chain_patterns: [], hourly_usage: [] }, event);
 }
 
 async function scanAll(TableName: string) {
@@ -260,7 +280,7 @@ function skillResolveRepetition(rows: Row[]): RepetitionSummary[] {
     .sort((a, b) => b.input_repeat_rate_pct - a.input_repeat_rate_pct);
 }
 
-async function intentPerformance(from: string, to: string) {
+async function intentPerformance(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets, feeds } = await loadTables(from, to);
   const rows = bucketRows(buckets, "minute", "resolve", "global");
   const totals = aggregate(rows);
@@ -273,10 +293,10 @@ async function intentPerformance(from: string, to: string) {
     high_confidence_over_time: rows.map((r) => ({ minute: s(r, "bucket_start"), high_confidence_pct: n(r, "confidence_count") > 0 ? (n(r, "confidence_high_count") * 100) / n(r, "confidence_count") : 0 })),
     success_rate_pct: totals.total > 0 ? (totals.successCount * 100) / totals.total : 0,
     low_confidence_resolves: feeds.filter((r) => s(r, "issue_type") === "resolve_low_confidence").sort((a, b) => s(b, "timestamp").localeCompare(s(a, "timestamp"))).slice(0, 100).map((r) => ({ intent: s(r, "intent"), confidence: n(r, "confidence"), skill_id: s(r, "skill_id"), timestamp: s(r, "timestamp") })),
-  });
+  }, event);
 }
 
-async function executionCaching(from: string, to: string) {
+async function executionCaching(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets } = await loadTables(from, to);
   const executeMinutes = bucketRows(buckets, "minute", "execute", "global");
   const resolveMinutes = bucketRows(buckets, "minute", "resolve", "global");
@@ -298,10 +318,10 @@ async function executionCaching(from: string, to: string) {
     intent_repetition_rate_pct: aggregate(resolveMinutes).total > 0 ? (aggregate(resolveMinutes).repeated * 100) / aggregate(resolveMinutes).total : 0,
     execution_latency_over_time: executeMinutes.map((r) => ({ minute: s(r, "bucket_start"), p50_ms: pct(latency(r), 0.5), p95_ms: pct(latency(r), 0.95) })),
     cache_candidates: reps.filter((r) => r.total_intents > CACHE_CANDIDATE_MIN_INTENTS && r.input_repeat_rate_pct / 100 > CACHE_CANDIDATE_MIN_REPEAT_RATE).map((r) => ({ skill_id: r.skill_id, total_intents: r.total_intents, unique_inputs: r.unique_inputs, intent_repeat_rate: r.input_repeat_rate_pct / 100, p95_ms: skillMap.has(r.skill_id) ? pct(aggregate(skillMap.get(r.skill_id) ?? []).hist, 0.95) : null })).sort((a, b) => b.total_intents * b.intent_repeat_rate - a.total_intents * a.intent_repeat_rate).slice(0, 50),
-  });
+  }, event);
 }
 
-async function skillQuality(from: string, to: string) {
+async function skillQuality(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets, intents } = await loadTables(from, to);
   const mergedIntents = mergeIntentRows(intents);
   const validateHours = bucketRows(buckets, "hour", "validate", "skill");
@@ -325,10 +345,10 @@ async function skillQuality(from: string, to: string) {
     failure_rates: [...eMap.entries()].map(([skill_id, rows]) => ({ skill_id, total_executions: aggregate(rows).total, failures: aggregate(rows).failureCount, failure_rate_pct: aggregate(rows).total > 0 ? (aggregate(rows).failureCount * 100) / aggregate(rows).total : 0 })).filter((r) => r.total_executions >= 5).sort((a, b) => b.failure_rate_pct - a.failure_rate_pct),
     competing_implementations: mergedIntents.map((r) => ({ intent: s(r, "intent"), competing_skills: setArr(r, "distinct_skill_ids"), num_competitors: setArr(r, "distinct_skill_ids").length, best_confidence: null, worst_confidence: null })).filter((r) => r.num_competitors > 1).sort((a, b) => b.num_competitors - a.num_competitors).slice(0, 50),
     confidence_degradation: confidenceDegradation,
-  });
+  }, event);
 }
 
-async function evolutionGap(from: string, to: string) {
+async function evolutionGap(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets, intents } = await loadTables(from, to);
   const mergedIntents = mergeIntentRows(intents);
   const resolveHours = bucketRows(buckets, "hour", "resolve", "global");
@@ -358,10 +378,10 @@ async function evolutionGap(from: string, to: string) {
     failed_executions: [...failures.entries()].map(([skill_id, rows]) => ({ skill_id, total_executions: aggregate(rows).total, failures: aggregate(rows).failureCount, failure_rate_pct: aggregate(rows).total > 0 ? (aggregate(rows).failureCount * 100) / aggregate(rows).total : 0 })).filter((r) => r.failures > 0).sort((a, b) => b.failures - a.failures).slice(0, 100),
     domain_coverage_gaps: [...domain.entries()].map(([name, d]) => ({ domain: name, unique_intents: d.intents.size, unresolved_count: d.unresolved, low_confidence_count: d.low, execution_failures: 0 })).sort((a, b) => b.unresolved_count + b.low_confidence_count - (a.unresolved_count + a.low_confidence_count)),
     evolve_pipeline: mergedIntents.map((r) => ({ intent: s(r, "intent"), fail_count: n(r, "fail_count"), first_failure: s(r, "first_seen_at"), latest_failure: s(r, "last_seen_at") })).filter((r) => r.fail_count > 0).sort((a, b) => b.fail_count - a.fail_count).slice(0, 50),
-  });
+  }, event);
 }
 
-async function agentBehavior(from: string, to: string) {
+async function agentBehavior(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets, intents } = await loadTables(from, to);
   const mergedIntents = mergeIntentRows(intents);
   const resolves = bucketRows(buckets, "hour", "resolve", "global");
@@ -382,7 +402,7 @@ async function agentBehavior(from: string, to: string) {
     abandoned_executions: [],
     skill_chain_patterns: mergedIntents.filter((r) => s(r, "intent").startsWith("chain:") && s(r, "last_skill_id")).map((r) => ({ from_skill: "", to_skill: s(r, "last_skill_id"), chain_count: n(r, "resolve_count") })).sort((a, b) => b.chain_count - a.chain_count).slice(0, 20),
     hourly_usage: resolves.map((r) => ({ day_of_week: new Date(s(r, "bucket_start")).getUTCDay(), hour_of_day: new Date(s(r, "bucket_start")).getUTCHours(), event_count: n(r, "total_count") })),
-  });
+  }, event);
 }
 
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
@@ -390,31 +410,34 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   let fallback: { from: string; to: string } | undefined;
   try {
     const params = validate(ParamsSchema, { type: event.pathParameters?.type, from: event.queryStringParameters?.from, to: event.queryStringParameters?.to });
-    if (!params.success) return error(400, "VALIDATION_ERROR", `Invalid dashboard type: "${event.pathParameters?.type}"`);
+    if (!params.success) return error(400, "VALIDATION_ERROR", `Invalid dashboard type: "${event.pathParameters?.type}"`, undefined, event);
     dashboardType = params.data.type;
-    const resolved = range(params.data.from, params.data.to);
+    const resolved = range(event, params.data.from, params.data.to);
     if (!resolved.ok) return resolved.response;
     const { from, to } = resolved;
     fallback = { from, to };
-    if (dashboardType === "mountain") return mountainDashboard(event.queryStringParameters ?? {});
+    if (dashboardType === "mountain") return mountainDashboard(event, event.queryStringParameters ?? {});
     if (dashboardType === "resolve-performance" || dashboardType === "intent-performance") {
-      return intentPerformance(from, to);
+      return intentPerformance(event, from, to);
     }
-    if (dashboardType === "execution-caching") return executionCaching(from, to);
-    if (dashboardType === "skill-quality") return skillQuality(from, to);
-    if (dashboardType === "evolution-gap") return evolutionGap(from, to);
-    return agentBehavior(from, to);
+    if (dashboardType === "execution-caching") return executionCaching(event, from, to);
+    if (dashboardType === "skill-quality") return skillQuality(event, from, to);
+    if (dashboardType === "evolution-gap") return evolutionGap(event, from, to);
+    return agentBehavior(event, from, to);
   } catch (err) {
     if (dashboardType && dashboardType !== "mountain" && fallback && analyticsUnavailable(err)) {
       console.error("[dashboards] Analytics tables unavailable, returning degraded payload:", err);
-      return degraded(dashboardType, fallback.from, fallback.to);
+      return degraded(event, dashboardType, fallback.from, fallback.to);
     }
     console.error("[dashboards] Unexpected error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 }
 
-async function mountainDashboard(qs: Record<string, string | undefined>): Promise<APIGatewayProxyResult> {
+async function mountainDashboard(
+  event: APIGatewayProxyEvent,
+  qs: Record<string, string | undefined>,
+): Promise<APIGatewayProxyResult> {
   const domainFilter = qs["domain"] ?? null;
   const languageFilter = qs["language"] ?? null;
   const statusFilter = (qs["status"] ?? null) as DominantStatus | null;
@@ -439,5 +462,5 @@ async function mountainDashboard(qs: Record<string, string | undefined>): Promis
   const filtered = statusFilter ? problems.filter((p) => p._dominant === statusFilter) : problems;
   const output = filtered.map(({ _dominant, ...rest }) => rest);
   output.sort((a, b) => STATUS_ORDER.indexOf(a.dominant_status) - STATUS_ORDER.indexOf(b.dominant_status) || b.execution_count_30d - a.execution_count_30d);
-  return success(200, { generated_at: new Date().toISOString(), cache_hit: false, total_problems: output.length, total_skills: output.reduce((sum, p) => sum + p.skill_count, 0), problems: output });
+  return success(200, { generated_at: new Date().toISOString(), cache_hit: false, total_problems: output.length, total_skills: output.reduce((sum, p) => sum + p.skill_count, 0), problems: output }, event);
 }

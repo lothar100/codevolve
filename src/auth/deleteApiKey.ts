@@ -1,23 +1,18 @@
 /**
- * DELETE /auth/keys/{key_id} — Soft-delete (revoke) an API key.
+ * DELETE /auth/keys/{key_id} â€” Soft-delete (revoke) an API key.
  *
  * Auth: Cognito ID token or API key (owner only).
  * Sets revoked = true and revoked_at = ISO8601 timestamp.
  * Returns 204 on success, 403 if caller is not the key owner, 404 if not found.
  *
  * Environment variables required:
- *   API_KEYS_TABLE — DynamoDB table name for codevolve-api-keys
+ *   API_KEYS_TABLE â€” DynamoDB table name for codevolve-api-keys
  */
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { deriveAuthContext, docClient, API_KEYS_TABLE } from "./shared.js";
-import { error } from "../shared/response.js";
-import type { APIGatewayProxyResult as Result } from "aws-lambda";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import { error, noContent } from "../shared/response.js";
 
 interface ApiKeyRecord {
   key_id: string;
@@ -25,43 +20,20 @@ interface ApiKeyRecord {
   revoked: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// 204 helper (no body)
-// ---------------------------------------------------------------------------
-
-function noContent(): Result {
-  return {
-    statusCode: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers":
-        "Content-Type,Accept,X-Request-Id,X-Agent-Id,Authorization,X-Api-Key",
-      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-    },
-    body: "",
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
-
 export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   try {
     const keyId = event.pathParameters?.["key_id"];
     if (!keyId) {
-      return error(400, "VALIDATION_ERROR", "key_id path parameter is required");
+      return error(400, "VALIDATION_ERROR", "key_id path parameter is required", undefined, event);
     }
 
     const authContext = deriveAuthContext(event);
-
     if (!authContext) {
-      return error(401, "UNAUTHORIZED", "Missing or invalid authorization");
+      return error(401, "UNAUTHORIZED", "Missing or invalid authorization", undefined, event);
     }
 
-    // Fetch the key record
     const getResult = await docClient.send(
       new GetCommand({
         TableName: API_KEYS_TABLE,
@@ -70,19 +42,16 @@ export const handler = async (
     );
 
     if (!getResult.Item) {
-      return error(404, "NOT_FOUND", `API key ${keyId} not found`);
+      return error(404, "NOT_FOUND", `API key ${keyId} not found`, undefined, event);
     }
 
     const record = getResult.Item as ApiKeyRecord;
-
-    // Ownership check
     if (record.owner_id !== authContext.accountId) {
-      return error(403, "FORBIDDEN", "You do not own this API key");
+      return error(403, "FORBIDDEN", "You do not own this API key", undefined, event);
     }
 
     if (record.revoked) {
-      // Idempotent — already revoked is still a 204
-      return noContent();
+      return noContent(204, event);
     }
 
     const now = new Date().toISOString();
@@ -100,9 +69,9 @@ export const handler = async (
       }),
     );
 
-    return noContent();
+    return noContent(204, event);
   } catch (err) {
     console.error("deleteApiKey error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 };

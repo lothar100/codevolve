@@ -12,6 +12,7 @@
 4. [codevolve-archive](#4-codevolve-archive)
 5. [Cross-Table Access Pattern Summary](#5-cross-table-access-pattern-summary)
 6. [codevolve-evolve-jobs](#5-codevolve-evolve-jobs)
+7. [codevolve-accounts](#7-codevolve-accounts)
 
 ---
 
@@ -387,4 +388,43 @@ See Section 5 (Cross-Table Access Pattern Summary) above for full table. The `/e
 
 ---
 
-*Last updated: 2026-03-23 — IMPL-11-A: last_validated_at/test_pass_count/test_fail_count added; IMPL-12-A: codevolve-evolve-jobs table added*
+## 7. codevolve-accounts
+
+Stores account-level auth metadata for agent tenants.
+
+### Key Schema
+
+| Key | Attribute | Type |
+|-----|-----------|------|
+| Partition Key | `account_id` | `S` |
+| Sort Key | — | — |
+
+### Attributes
+
+| Attribute | DynamoDB Type | Description |
+|-----------|---------------|-------------|
+| `account_id` | `S` | Account / tenant identifier. |
+| `agent_id` | `S` | Bootstrap agent identifier for standalone registrations. |
+| `agent_name` | `S` | Human-readable bootstrap agent name. |
+| `status` | `S` | `active` or `suspended`. |
+| `response_format` | `S` | Account default response format. One of: `json`, `toon`. Missing values default to `json` at read time. |
+| `response_format_updated_at` | `S` | ISO 8601 timestamp for the most recent response-format change. |
+| `created_at` | `S` | ISO 8601 timestamp. |
+| `updated_at` | `S` | ISO 8601 timestamp. |
+| `suspended_at` | `S` | ISO 8601 timestamp when suspended. Optional. |
+| `reactivated_at` | `S` | ISO 8601 timestamp when reactivated. Optional. |
+| `status_reason` | `S` | Optional operator-provided suspension/reactivation note. |
+
+### Access Patterns
+
+| API Endpoint | Operation | Key Used |
+|-------------|-----------|----------|
+| `POST /auth/register` | PutItem | `account_id` |
+| `GET /settings/response-format` | GetItem | `account_id` |
+| `PUT /settings/response-format` | UpdateItem | `account_id` |
+| `POST /auth/accounts/{account_id}/status` | GetItem + UpdateItem | `account_id` |
+| API key authorizer | GetItem | `account_id` |
+
+---
+
+*Last updated: 2026-05-18 — response_format/account metadata added; IMPL-11-A: last_validated_at/test_pass_count/test_fail_count added; IMPL-12-A: codevolve-evolve-jobs table added*

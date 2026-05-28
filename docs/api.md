@@ -61,6 +61,8 @@ Preferred MCP surfaces in beta:
 - [POST /validate/:skill_id](#post-validateskill_id)
 - [POST /events](#post-events)
 - [GET /analytics/dashboards/:type](#get-analyticsdashboardstype)
+- [GET /settings/response-format](#get-settingsresponse-format)
+- [PUT /settings/response-format](#put-settingsresponse-format)
 
 ---
 
@@ -203,7 +205,7 @@ All requests:
 | Header | Required | Description |
 |--------|----------|-------------|
 | `Content-Type` | Yes (POST/PUT) | Must be `application/json` |
-| `Accept` | No | Defaults to `application/json` |
+| `Accept` | No | Explicit overrides: `application/json` or `text/toon`. Unsupported values fall back to account/default behavior. |
 | `X-Request-Id` | No | Client-generated UUID for tracing. Server generates one if absent. |
 | `X-Agent-Id` | No | Identifies the calling agent (e.g. `claude-code-1.0`). Used for agent-behavior analytics. |
 
@@ -223,6 +225,28 @@ Public beta uses a mixed auth model:
 - `cognito`: internal or future human-user surfaces such as account status controls and trusted-mountain preferences
 
 The current API Gateway posture intentionally keeps read and routing surfaces open so agents can discover, inspect, and route without prior onboarding. Execution still happens locally even when an endpoint itself is unauthenticated.
+
+---
+
+## Response Formats
+
+Authenticated accounts default to JSON responses.
+
+- Supported response formats: `json`, `toon`
+- Supported `Accept` overrides: `application/json`, `text/toon`
+- Precedence: `Accept` override -> account `response_format` -> `json`
+- Request bodies remain JSON-only for this feature, including `PUT /settings/response-format`
+
+The current account preference is managed through:
+
+- `GET /settings/response-format`
+- `PUT /settings/response-format`
+
+Example request:
+
+```json
+{ "response_format": "toon" }
+```
 
 ---
 
@@ -1015,6 +1039,67 @@ const EmitEventsResponse = z.object({
 
 ---
 
+## GET /settings/response-format
+
+Return the current account's default response format.
+
+### Response
+
+**200 OK**
+
+```typescript
+const AccountResponseFormatResponse = z.object({
+  account_id: z.string(),
+  response_format: z.enum(["json", "toon"]),
+  updated_at: z.string().datetime(),
+});
+```
+
+### Errors
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| 401 | `UNAUTHORIZED` | Missing or invalid API key |
+| 404 | `NOT_FOUND` | Account record does not exist |
+
+---
+
+## PUT /settings/response-format
+
+Set the current account's default response format for subsequent authenticated responses.
+
+### Request
+
+```typescript
+const SetAccountResponseFormatRequest = z.object({
+  response_format: z.enum(["json", "toon"]),
+});
+```
+
+Request bodies stay JSON regardless of the stored preference.
+
+### Response
+
+**200 OK**
+
+```typescript
+const SetAccountResponseFormatResponse = z.object({
+  account_id: z.string(),
+  response_format: z.enum(["json", "toon"]),
+  updated_at: z.string().datetime(),
+});
+```
+
+### Errors
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| 400 | `VALIDATION_ERROR` | Invalid JSON or unsupported `response_format` |
+| 401 | `UNAUTHORIZED` | Missing or invalid API key |
+| 404 | `NOT_FOUND` | Account record does not exist |
+
+---
+
 ## GET /analytics/dashboards/:type
 
 Retrieve pre-aggregated dashboard data from the analytics store. These analytics endpoints exist in public beta, but the dashboard/mountain web frontend is not part of the public-beta contract. External beta users should treat these as API surfaces, not a committed hosted UI experience.
@@ -1211,6 +1296,16 @@ const DiscoveryResponse = z.object({
   docs_url: z.string(),     // current public onboarding surface; defaults to the discovery URL unless PUBLIC_DOCS_URL is configured
   openapi_url: z.string(),  // e.g. https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1/openapi.json
   auth_schemes: z.record(z.string()),
+  response_formats: z.object({
+    default: z.enum(["json", "toon"]),
+    supported: z.array(z.enum(["json", "toon"])).min(1),
+    accept_overrides: z.object({
+      json: z.string(),
+      toon: z.string(),
+    }),
+    preference_endpoint: z.string(),
+    precedence: z.array(z.string()).min(1),
+  }),
   rate_limits: z.record(z.string()),
   mcp: z.object({
     transport: z.literal("stdio"),
@@ -1281,12 +1376,10 @@ None.
 | POST | `/auth/keys` | 201 | `api_key` | No |
 | GET | `/auth/keys` | 200 | `api_key` | No |
 | DELETE | `/auth/keys/:key_id` | 204 | `api_key` | No |
-| POST | `/auth/accounts/:account_id/status` | 200 | `cognito` | No |
-| GET | `/users/me/trusted-mountain` | 200 | `cognito` | No |
-| POST | `/users/me/trusted-mountain` | 200 | `cognito` | No |
-| DELETE | `/users/me/trusted-mountain/:skill_id` | 204 | `cognito` | No |
-| POST | `/skills/:id/unarchive` | `none` |
-| GET | `/problems` | `none` |
+| GET | `/settings/response-format` | 200 | `api_key` | No |
+| PUT | `/settings/response-format` | 200 | `api_key` | No |
+  | POST | `/skills/:id/unarchive` | `none` |
+  | GET | `/problems` | `none` |
 | GET | `/problems/:id` | `none` |
 | POST | `/problems` | `api_key` |
 | POST | `/intent` | `none` |
@@ -1298,7 +1391,3 @@ None.
 | POST | `/auth/keys` | `api_key` |
 | GET | `/auth/keys` | `api_key` |
 | DELETE | `/auth/keys/:key_id` | `api_key` |
-| POST | `/auth/accounts/:account_id/status` | `cognito` |
-| GET | `/users/me/trusted-mountain` | `cognito` |
-| POST | `/users/me/trusted-mountain` | `cognito` |
-| DELETE | `/users/me/trusted-mountain/:skill_id` | `cognito` |

@@ -26,14 +26,14 @@ export const handler = async (
   try {
     const accountId = event.pathParameters?.["account_id"];
     if (!accountId) {
-      return error(400, "VALIDATION_ERROR", "account_id path parameter is required");
+      return error(400, "VALIDATION_ERROR", "account_id path parameter is required", undefined, event);
     }
 
     let body: unknown;
     try {
       body = JSON.parse(event.body ?? "{}");
     } catch {
-      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
     }
 
     const validation = validate(SetAccountStatusRequestSchema, body);
@@ -43,6 +43,7 @@ export const handler = async (
         validation.error.code,
         validation.error.message,
         validation.error.details,
+        event,
       );
     }
 
@@ -54,7 +55,7 @@ export const handler = async (
     );
 
     if (!existing.Item) {
-      return error(404, "NOT_FOUND", `Account ${accountId} not found`);
+      return error(404, "NOT_FOUND", `Account ${accountId} not found`, undefined, event);
     }
 
     const data = validation.data;
@@ -86,9 +87,9 @@ export const handler = async (
       status: data.status,
       updated_at: now,
       reason: data.reason ?? null,
-    });
+    }, event);
   } catch (err) {
     console.error("setAccountStatus error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 };

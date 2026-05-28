@@ -50,7 +50,7 @@ export const handler = async (
     const authContext = deriveAuthContext(event);
 
     if (!authContext) {
-      return error(401, "UNAUTHORIZED", "Missing or invalid authorization");
+      return error(401, "UNAUTHORIZED", "Missing or invalid authorization", undefined, event);
     }
 
     const result = await docClient.send(
@@ -81,9 +81,9 @@ export const handler = async (
       },
     );
 
-    return success(200, { keys });
+    return success(200, { keys }, event);
   } catch (err) {
     console.error("listApiKeys error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 };

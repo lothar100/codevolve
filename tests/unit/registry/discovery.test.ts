@@ -3,6 +3,11 @@
  */
 
 import type { APIGatewayProxyEvent } from "aws-lambda";
+
+jest.mock("@toon-format/toon", () => ({
+  encode: (value: unknown) => `TOON:${JSON.stringify(value)}`,
+}));
+
 import { handler } from "../../../src/registry/discovery.js";
 
 const baseRequestContext = {
@@ -67,6 +72,13 @@ describe("GET / discovery", () => {
       base_url: string;
       openapi_url: string;
       auth_schemes: Record<string, string>;
+      response_formats: {
+        default: string;
+        supported: string[];
+        accept_overrides: Record<string, string>;
+        preference_endpoint: string;
+        precedence: string[];
+      };
       mcp: {
         env: Record<string, string>;
         first_steps: string[];
@@ -86,6 +98,10 @@ describe("GET / discovery", () => {
     expect(body.openapi_url).toBe("https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1/openapi.json");
     expect(body.auth_schemes.api_key).toContain("X-Api-Key");
     expect(body.auth_schemes.api_key).toContain("key-management");
+    expect(body.response_formats.default).toBe("json");
+    expect(body.response_formats.supported).toEqual(["json", "toon"]);
+    expect(body.response_formats.preference_endpoint).toBe("/settings/response-format");
+    expect(body.response_formats.accept_overrides.toon).toBe("text/toon");
     expect(body.mcp.env.CODEVOLVE_API_URL).toBe("https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1");
     expect(body.mcp.first_steps[1]).toContain("POST /auth/register");
     expect(body.mcp.tools).toEqual(
@@ -109,15 +125,27 @@ describe("GET / discovery", () => {
           auth: "none",
         }),
         expect.objectContaining({
-          method: "POST",
-          path: "/auth/accounts/{account_id}/status",
-          auth: "cognito",
+          method: "PUT",
+          path: "/settings/response-format",
+          auth: "api_key",
         }),
         expect.objectContaining({
           method: "POST",
           path: "/execute",
           auth: "none",
         }),
+        expect.objectContaining({
+          method: "PUT",
+          path: "/settings/response-format",
+          auth: "api_key",
+        }),
+      ]),
+    );
+    expect(body.endpoints).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "/auth/accounts/{account_id}/status" }),
+        expect.objectContaining({ path: "/users/me/trusted-mountain" }),
+        expect.objectContaining({ path: "/users/me/trusted-mountain/{skill_id}" }),
       ]),
     );
   });
@@ -154,14 +182,14 @@ describe("GET / discovery", () => {
     expect(body.base_url).toBe("https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1");
     expect(body.openapi_url).toBe("https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1/openapi.json");
     expect(body.docs_url).toBe("https://qrxttojvni.execute-api.us-east-2.amazonaws.com/v1");
-    expect(body.description).toContain("execute locally");
+    expect(body.description).toContain("run locally");
     expect(body.description).toContain("does not run skills");
     expect(body.mcp.first_steps.join(" ")).toContain("feedback_skill");
     expect(body.endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           path: "/execute",
-          description: expect.stringContaining("Record caller-owned local execution telemetry"),
+          description: expect.stringContaining("Compatibility alias"),
         }),
         expect.objectContaining({
           path: "/skills/{id}/archive",

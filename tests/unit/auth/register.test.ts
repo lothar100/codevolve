@@ -6,6 +6,10 @@ import type { APIGatewayProxyEvent } from "aws-lambda";
 
 const mockSend = jest.fn();
 
+jest.mock("@toon-format/toon", () => ({
+  encode: (value: unknown) => `TOON:${JSON.stringify(value)}`,
+}));
+
 jest.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: jest.fn().mockImplementation(() => ({})),
 }));
@@ -75,6 +79,8 @@ describe("register handler", () => {
     expect(commandInput.TransactItems[0].Put.Item.agent_id).toBe(body.agent_id);
     expect(commandInput.TransactItems[0].Put.Item.agent_name).toBe("Beta smoke agent");
     expect(commandInput.TransactItems[0].Put.Item.status).toBe("active");
+    expect(commandInput.TransactItems[0].Put.Item.response_format).toBe("json");
+    expect(commandInput.TransactItems[0].Put.Item.response_format_updated_at).toBe(body.created_at);
     expect(commandInput.TransactItems[1].Put.Item.owner_id).toBe(body.account_id);
     expect(commandInput.TransactItems[1].Put.Item.account_id).toBe(body.account_id);
     expect(commandInput.TransactItems[1].Put.Item.agent_id).toBe(body.agent_id);

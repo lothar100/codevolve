@@ -38,12 +38,12 @@ export async function handler(
   try {
     body = JSON.parse(event.body ?? "{}");
   } catch {
-    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
   }
 
   const validation = validate(ExecuteRequestSchema, body);
   if (!validation.success) {
-    return error(400, validation.error.code, validation.error.message, validation.error.details);
+    return error(400, validation.error.code, validation.error.message, validation.error.details, event);
   }
 
   const {
@@ -85,12 +85,12 @@ export async function handler(
             }),
           )
         ).Items?.[0];
-    if (!item) return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
-    if (item.status === "archived") return error(404, "NOT_FOUND", `Skill ${skillId} is archived`);
+    if (!item) return error(404, "NOT_FOUND", `Skill ${skillId} not found`, undefined, event);
+    if (item.status === "archived") return error(404, "NOT_FOUND", `Skill ${skillId} is archived`, undefined, event);
     skill = item as Record<string, unknown>;
   } catch (err) {
     console.error("[execute] DynamoDB fetch error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 
   const versionNumber = skill.version_number as number;
@@ -129,7 +129,7 @@ export async function handler(
     success: executionSuccess,
     acknowledged: true,
     message: "Local run feedback recorded.",
-  });
+  }, event);
 }
 
 function hashInputs(inputs: Record<string, unknown>): string {

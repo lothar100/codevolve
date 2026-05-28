@@ -3,6 +3,7 @@
  */
 
 import { handler } from "../../../src/registry/getSkill.js";
+import { decode } from "@toon-format/toon";
 import type { APIGatewayProxyEvent } from "aws-lambda";
 
 // ---------------------------------------------------------------------------
@@ -32,13 +33,14 @@ const SKILL_ID = "22222222-2222-2222-2222-222222222222";
 function makeEvent(
   pathId: string,
   queryParams?: Record<string, string>,
+  headers: Record<string, string> = {},
 ): APIGatewayProxyEvent {
   return {
     body: null,
     pathParameters: { id: pathId },
     queryStringParameters: queryParams ?? null,
     multiValueQueryStringParameters: null,
-    headers: {},
+    headers,
     multiValueHeaders: {},
     httpMethod: "GET",
     isBase64Encoded: false,
@@ -150,5 +152,20 @@ describe("GET /skills/:id", () => {
 
     expect(body.skill.version).toBe(2);
     expect(body.skill.version_number).toBeUndefined();
+  });
+
+  it("should honor TOON Accept headers on legacy registry routes", async () => {
+    mockSend.mockResolvedValueOnce({ Items: [mockSkillItem] });
+
+    const result = await handler(makeEvent(SKILL_ID, undefined, { Accept: "text/toon" }));
+
+    expect(result.statusCode).toBe(200);
+    expect(result.headers?.["Content-Type"]).toBe("text/toon; charset=utf-8");
+    expect(decode(result.body)).toMatchObject({
+      skill: {
+        skill_id: SKILL_ID,
+        version: 2,
+      },
+    });
   });
 });

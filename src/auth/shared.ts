@@ -6,6 +6,10 @@ import * as crypto from "crypto";
 import type { APIGatewayProxyEvent } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import {
+  DEFAULT_RESPONSE_FORMAT,
+  type ResponseFormat,
+} from "../shared/responseFormat.js";
 
 const ddbClient = new DynamoDBClient({
   region: process.env.AWS_REGION ?? "us-east-2",
@@ -26,6 +30,7 @@ export const AGENT_ID_PREFIX = "agt_";
 export interface AuthContext {
   accountId: string;
   authSource: "api_key" | "cognito";
+  responseFormat?: ResponseFormat;
 }
 
 export interface ApiKeyWriteInput {
@@ -82,13 +87,20 @@ export function deriveOwnerId(
 export function deriveAuthContext(
   event: APIGatewayProxyEvent,
 ): AuthContext | undefined {
+  const accountIdFromApiKey =
+    event.requestContext?.authorizer?.["account_id"] as string | undefined;
   const ownerIdFromApiKey =
     event.requestContext?.authorizer?.["owner_id"] as string | undefined;
+  const responseFormat =
+    event.requestContext?.authorizer?.["response_format"] as
+      | ResponseFormat
+      | undefined;
 
-  if (ownerIdFromApiKey) {
+  if (accountIdFromApiKey || ownerIdFromApiKey) {
     return {
-      accountId: ownerIdFromApiKey,
+      accountId: accountIdFromApiKey ?? ownerIdFromApiKey!,
       authSource: "api_key",
+      responseFormat,
     };
   }
 
@@ -100,6 +112,7 @@ export function deriveAuthContext(
   return {
     accountId,
     authSource: "cognito",
+    responseFormat,
   };
 }
 
@@ -157,6 +170,8 @@ export function buildStandaloneAccountRecord(
     agent_id: input.agentId,
     agent_name: input.agentName,
     status: "active",
+    response_format: DEFAULT_RESPONSE_FORMAT,
+    response_format_updated_at: createdAt,
     created_at: createdAt,
     updated_at: createdAt,
   };

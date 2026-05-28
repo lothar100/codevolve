@@ -54,6 +54,13 @@ describe("apiKeyAuthorizer standalone agent coverage", () => {
           },
         ],
       })
+      .mockResolvedValueOnce({
+        Item: {
+          account_id: "agt_123",
+          status: "active",
+          response_format: "toon",
+        },
+      })
       .mockResolvedValueOnce({});
 
     const result = await handler(makeEvent());
@@ -64,8 +71,9 @@ describe("apiKeyAuthorizer standalone agent coverage", () => {
       owner_id: "agt_123",
       account_id: "agt_123",
       key_id: "key-standalone",
+      response_format: "toon",
     });
     expect(result.context?.["agent_id"]).toBeUndefined();
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend).toHaveBeenCalledTimes(3);
   });
 });

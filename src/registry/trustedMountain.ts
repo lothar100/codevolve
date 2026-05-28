@@ -73,6 +73,7 @@ function extractUserId(event: APIGatewayProxyEvent): string | null {
  */
 async function listTrustedMountain(
   userId: string,
+  event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> {
   const result = await docClient.send(
     new QueryCommand({
@@ -87,7 +88,7 @@ async function listTrustedMountain(
     saved_at: item["saved_at"] as string,
   }));
 
-  return success(200, { items });
+  return success(200, { items }, event);
 }
 
 /**
@@ -104,7 +105,7 @@ async function addToTrustedMountain(
   try {
     body = JSON.parse(event.body ?? "{}");
   } catch {
-    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
   }
 
   const parsed = AddSkillBodySchema.safeParse(body);
@@ -114,6 +115,7 @@ async function addToTrustedMountain(
       "VALIDATION_ERROR",
       "Invalid request body",
       { issues: parsed.error.issues } as Record<string, unknown>,
+      event,
     );
   }
 
@@ -127,7 +129,7 @@ async function addToTrustedMountain(
     }),
   );
 
-  return success(200, { user_id: userId, skill_id, saved_at });
+  return success(200, { user_id: userId, skill_id, saved_at }, event);
 }
 
 /**
@@ -138,6 +140,7 @@ async function addToTrustedMountain(
 async function removeFromTrustedMountain(
   userId: string,
   skillId: string,
+  event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> {
   // Verify the item exists before deleting
   const existing = await docClient.send(
@@ -148,7 +151,7 @@ async function removeFromTrustedMountain(
   );
 
   if (existing.Item === undefined) {
-    return error(404, "NOT_FOUND", `skill_id ${skillId} is not in your trusted mountain`);
+    return error(404, "NOT_FOUND", `skill_id ${skillId} is not in your trusted mountain`, undefined, event);
   }
 
   await docClient.send(
@@ -158,7 +161,7 @@ async function removeFromTrustedMountain(
     }),
   );
 
-  return success(200, { deleted: true, skill_id: skillId });
+  return success(200, { deleted: true, skill_id: skillId }, event);
 }
 
 // ---------------------------------------------------------------------------
@@ -171,14 +174,14 @@ export const handler = async (
   // All routes require authentication
   const userId = extractUserId(event);
   if (userId === null) {
-    return error(401, "UNAUTHORIZED", "Authentication required");
+    return error(401, "UNAUTHORIZED", "Authentication required", undefined, event);
   }
 
   const method = event.httpMethod.toUpperCase();
 
   try {
     if (method === "GET") {
-      return await listTrustedMountain(userId);
+      return await listTrustedMountain(userId, event);
     }
 
     if (method === "POST") {
@@ -188,14 +191,14 @@ export const handler = async (
     if (method === "DELETE") {
       const skillId = event.pathParameters?.["skill_id"];
       if (skillId === undefined || skillId === null || skillId.length === 0) {
-        return error(400, "VALIDATION_ERROR", "skill_id path parameter is required");
+        return error(400, "VALIDATION_ERROR", "skill_id path parameter is required", undefined, event);
       }
-      return await removeFromTrustedMountain(userId, skillId);
+      return await removeFromTrustedMountain(userId, skillId, event);
     }
 
-    return error(405, "METHOD_NOT_ALLOWED", `Method ${method} not allowed`);
+    return error(405, "METHOD_NOT_ALLOWED", `Method ${method} not allowed`, undefined, event);
   } catch (err) {
     console.error("[trustedMountain] Unhandled error:", err);
-    return error(500, "INTERNAL_ERROR", "An internal error occurred");
+    return error(500, "INTERNAL_ERROR", "An internal error occurred", undefined, event);
   }
 };

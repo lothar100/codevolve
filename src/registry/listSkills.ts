@@ -56,7 +56,7 @@ export async function handler(
         if (!fieldErrors[path]) fieldErrors[path] = [];
         fieldErrors[path].push(issue.message);
       }
-      return error(400, "VALIDATION_ERROR", "Request validation failed", fieldErrors);
+      return error(400, "VALIDATION_ERROR", "Request validation failed", fieldErrors, event);
     }
 
     const params = parseResult.data;
@@ -70,10 +70,12 @@ export async function handler(
           400,
           "UNSUPPORTED_SORT_KEY",
           `sort_by "${params.sort_by}" is not supported in Phase 1. Only "confidence" is supported.`,
+          undefined,
+          event,
         );
       }
       if (params.sort_by !== "confidence") {
-        return error(400, "VALIDATION_ERROR", `Invalid sort_by value: "${params.sort_by}"`);
+        return error(400, "VALIDATION_ERROR", `Invalid sort_by value: "${params.sort_by}"`, undefined, event);
       }
       // sort_by=confidence requires a language filter (maps to GSI-language-confidence)
       if (!params.language) {
@@ -81,6 +83,8 @@ export async function handler(
           400,
           "VALIDATION_ERROR",
           `sort_by "confidence" requires a language filter`,
+          undefined,
+          event,
         );
       }
     }
@@ -93,7 +97,7 @@ export async function handler(
           Buffer.from(params.next_token, "base64").toString("utf-8"),
         );
       } catch {
-        return error(400, "VALIDATION_ERROR", "Invalid next_token");
+        return error(400, "VALIDATION_ERROR", "Invalid next_token", undefined, event);
       }
     }
 
@@ -285,10 +289,10 @@ export async function handler(
         limit: params.limit,
         next_token: nextToken,
       },
-    });
+    }, event);
   } catch (err) {
     console.error("listSkills error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 }
 

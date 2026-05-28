@@ -14,13 +14,17 @@ const config: Config = {
       preset: "ts-jest",
       testEnvironment: "node",
       testMatch: [`${ROOT_DIR}/tests/unit/**/*.test.ts`],
-      moduleFileExtensions: ["ts", "js", "json"],
+      moduleFileExtensions: ["ts", "js", "mjs", "json"],
       moduleNameMapper: {
+        "^@toon-format/toon$": `${ROOT_DIR}/tests/mocks/toon.ts`,
         "^(\\.{1,2}/.*)\\.js$": "$1",
       },
       transform: {
-        "^.+\\.ts$": ["ts-jest", { tsconfig: "tsconfig.test.json" }],
+        "^.+\\.(ts|js|mjs)$": ["ts-jest", { tsconfig: "tsconfig.test.json" }],
       },
+      transformIgnorePatterns: [
+        "/node_modules/(?!@toon-format/toon/)",
+      ],
     },
     {
       displayName: "integration",
@@ -28,13 +32,17 @@ const config: Config = {
       preset: "ts-jest",
       testEnvironment: "node",
       testMatch: [`${ROOT_DIR}/tests/integration/**/*.test.ts`],
-      moduleFileExtensions: ["ts", "js", "json"],
+      moduleFileExtensions: ["ts", "js", "mjs", "json"],
       moduleNameMapper: {
+        "^@toon-format/toon$": `${ROOT_DIR}/tests/mocks/toon.ts`,
         "^(\\.{1,2}/.*)\\.js$": "$1",
       },
       transform: {
-        "^.+\\.ts$": ["ts-jest", { tsconfig: "tsconfig.test.json" }],
+        "^.+\\.(ts|js|mjs)$": ["ts-jest", { tsconfig: "tsconfig.test.json" }],
       },
+      transformIgnorePatterns: [
+        "/node_modules/(?!@toon-format/toon/)",
+      ],
     },
     {
       // Plain JS tests for the Node 22 skill runner (handler is JS, not TS)

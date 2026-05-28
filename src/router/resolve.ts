@@ -45,7 +45,7 @@ export async function handler(
   try {
     body = JSON.parse(event.body ?? "{}");
   } catch {
-    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
   }
 
   const validation = validate(IntentRequestSchema, body);
@@ -55,6 +55,7 @@ export async function handler(
       validation.error.code,
       validation.error.message,
       validation.error.details,
+      event,
     );
   }
 
@@ -88,7 +89,7 @@ export async function handler(
       ...(chainSuggestion ? { chain_suggestion: chainSuggestion } : {}),
     };
 
-    return success(200, responseBody);
+    return success(200, responseBody, event);
   } catch (err) {
     console.error("[resolve] Unexpected failure:", err);
     const errCode =
@@ -110,6 +111,14 @@ export async function handler(
     }).catch((emitErr) =>
       console.warn("[resolve] emitEvent failed (swallowed):", emitErr),
     );
-    return error(503, errCode, errCode === "DB_SCAN_ERROR" ? "Database scan failed" : "Embedding service unavailable");
+    return error(
+      503,
+      errCode,
+      errCode === "DB_SCAN_ERROR"
+        ? "Database scan failed"
+        : "Embedding service unavailable",
+      undefined,
+      event,
+    );
   }
 }

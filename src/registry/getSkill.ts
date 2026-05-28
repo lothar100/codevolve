@@ -27,7 +27,7 @@ export async function handler(
       id: event.pathParameters?.id,
     });
     if (!pathValidation.success) {
-      return error(400, "VALIDATION_ERROR", "Invalid skill ID format");
+      return error(400, "VALIDATION_ERROR", "Invalid skill ID format", undefined, event);
     }
 
     const skillId = pathValidation.data.id;
@@ -43,6 +43,8 @@ export async function handler(
           400,
           "VALIDATION_ERROR",
           "version must be a positive integer",
+          undefined,
+          event,
         );
       }
 
@@ -71,14 +73,14 @@ export async function handler(
     }
 
     if (!item) {
-      return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
+      return error(404, "NOT_FOUND", `Skill ${skillId} not found`, undefined, event);
     }
 
     const skill = mapSkillFromDynamo(item);
-    return success(200, { skill });
+    return success(200, { skill }, event);
   } catch (err) {
     console.error("getSkill error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 }
 
@@ -103,6 +105,7 @@ function mapSkillFromDynamo(item: Record<string, unknown>): Skill {
     tests: (item.tests as Skill["tests"]) ?? [],
     implementation: (item.implementation as string) ?? "",
     confidence: (item.confidence as number) ?? 0,
+    implementation_token_size: (item.implementation_token_size as number) ?? null,
     latency_p50_ms: (item.latency_p50_ms as number) ?? null,
     latency_p95_ms: (item.latency_p95_ms as number) ?? null,
     created_at: item.created_at as string,

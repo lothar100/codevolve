@@ -29,6 +29,10 @@ import type {
   APIGatewayAuthorizerResult,
   APIGatewayTokenAuthorizerEvent,
 } from "aws-lambda";
+import {
+  DEFAULT_RESPONSE_FORMAT,
+  normalizeResponseFormat,
+} from "../shared/responseFormat.js";
 
 const ddbClient = new DynamoDBClient({
   region: process.env.AWS_REGION ?? "us-east-2",
@@ -63,6 +67,7 @@ interface AccountRecord {
   account_id: string;
   status?: string;
   suspended_at?: string;
+  response_format?: string;
 }
 
 function hashKey(rawKey: string): string {
@@ -160,22 +165,29 @@ export const handler = async (
       return buildPolicy("anonymous", "Deny", event.methodArn);
     }
 
-    if (record.account_id) {
-      const account = await lookupAccountById(record.account_id);
+    const resolvedAccountId = record.account_id ?? record.owner_id;
+
+    let account: AccountRecord | null = null;
+    if (resolvedAccountId) {
+      account = await lookupAccountById(resolvedAccountId);
       if (account?.status === "suspended") {
-        console.warn("[apiKeyAuthorizer] Account is suspended:", record.account_id);
+        console.warn("[apiKeyAuthorizer] Account is suspended:", resolvedAccountId);
         return buildPolicy("anonymous", "Deny", event.methodArn);
       }
     }
 
     updateLastUsed(record.key_id);
+    const resolvedResponseFormat =
+      normalizeResponseFormat(account?.response_format) ??
+      DEFAULT_RESPONSE_FORMAT;
 
     console.info("[apiKeyAuthorizer] Key accepted for owner:", record.owner_id);
     return buildPolicy(record.owner_id, "Allow", event.methodArn, {
       owner_id: record.owner_id,
-      account_id: record.account_id ?? record.owner_id,
+      account_id: resolvedAccountId,
       ...(record.agent_id ? { agent_id: record.agent_id } : {}),
       key_id: record.key_id,
+      response_format: resolvedResponseFormat,
     });
   } catch (err) {
     console.error("[apiKeyAuthorizer] Unexpected error:", String(err));

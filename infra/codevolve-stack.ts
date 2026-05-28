@@ -700,6 +700,12 @@ export class CodevolveStack extends cdk.Stack {
       entry: path.join(__dirname, "../src/auth/setAccountStatus.ts"),
     });
 
+    const accountResponseFormatFn = new NodejsFunction(this, "AccountResponseFormatFn", {
+      ...commonNodejsProps,
+      functionName: "codevolve-account-response-format",
+      entry: path.join(__dirname, "../src/auth/accountResponseFormat.ts"),
+    });
+
     // Trusted Mountain: GET/POST/DELETE /users/me/trusted-mountain (IMPL-16)
     const trustedMountainFn = new NodejsFunction(this, "TrustedMountainFn", {
       ...commonNodejsProps,
@@ -976,6 +982,18 @@ export class CodevolveStack extends cdk.Stack {
       new apigateway.LambdaIntegration(deleteApiKeyFn),
       withApiKeyAuth,
     );
+    const settingsResource = this.api.root.addResource("settings");
+    const responseFormatResource = settingsResource.addResource("response-format");
+    responseFormatResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(accountResponseFormatFn),
+      withApiKeyAuth,
+    );
+    responseFormatResource.addMethod(
+      "PUT",
+      new apigateway.LambdaIntegration(accountResponseFormatFn),
+      withApiKeyAuth,
+    );
     const accountsResource = authResource.addResource("accounts");
     const accountByIdResource = accountsResource.addResource("{account_id}");
     const accountStatusResource = accountByIdResource.addResource("status");
@@ -1158,6 +1176,7 @@ export class CodevolveStack extends cdk.Stack {
     this.apiKeysTable.grantReadWriteData(listApiKeysFn);
     this.apiKeysTable.grantReadWriteData(deleteApiKeyFn);
     accountsTable.grantReadWriteData(setAccountStatusFn);
+    accountsTable.grantReadWriteData(accountResponseFormatFn);
 
     // Decision Engine function permissions (IMPL-10 — ARCH-07 §6.5)
     this.skillsTable.grantReadWriteData(decisionEngineFn);

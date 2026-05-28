@@ -32,7 +32,7 @@ export async function handler(
   // -------------------------------------------------------------------------
   const pathValidation = validate(PathParamsSchema, event.pathParameters ?? {});
   if (!pathValidation.success) {
-    return error(400, "VALIDATION_ERROR", "Invalid skill ID", pathValidation.error.details);
+    return error(400, "VALIDATION_ERROR", "Invalid skill ID", pathValidation.error.details, event);
   }
   const skillId = pathValidation.data.id;
 
@@ -51,7 +51,7 @@ export async function handler(
 
   const skill = queryResult.Items?.[0];
   if (!skill) {
-    return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
+    return error(404, "NOT_FOUND", `Skill ${skillId} not found`, undefined, event);
   }
 
   // -------------------------------------------------------------------------
@@ -60,7 +60,7 @@ export async function handler(
 
   // Already archived
   if (skill.status === "archived") {
-    return error(409, "CONFLICT", "Skill is already archived");
+    return error(409, "CONFLICT", "Skill is already archived", undefined, event);
   }
 
   // Canonical skill — must demote first
@@ -69,6 +69,8 @@ export async function handler(
       422,
       "PRECONDITION_FAILED",
       "Cannot archive a canonical skill. Demote it first via POST /skills/:id/demote-canonical",
+      undefined,
+      event,
     );
   }
 
@@ -78,6 +80,8 @@ export async function handler(
       409,
       "CONFLICT",
       "Skill has an active execution in progress. Try again later.",
+      undefined,
+      event,
     );
   }
 
@@ -124,7 +128,7 @@ export async function handler(
       "name" in err &&
       (err as { name: string }).name === "ConditionalCheckFailedException"
     ) {
-      return error(409, "CONFLICT", "Skill is already archived or has an active execution lock");
+      return error(409, "CONFLICT", "Skill is already archived or has an active execution lock", undefined, event);
     }
     throw err;
   }
@@ -239,5 +243,5 @@ export async function handler(
     updated_at: now,
   };
 
-  return success(200, { skill: updatedSkill });
+  return success(200, { skill: updatedSkill }, event);
 }

@@ -47,7 +47,7 @@ export async function handler(
       id: event.pathParameters?.id,
     });
     if (!pathValidation.success) {
-      return error(400, "VALIDATION_ERROR", "Invalid skill ID format");
+      return error(400, "VALIDATION_ERROR", "Invalid skill ID format", undefined, event);
     }
 
     const skillId = pathValidation.data.id;
@@ -67,7 +67,7 @@ export async function handler(
     const skillItem = skillResult.Items?.[0] as Record<string, unknown> | undefined;
 
     if (!skillItem) {
-      return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
+      return error(404, "NOT_FOUND", `Skill ${skillId} not found`, undefined, event);
     }
 
     // Step 3: Run promotion gate
@@ -85,7 +85,7 @@ export async function handler(
 
     const gate = validatePromotionGate(gateInput);
     if (!gate.valid) {
-      return error(gate.status, gate.code, gate.message);
+      return error(gate.status, gate.code, gate.message, undefined, event);
     }
 
     const problemId = skillItem.problem_id as string;
@@ -162,6 +162,8 @@ export async function handler(
           "OUTSCORED_BY_INCUMBENT",
           `Challenger canonical score (${challengerScore.toFixed(4)}) must exceed incumbent (${incumbentScore.toFixed(4)}). ` +
             `Improve confidence or reduce implementation size.`,
+          undefined,
+          event,
         );
       }
     }
@@ -242,12 +244,16 @@ export async function handler(
             422,
             "PRECONDITION_FAILED",
             "Promotion transaction failed: a conditional check failed (skill or problem may have changed concurrently)",
+            undefined,
+            event,
           );
         }
         return error(
           422,
           "PRECONDITION_FAILED",
           "Promotion transaction cancelled",
+          undefined,
+          event,
         );
       }
       throw txErr; // Re-throw unexpected errors to be caught by outer handler
@@ -272,7 +278,7 @@ export async function handler(
     const promotedItem = refetchResult.Items?.[0] as Record<string, unknown> | undefined;
     if (!promotedItem) {
       // Extremely unlikely — we just wrote it. Return from local state as fallback.
-      return error(500, "INTERNAL_ERROR", "Failed to re-fetch promoted skill");
+      return error(500, "INTERNAL_ERROR", "Failed to re-fetch promoted skill", undefined, event);
     }
 
     const promotedSkill: Skill = mapSkillFromDynamo(promotedItem);
@@ -282,10 +288,10 @@ export async function handler(
       demoted_skill_id: demotedSkillId,
     };
 
-    return success(200, response);
+    return success(200, response, event);
   } catch (err) {
     console.error("promoteCanonical error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 }
 

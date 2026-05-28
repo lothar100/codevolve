@@ -8,10 +8,10 @@
 import type { APIGatewayProxyHandler } from "aws-lambda";
 import { success } from "./response.js";
 
-export const handler: APIGatewayProxyHandler = async () => {
+export const handler: APIGatewayProxyHandler = async (event) => {
   return success(200, {
     status: "ok",
     version: "0.1.0",
     service: "codevolve",
-  });
+  }, event);
 };

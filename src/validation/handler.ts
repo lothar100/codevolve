@@ -96,7 +96,7 @@ export async function handler(
 
   const skillId = event.pathParameters?.skill_id ?? event.pathParameters?.id;
   if (!skillId) {
-    return error(400, "VALIDATION_ERROR", "Missing skill_id path parameter");
+    return error(400, "VALIDATION_ERROR", "Missing skill_id path parameter", undefined, event);
   }
 
   // Parse request body
@@ -104,12 +104,12 @@ export async function handler(
   try {
     body = JSON.parse(event.body ?? "{}");
   } catch {
-    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
   }
 
   const validation = validate(ValidateRequestSchema, normalizeValidationBody(body));
   if (!validation.success) {
-    return error(400, validation.error.code, validation.error.message, validation.error.details);
+    return error(400, validation.error.code, validation.error.message, validation.error.details, event);
   }
 
   const {
@@ -125,7 +125,7 @@ export async function handler(
   };
 
   if (passCount + failCount !== totalTests) {
-    return error(400, "VALIDATION_ERROR", "pass_count + fail_count must equal total_tests");
+    return error(400, "VALIDATION_ERROR", "pass_count + fail_count must equal total_tests", undefined, event);
   }
 
   // Fetch skill after request normalization so version pinning can be honored.
@@ -151,14 +151,14 @@ export async function handler(
             }),
           )
         ).Items?.[0];
-    if (!item) return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
+    if (!item) return error(404, "NOT_FOUND", `Skill ${skillId} not found`, undefined, event);
     if (item.status === "archived") {
-      return error(409, "SKILL_ARCHIVED", `Skill ${skillId} is archived and cannot be validated`);
+      return error(409, "SKILL_ARCHIVED", `Skill ${skillId} is archived and cannot be validated`, undefined, event);
     }
     skill = item as Record<string, unknown>;
   } catch (err) {
     console.error("[validate] DynamoDB fetch error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 
   const versionNumber = skill.version_number as number;
@@ -194,7 +194,7 @@ export async function handler(
     );
   } catch (err) {
     console.error("[validate] DynamoDB update error:", err);
-    return error(500, "INTERNAL_ERROR", "Failed to persist validation results");
+    return error(500, "INTERNAL_ERROR", "Failed to persist validation results", undefined, event);
   }
 
   const latencyMs = Date.now() - startTime;
@@ -232,7 +232,7 @@ export async function handler(
     status_changed: statusChanged,
     new_status: newStatus,
     last_validated_at: lastValidatedAt,
-  });
+  }, event);
 }
 
 function normalizeValidationBody(body: unknown): unknown {

@@ -29,12 +29,12 @@ export async function handler(
     try {
       body = JSON.parse(event.body ?? "{}");
     } catch {
-      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
     }
 
     const validation = validate(CreateProblemRequestSchema, body);
     if (!validation.success) {
-      return error(400, validation.error.code, validation.error.message, validation.error.details);
+      return error(400, validation.error.code, validation.error.message, validation.error.details, event);
     }
 
     const data = validation.data;
@@ -74,7 +74,7 @@ export async function handler(
 
     // Return the problem object matching the API contract (exclude internal fields)
     const { domain_primary, status, ...problemResponse } = problem;
-    return success(201, { problem: problemResponse });
+    return success(201, { problem: problemResponse }, event);
   } catch (err) {
     // ConditionalCheckFailedException means a problem with this problem_id
     // already exists (UUID collision — should never happen in practice).
@@ -82,9 +82,9 @@ export async function handler(
       err instanceof Error &&
       err.name === "ConditionalCheckFailedException"
     ) {
-      return error(409, "CONFLICT", `Problem with id already exists`);
+      return error(409, "CONFLICT", `Problem with id already exists`, undefined, event);
     }
     console.error("createProblem error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 }

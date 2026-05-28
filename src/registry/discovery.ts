@@ -45,11 +45,8 @@ const ENDPOINTS = [
   { method: "POST", path: "/auth/keys", auth: "api_key", description: "Create a child API key for the current agent account" },
   { method: "GET", path: "/auth/keys", auth: "api_key", description: "List API keys for the current agent account" },
   { method: "DELETE", path: "/auth/keys/{key_id}", auth: "api_key", description: "Revoke an API key" },
-  { method: "POST", path: "/auth/accounts/{account_id}/status", auth: "cognito", description: "Set account status for an existing agent account" },
-  // Users
-  { method: "GET", path: "/users/me/trusted-mountain", auth: "cognito", description: "Get the authenticated user's trusted mountain view" },
-  { method: "POST", path: "/users/me/trusted-mountain", auth: "cognito", description: "Update trusted mountain skill preferences for the authenticated user" },
-  { method: "DELETE", path: "/users/me/trusted-mountain/{skill_id}", auth: "cognito", description: "Remove a skill from the authenticated user's trusted mountain" },
+  { method: "GET", path: "/settings/response-format", auth: "api_key", description: "Get the current account's default response format" },
+  { method: "PUT", path: "/settings/response-format", auth: "api_key", description: "Set the current account's default response format to json or toon" },
   // Meta
   { method: "GET", path: "/health", auth: "none", description: "Service health check" },
   { method: "GET", path: "/", auth: "none", description: "This discovery document" },
@@ -177,8 +174,22 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     docs_url: deriveDocsUrl(baseUrl),
     openapi_url: deriveOpenApiUrl(baseUrl),
     auth_schemes: AUTH_SCHEMES,
+    response_formats: {
+      default: "json",
+      supported: ["json", "toon"],
+      accept_overrides: {
+        json: "application/json",
+        toon: "text/toon",
+      },
+      preference_endpoint: "/settings/response-format",
+      precedence: [
+        "Accept override",
+        "account response_format",
+        "json default",
+      ],
+    },
     rate_limits: RATE_LIMITS,
     mcp: buildMcpQuickstart(baseUrl),
     endpoints: ENDPOINTS,
-  });
+  }, event);
 };

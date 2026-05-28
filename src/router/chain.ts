@@ -77,12 +77,12 @@ export async function handler(
   try {
     body = JSON.parse(event.body ?? "{}");
   } catch {
-    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+    return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
   }
 
   const validation = validate(ChainRequestSchema, body);
   if (!validation.success) {
-    return error(400, validation.error.code, validation.error.message, validation.error.details);
+    return error(400, validation.error.code, validation.error.message, validation.error.details, event);
   }
 
   const req = validation.data;
@@ -164,5 +164,5 @@ export async function handler(
     ready_for_local_execution: readyForLocalExecution,
     unresolved_steps: unresolvedSteps,
     steps: resolvedSteps,
-  });
+  }, event);
 }

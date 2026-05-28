@@ -94,6 +94,13 @@ describe("createApiKey handler", () => {
     expect(result.statusCode).toBe(201);
     const body = JSON.parse(result.body) as Record<string, unknown>;
     expect(body.owner_id).toBe("cognito-sub-456");
+
+    const commandInput = mockSend.mock.calls[0][0].input as {
+      Item: Record<string, unknown>;
+    };
+    expect(commandInput.Item.owner_id).toBe("cognito-sub-456");
+    expect(commandInput.Item.account_id).toBe("cognito-sub-456");
+    expect(commandInput.Item.agent_id).toBeUndefined();
   });
 
   it("keeps standalone agent ownership for agent-authenticated key creation", async () => {

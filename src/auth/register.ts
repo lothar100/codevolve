@@ -44,7 +44,7 @@ export const handler = async (
       try {
         body = JSON.parse(event.body);
       } catch {
-        return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+        return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
       }
     }
 
@@ -55,6 +55,7 @@ export const handler = async (
         validation.error.code,
         validation.error.message,
         validation.error.details,
+        event,
       );
     }
 
@@ -112,9 +113,9 @@ export const handler = async (
       key_name: keyName,
       name: responseName,
       created_at: issuedKey.createdAt,
-    });
+    }, event);
   } catch (err) {
     console.error("registerAgent error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 };

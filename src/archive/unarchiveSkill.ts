@@ -32,7 +32,7 @@ export async function handler(
   // -------------------------------------------------------------------------
   const pathValidation = validate(PathParamsSchema, event.pathParameters ?? {});
   if (!pathValidation.success) {
-    return error(400, "VALIDATION_ERROR", "Invalid skill ID", pathValidation.error.details);
+    return error(400, "VALIDATION_ERROR", "Invalid skill ID", pathValidation.error.details, event);
   }
   const skillId = pathValidation.data.id;
 
@@ -51,14 +51,14 @@ export async function handler(
 
   const skill = queryResult.Items?.[0];
   if (!skill) {
-    return error(404, "NOT_FOUND", `Skill ${skillId} not found`);
+    return error(404, "NOT_FOUND", `Skill ${skillId} not found`, undefined, event);
   }
 
   // -------------------------------------------------------------------------
   // 3. Guard: must be archived
   // -------------------------------------------------------------------------
   if (skill.status !== "archived") {
-    return error(409, "CONFLICT", "Skill is not archived");
+    return error(409, "CONFLICT", "Skill is not archived", undefined, event);
   }
 
   const now = new Date().toISOString();
@@ -120,7 +120,7 @@ export async function handler(
       "name" in err &&
       (err as { name: string }).name === "ConditionalCheckFailedException"
     ) {
-      return error(409, "CONFLICT", "Skill is not archived");
+      return error(409, "CONFLICT", "Skill is not archived", undefined, event);
     }
     throw err;
   }
@@ -213,5 +213,5 @@ export async function handler(
     updated_at: now,
   };
 
-  return success(200, { skill: restoredSkill });
+  return success(200, { skill: restoredSkill }, event);
 }

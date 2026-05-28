@@ -111,6 +111,7 @@ Every API key resolves to:
 - `key_id`
 - `account_id`
 - `agent_id`
+- `response_format`
 - `display_name`
 - `status`
 - `created_at`
@@ -153,6 +154,8 @@ Once an account already has a valid API key, that key may call:
 - `POST /auth/keys` to mint child keys
 - `GET /auth/keys` to list active keys
 - `DELETE /auth/keys/{key_id}` to revoke a key
+- `GET /settings/response-format` to inspect the account default response format
+- `PUT /settings/response-format` to switch between JSON and TOON responses
 
 This keeps the runtime model agent-first while still supporting self-rotation and delegation.
 
@@ -303,7 +306,8 @@ These are explicitly not part of the beta auth model:
 2. Cognito remains ops-only until human product flows are implemented.
 3. IAM credentials are never part of the public beta onboarding contract.
 4. Runtime auth must identify both `account_id` and `agent_id`.
-5. `/auth/keys` is an agent key management endpoint, not the public bootstrap root.
+5. Runtime auth should carry account-level response preferences such as `response_format`.
+6. `/auth/keys` is an agent key management endpoint, not the public bootstrap root.
 
 ---
 

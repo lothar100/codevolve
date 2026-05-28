@@ -40,7 +40,7 @@ export const handler = async (
     const authContext = deriveAuthContext(event);
 
     if (!authContext) {
-      return error(401, "UNAUTHORIZED", "Missing or invalid authorization");
+      return error(401, "UNAUTHORIZED", "Missing or invalid authorization", undefined, event);
     }
 
     // Parse and validate request body
@@ -48,7 +48,7 @@ export const handler = async (
     try {
       body = JSON.parse(event.body ?? "{}");
     } catch {
-      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
     }
 
     const validation = validate(CreateApiKeyRequestSchema, body);
@@ -58,6 +58,7 @@ export const handler = async (
         validation.error.code,
         validation.error.message,
         validation.error.details,
+        event,
       );
     }
 
@@ -79,11 +80,9 @@ export const handler = async (
           : "user",
       createdVia: "authenticated_key_management",
     });
-    if (authContext.authSource === "api_key") {
-      issuedKey.item["account_id"] = accountId;
-      if (agentId) {
-        issuedKey.item["agent_id"] = agentId;
-      }
+    issuedKey.item["account_id"] = accountId;
+    if (agentId) {
+      issuedKey.item["agent_id"] = agentId;
     }
 
     await docClient.send(
@@ -101,9 +100,9 @@ export const handler = async (
       name: data.name,
       created_at: issuedKey.createdAt,
       owner_id: ownerId,
-    });
+    }, event);
   } catch (err) {
     console.error("createApiKey error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 };

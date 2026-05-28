@@ -37,7 +37,7 @@ export async function handler(
         if (!fieldErrors[path]) fieldErrors[path] = [];
         fieldErrors[path].push(issue.message);
       }
-      return error(400, "VALIDATION_ERROR", "Request validation failed", fieldErrors);
+      return error(400, "VALIDATION_ERROR", "Request validation failed", fieldErrors, event);
     }
 
     const params = parseResult.data;
@@ -50,7 +50,7 @@ export async function handler(
           Buffer.from(params.next_token, "base64").toString("utf-8"),
         );
       } catch {
-        return error(400, "VALIDATION_ERROR", "Invalid next_token");
+        return error(400, "VALIDATION_ERROR", "Invalid next_token", undefined, event);
       }
     }
 
@@ -146,10 +146,10 @@ export async function handler(
         limit: params.limit,
         next_token: nextToken,
       },
-    });
+    }, event);
   } catch (err) {
     console.error("listProblems error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 }
 

@@ -26,7 +26,7 @@ export async function handler(
       id: event.pathParameters?.id,
     });
     if (!pathValidation.success) {
-      return error(400, "VALIDATION_ERROR", "Invalid problem ID format");
+      return error(400, "VALIDATION_ERROR", "Invalid problem ID format", undefined, event);
     }
 
     const problemId = pathValidation.data.id;
@@ -42,7 +42,7 @@ export async function handler(
     );
 
     if (!problemResult.Item) {
-      return error(404, "NOT_FOUND", `Problem ${problemId} not found`);
+      return error(404, "NOT_FOUND", `Problem ${problemId} not found`, undefined, event);
     }
 
     // Query all skills for this problem via GSI-problem-status
@@ -92,10 +92,10 @@ export async function handler(
       problem: problemFields,
       skills: mappedSkills,
       skill_count: problem.skill_count ?? 0,
-    });
+    }, event);
   } catch (err) {
     console.error("getProblem error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 }
 

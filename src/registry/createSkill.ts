@@ -29,7 +29,7 @@ export async function handler(
     try {
       body = JSON.parse(event.body ?? "{}");
     } catch {
-      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body");
+      return error(400, "VALIDATION_ERROR", "Invalid JSON in request body", undefined, event);
     }
 
     const validation = validate(CreateSkillRequestSchema, body);
@@ -39,6 +39,7 @@ export async function handler(
         validation.error.code,
         validation.error.message,
         validation.error.details,
+        event,
       );
     }
 
@@ -57,6 +58,8 @@ export async function handler(
         404,
         "NOT_FOUND",
         `Problem ${data.problem_id} not found`,
+        undefined,
+        event,
       );
     }
 
@@ -131,6 +134,8 @@ export async function handler(
           409,
           "CONFLICT",
           `Skill with same skill_id and version already exists`,
+          undefined,
+          event,
         );
       }
       throw putErr;
@@ -181,9 +186,9 @@ export async function handler(
       updated_at: now,
     };
 
-    return success(201, { skill: skillResponse });
+    return success(201, { skill: skillResponse }, event);
   } catch (err) {
     console.error("createSkill error:", err);
-    return error(500, "INTERNAL_ERROR", "An unexpected error occurred");
+    return error(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, event);
   }
 }
