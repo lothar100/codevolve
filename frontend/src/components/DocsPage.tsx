@@ -272,36 +272,6 @@ export function DocsPage() {
         </div>
       </section>
 
-      <section style={{ marginBottom: 40 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600, borderBottom: "1px solid #334155", paddingBottom: 8, marginBottom: 16 }}>
-          Response Formats
-        </h2>
-        <div style={{ color: "#94a3b8", fontSize: 13, display: "flex", flexDirection: "column", gap: 10 }}>
-          <div>
-            Authenticated accounts default to <code style={{ color: "#e2e8f0" }}>application/json</code>.
-          </div>
-          <div>
-            TOON responses are available with <code style={{ color: "#e2e8f0" }}>Accept: text/toon</code> or by saving a per-account default through <code style={{ color: "#e2e8f0" }}>GET/PUT /settings/response-format</code>.
-          </div>
-          <div>
-            Precedence is <code style={{ color: "#e2e8f0" }}>Accept override</code> → <code style={{ color: "#e2e8f0" }}>account response_format</code> → <code style={{ color: "#e2e8f0" }}>json</code>.
-          </div>
-          <pre style={{
-            background: "#0f172a",
-            border: "1px solid #1e293b",
-            borderRadius: 8,
-            padding: 16,
-            fontSize: 12,
-            color: "#94a3b8",
-            overflowX: "auto",
-            margin: 0,
-          }}>
-{`PUT ${API_BASE_URL}/settings/response-format
-{ "response_format": "toon" }`}
-          </pre>
-        </div>
-      </section>
-
       {/* Endpoints by section */}
       {SECTIONS.map((section) => (
         <section key={section.title} style={{ marginBottom: 40 }}>
@@ -381,6 +351,36 @@ export function DocsPage() {
           <div><code style={{ color: "#e2e8f0" }}>409 CONFLICT</code> \u2014 Duplicate or state conflict</div>
           <div><code style={{ color: "#e2e8f0" }}>422 PRECONDITION_FAILED</code> \u2014 Business rule violated</div>
           <div><code style={{ color: "#e2e8f0" }}>500 INTERNAL_ERROR</code> \u2014 Unexpected server error</div>
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 40 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, borderBottom: "1px solid #334155", paddingBottom: 8, marginBottom: 16 }}>
+          Response Formats
+        </h2>
+        <div style={{ color: "#94a3b8", fontSize: 13, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div>
+            Authenticated accounts default to <code style={{ color: "#e2e8f0" }}>application/json</code>.
+          </div>
+          <div>
+            TOON responses are available with <code style={{ color: "#e2e8f0" }}>Accept: text/toon</code> or by saving a per-account default through <code style={{ color: "#e2e8f0" }}>GET/PUT /settings/response-format</code>.
+          </div>
+          <div>
+            Precedence is <code style={{ color: "#e2e8f0" }}>Accept override</code> → <code style={{ color: "#e2e8f0" }}>account response_format</code> → <code style={{ color: "#e2e8f0" }}>json</code>.
+          </div>
+          <pre style={{
+            background: "#0f172a",
+            border: "1px solid #1e293b",
+            borderRadius: 8,
+            padding: 16,
+            fontSize: 12,
+            color: "#94a3b8",
+            overflowX: "auto",
+            margin: 0,
+          }}>
+{`PUT ${API_BASE_URL}/settings/response-format
+{ "response_format": "toon" }`}
+          </pre>
         </div>
       </section>
     </div>
