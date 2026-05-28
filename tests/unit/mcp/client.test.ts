@@ -2,6 +2,7 @@
  * Unit tests for src/mcp/client.ts
  */
 
+import { encode } from "@toon-format/toon";
 import { CodevolveClient, createClientFromEnv } from "../../../src/mcp/client.js";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,9 @@ describe("CodevolveClient", () => {
   it("sends X-Api-Key instead of Authorization when apiKey is configured", async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
+      headers: {
+        get: (name: string) => name.toLowerCase() === "content-type" ? "application/json" : null,
+      },
       text: async () => JSON.stringify({ ok: true }),
     });
     global.fetch = fetchMock as unknown as typeof fetch;
@@ -53,11 +57,31 @@ describe("CodevolveClient", () => {
 
     const options = fetchMock.mock.calls[0][1] as RequestInit;
     expect(options.headers).toMatchObject({
+      Accept: "text/toon, application/json;q=0.8",
       "Content-Type": "application/json",
       "X-Agent-Id": "test-agent",
       "X-Api-Key": "cvk_test",
     });
     expect((options.headers as Record<string, string>)["Authorization"]).toBeUndefined();
+  });
+
+  it("decodes TOON responses", async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name: string) => name.toLowerCase() === "content-type" ? "text/toon; charset=utf-8" : null,
+      },
+      text: async () => encode({ ok: true, format: "toon" }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const client = new CodevolveClient({
+      baseUrl: "https://example.com",
+      agentId: "test-agent",
+      timeoutMs: 5000,
+    });
+
+    await expect(client.request("GET", "/skills")).resolves.toEqual({ ok: true, format: "toon" });
   });
 });
 

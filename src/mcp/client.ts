@@ -4,6 +4,8 @@
 // Design note: env vars are read inside createClientFromEnv() — NOT at module
 // load time — so this module is safe to import in tests without CODEVOLVE_API_URL set.
 
+import { decode } from "@toon-format/toon";
+
 export class CodevolveClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
@@ -31,6 +33,7 @@ export class CodevolveClient {
     const timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
 
     const headers: Record<string, string> = {
+      Accept: "text/toon, application/json;q=0.8",
       "Content-Type": "application/json",
       "X-Agent-Id": this.agentId,
     };
@@ -52,10 +55,13 @@ export class CodevolveClient {
     }
 
     const text = await response.text();
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
+      parsed = contentType.includes("text/toon") || contentType.includes("application/toon")
+        ? decode(text)
+        : JSON.parse(text);
     } catch {
       parsed = text;
     }

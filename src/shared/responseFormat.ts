@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent } from "aws-lambda";
 
 export const RESPONSE_FORMAT_JSON = "json";
 export const RESPONSE_FORMAT_TOON = "toon";
-export const DEFAULT_RESPONSE_FORMAT = RESPONSE_FORMAT_JSON;
+export const DEFAULT_RESPONSE_FORMAT = RESPONSE_FORMAT_TOON;
 
 export type ResponseFormat =
   | typeof RESPONSE_FORMAT_JSON

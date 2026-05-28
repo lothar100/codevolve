@@ -25,11 +25,11 @@ function makeEvent(
 }
 
 describe("shared response helpers", () => {
-  it("defaults to JSON serialization", () => {
+  it("defaults to TOON serialization", () => {
     const result = success(200, { ok: true });
 
-    expect(result.headers?.["Content-Type"]).toBe("application/json");
-    expect(JSON.parse(result.body)).toEqual({ ok: true });
+    expect(result.headers?.["Content-Type"]).toBe("text/toon; charset=utf-8");
+    expect(decode(result.body)).toEqual({ ok: true });
   });
 
   it("uses account TOON preference when no Accept override is present", () => {
