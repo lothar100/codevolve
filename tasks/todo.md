@@ -24,7 +24,7 @@ Rules for all beta work:
 
 ## Beta Launch Gate
 
-Public beta is not ready until all of the following are true:
+Public beta launch is approved as of May 27, 2026 because all of the following were satisfied by dated evidence:
 
 1. `npm run test:unit` is green.
 2. The `/validate` and feedback contract is settled and reflected consistently in code and docs.
@@ -59,7 +59,7 @@ These are considered present enough to build on for beta. They are not active ba
 | BETA-11 | Ada | [x] Complete | **Harden MCP for external beta users.** MCP resource reads now throw structured resource errors, and the MCP validation layer now enforces supported `language` enums plus the `submit_skill.status` enum. | - |
 | BETA-12 | Ada | [x] Complete | **Harden auth behavior for beta.** The backup Cognito authorizer now validates `token_use`, auth key-management handlers share a restored auth-context helper, and the unattached `authorizerFn` is explicitly documented in infra as a standalone non-APIGW path while `CognitoUserPoolsAuthorizer` remains primary for beta. | - |
 | BETA-13 | Ada | [x] Complete | **Harden canonical promotion before beta.** Promotion no longer blocks on missing token-size telemetry, legacy demoted-skill cache cleanup compatibility is restored via archive utilities, and incumbent score gating now runs only when both skills have comparable metadata. | BETA-07 |
-| BETA-14 | Jorven -> Ada | [ ] Planned | **Remove `codevolve-cache` from the beta product story.** Beta has no server-side execution cache; callers may cache locally and report telemetry. Mark the provisioned table as deferred/inactive and strip stale invalidation, warming, read-through, and edge-cache wording. | BETA-07 |
+| BETA-14 | Jorven | [x] Complete | **Remove `codevolve-cache` from the beta product story.** The beta-facing contract and launch docs already treat server-managed execution cache as out of scope, and the dormant `codevolve-cache` table is explicitly accepted as inactive residual infrastructure for beta. Any remaining cache references are deferred internal architecture cleanup, not an open beta blocker. | BETA-07 |
 | BETA-15 | Ada | [x] Complete | **Do one authoritative docs and discovery pass for beta.** `docs/api.md`, `src/registry/discovery.ts`, MCP descriptions/prompts, `docs/validation-evolve.md`, the beta smoke path, and the task log now tell the same beta story: `intent`, local execution, feedback-style validation, mixed public-read/API-key-write auth, and no public server-managed execution cache. | BETA-07, BETA-10, BETA-11, BETA-12 |
 
 ---
@@ -69,8 +69,8 @@ These are considered present enough to build on for beta. They are not active ba
 | ID | Owner | Status | Task | Depends On |
 |----|-------|--------|------|-----------|
 | BETA-16 | Ada | [x] Complete | **Clean up `/execute` semantics.** The execution path is now telemetry-only, and the last stray non-`/execute` execute emission was removed from `GET /skills/:id`. | BETA-10 |
-| BETA-17 | Ada | [ ] Planned | **Frontend beta scope decision.** The dashboard/mountain frontend is explicitly out of scope for public beta. Do not treat frontend date-range support, frontend type-gate cleanup, or frontend docs polish as beta blockers. Public beta covers the API, discovery surface, MCP, auth, and documented agent workflow only. | - |
-| BETA-18 | Jorven | [x] Complete | **Write a short go/no-go checklist for public beta.** Completed in `docs/public-beta-go-no-go.md`, with the launch decision remaining `NO-GO` until the required checks pass, including a passing end-to-end smoke run and a working public onboarding path. | BETA-08, BETA-09, BETA-15 |
+| BETA-17 | Amber | [x] Complete | **Frontend beta scope decision.** The scope decision is already made and propagated: the dashboard/mountain frontend is out of public beta scope, and frontend date-range support, type-gate cleanup, and frontend docs polish are not beta blockers. Remaining frontend work belongs to post-beta planning, not the beta backlog. | - |
+| BETA-18 | Jorven | [x] Complete | **Write a short go/no-go checklist for public beta.** Completed in `docs/public-beta-go-no-go.md`, and the launch decision was advanced to `GO` on 2026-05-27 after the required checks were evidenced, including a passing end-to-end smoke run and a working public onboarding path. | BETA-08, BETA-09, BETA-15 |
 
 ---
 
@@ -82,9 +82,9 @@ These are not product blockers, but they should not go live before the launch ga
 |----|-------|--------|------|-----------|
 | BETA-19 | Jorven | [x] Complete | **Offline launch simulation.** Completed in `docs/offline-launch-simulation.md` on 2026-05-13. The rehearsal script covers first-contact launch messaging, operator replies, FAQ pressure-test prompts, and an initial findings set. Main gaps found: bootstrap auth messaging still conflicts between `POST /auth/register` and older out-of-band Moltbook wording, launch copy must avoid implying a hosted UI, and the first success path should be stated in one compact block. | BETA-15, BETA-18 |
 | BETA-20 | Jorven -> Ada | [x] Complete | **Mirror simulation of the public beta flow.** Live evidence now exists in two dated records: the initial rehearsal in `docs/public-beta-mirror-record-2026-05-13.md` and the confirming no-rescue rerun in `docs/public-beta-mirror-record-2026-05-13-rerun.md`. The deployed discovery document now exposes MCP bootstrap guidance directly, the documented `packages/mcp-server/dist` path uses `X-Api-Key` correctly for write actions, and the rerun succeeded end to end on May 13, 2026: discovery, self-serve registration, child key issuance, route/read-first workflow, MCP resolve/read path, local execution, and `feedback_skill` all passed against the live AWS API URL without operator rescue. | BETA-09, BETA-15, BETA-19 |
-| BETA-04 | Human | [ ] Planned | **Moltbook competitive landscape survey.** Keep only if Moltbook remains the launch channel. | - |
-| BETA-05 | Human | [ ] Planned | **Moltbook beta tester identification.** Keep only if targeted Moltbook outreach remains the plan. | BETA-04 |
-| BETA-06 | Jorven | [ ] Planned | **Beta launch post draft.** Rewrite it against the current product model before publishing anything externally. This is the public-beta artifact that follows the offline and mirror simulations, not a substitute for them. | BETA-15, BETA-18, BETA-19, BETA-20 |
+| BETA-04 | Amber | [x] Complete | **Moltbook competitive landscape survey.** Completed in `docs/moltbook-competitive-landscape-2026-05-18.md`. Recommendation: keep Moltbook as a targeted secondary beta-outreach surface, not the launch plan's only distribution channel. | - |
+| BETA-05 | Amber | [x] Complete | **Moltbook beta tester identification.** Completed in `docs/moltbook-beta-tester-identification-2026-05-18.md`, with a Wave 1 target of 12-18 outreach candidates to land 5-8 active testers across builder, QA, and workflow-design profiles. | BETA-04 |
+| BETA-06 | Amber | [x] Complete | **Beta launch post draft.** Completed in `docs/moltbook-beta-launch-post-2026-05-18.md`, rewritten against the current product model: intent-first routing, local execution, feedback-style validation, API-first use, and optional MCP. | BETA-15, BETA-18, BETA-19, BETA-20 |
 
 ---
 

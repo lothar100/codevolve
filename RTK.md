@@ -1,6 +1,6 @@
 # RTK - Rust Token Killer (Project Local)
 
-Use `rtk` for shell commands in this repository when it reduces verbose output and token usage.
+Use `rtk` from PowerShell for shell commands in this repository when it reduces verbose output and token usage.
 
 Prefer:
 
@@ -17,8 +17,8 @@ rtk read path/to/file
 
 Rule:
 
-- Prefer `rtk ...` for shell-heavy, high-output commands.
-- Use raw commands only when `rtk` would not help or would change the intended behavior.
+- Use `rtk ...` for shell-heavy, high-output commands.
+- Use raw PowerShell commands only when `rtk` would not help, does not support the command, or would change the intended behavior.
 
 Verification:
 

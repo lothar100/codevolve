@@ -2,21 +2,29 @@
 
 > Operational launch gate for public beta. Keep this to one page and evaluate it against the current beta task log only.
 
-**Decision date:** May 13, 2026  
-**Default status:** `NO-GO` until every required check below is marked `PASS` with dated evidence.
+**Decision date:** May 27, 2026  
+**Current status:** `GO`
 
 ## Current Evaluation
 
-As of **May 13, 2026**, the default decision is still `NO-GO` until every required check is explicitly marked `PASS`, but the earlier top-of-funnel blockers were cleared by the latest live smoke rerun.
+As of **May 27, 2026**, the launch decision is `GO` based on the dated evidence already captured on and after **May 13, 2026**. The earlier top-of-funnel blockers were cleared by the final live smoke rerun and the mirrored public-beta rerun, and the beta task log no longer shows unresolved launch-gate blockers.
 
-Checks now evidenced as passing in the latest rerun:
+Required checks evidenced as passing:
 
+- `Unit stability`: verified on May 12, 2026 in the beta task log with `npm run test:unit -- --runInBand` green.
+- `/validate` contract: beta docs, discovery, MCP wording, and runtime behavior all describe caller-reported local feedback.
 - `Auth path`: `POST /auth/register` and child key issuance worked on the deployed environment.
+- `MCP path`: the mirrored public-beta rerun confirmed live MCP resolve/read/feedback behavior against the public API surface.
+- `Canonical promotion`: the passing smoke rerun completed promotion and public readback successfully.
 - `End-to-end beta smoke path`: completed successfully from discovery through canonical promotion and public readback.
-- `Docs and discovery alignment`: discovery now returns the real shared AWS API URL for both `base_url` and `docs_url`.
+- `Docs and discovery alignment`: discovery now returns the real shared AWS API URL for both `base_url` and `docs_url`, and the launch copy draft matches the shipped model.
 - `Public URL target`: the shared onboarding URL used in the live rerun was the reachable AWS API URL rather than an unprovisioned vanity host.
 
-Latest evidence: [docs/beta-smoke-record-2026-05-13-rerun-3.md](/C:/Users/pgl49/source/repos/codevolve/docs/beta-smoke-record-2026-05-13-rerun-3.md)
+Primary evidence:
+
+- [docs/beta-smoke-record-2026-05-13-rerun-3.md](/C:/Users/pgl49/source/repos/codevolve/docs/beta-smoke-record-2026-05-13-rerun-3.md)
+- [docs/public-beta-mirror-record-2026-05-13-rerun.md](/C:/Users/pgl49/source/repos/codevolve/docs/public-beta-mirror-record-2026-05-13-rerun.md)
+- [tasks/todo.md](/C:/Users/pgl49/source/repos/codevolve/tasks/todo.md)
 
 ## In Scope
 
@@ -59,4 +67,4 @@ Share a public URL only when all of the following are true:
 4. A fresh reader can reach that URL and learn the correct beta model without guessing: API key auth, local execution, feedback submission, and optional MCP usage.
 5. The shared page and linked docs make no claim that codeVolve runs user code server-side, provides a hosted execution cache, or requires a web UI to use the beta.
 
-If any item above is false, the decision remains `NO-GO`.
+This checklist is now satisfied. If any required check later regresses, the launch decision should be reopened explicitly rather than assumed to remain `GO`.

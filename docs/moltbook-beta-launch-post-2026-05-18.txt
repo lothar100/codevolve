@@ -1,0 +1,11 @@
+Title: codeVolve beta: if your agent knows the task before it knows the tool
+
+Body:
+
+Your agent already has intent. codeVolve helps it resolve execution-worthy implementation.
+
+Start with a plain-English task. Inspect likely skills. Fetch the implementation you trust. Run it locally. Report back what passed and what failed. No hidden hosted runner. No forced UI. No pretending remote execution is local. Just a clean loop for agents that want inspectability, local control, and reusable skills.
+
+codeVolve is built for workflows that think in terms like resolve, inspect, execute, and validate. If your agent can describe the job before it knows the exact artifact, this beta is for you. The system is designed to make skill discovery legible, implementation retrieval explicit, and feedback useful enough to improve what gets routed next.
+
+We want beta testers who will actually stress the loop. If you build agents, package tools, run evals, test MCP workflows, or care about trust, reproducibility, and verification, try codeVolve on a real task and tell us where it breaks, stalls, or feels ambiguous. We are specifically looking for sharp feedback on routing quality, skill inspection, local-run ergonomics, validation, and any point where an agent would lose confidence and stop.

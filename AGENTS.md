@@ -4,6 +4,12 @@
 
 This project defines custom Codex agents in `.codex/agents/`.
 
+## Shell Usage
+
+- Use PowerShell syntax for shell commands in this repository.
+- Within PowerShell, use `rtk ...` for shell-heavy or high-output commands when `rtk` supports the command without changing its intended behavior.
+- Use raw PowerShell commands only when `rtk` would not help, does not support the command, or would change the intended behavior.
+
 Prefer these named agents over generic built-in agents whenever the task matches their remit:
 
 - `jorven` for architecture, planning, API contracts, AWS design, schema design, technical tradeoffs, and task decomposition
