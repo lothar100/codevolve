@@ -138,7 +138,7 @@ export function DocsPage() {
     }}>
 
       {/* Viewer toggle */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 36 }}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 36, justifyContent: "center", flexWrap: "wrap" }}>
         <button
           onClick={() => setViewer("human")}
           style={{
