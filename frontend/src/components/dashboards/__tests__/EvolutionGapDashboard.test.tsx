@@ -23,6 +23,9 @@ const SAMPLE_DATA: DashboardData = {
     {
       intent: "dijkstra on dense graph",
       skill_id: "skill-005",
+      skill_name: "Dense Graph Dijkstra",
+      problem_name: "Dijkstra",
+      display_name: "Dense Graph Dijkstra",
       occurrences: 18,
       avg_confidence: 0.58,
     },
@@ -38,6 +41,9 @@ const SAMPLE_DATA: DashboardData = {
   failed_executions: [
     {
       skill_id: "skill-007",
+      skill_name: "Eigenvector Solver",
+      problem_name: "Eigenvectors",
+      display_name: "Eigenvector Solver",
       total_executions: 50,
       failures: 8,
       failure_rate_pct: 16.0,
@@ -104,6 +110,12 @@ describe("EvolutionGapDashboard", () => {
     mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
     render(<EvolutionGapDashboard />);
     expect(screen.getByText(/evolution pipeline/i)).toBeInTheDocument();
+  });
+
+  it("renders readable skill labels in failed executions", () => {
+    mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
+    render(<EvolutionGapDashboard />);
+    expect(screen.getByText("Eigenvector Solver")).toBeInTheDocument();
   });
 
   it("calls useDashboardData with correct type and 60-minute interval", () => {

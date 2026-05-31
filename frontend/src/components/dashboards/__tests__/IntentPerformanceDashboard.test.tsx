@@ -26,6 +26,9 @@ const SAMPLE_DATA: DashboardData = {
       intent: "find shortest path",
       confidence: 0.55,
       skill_id: "skill-001",
+      skill_name: "Shortest Path Solver",
+      problem_name: "Shortest Path",
+      display_name: "Shortest Path Solver",
       timestamp: "2026-01-01T00:00:00Z",
     },
   ],
@@ -90,7 +93,7 @@ describe("IntentPerformanceDashboard", () => {
     mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
     render(<IntentPerformanceDashboard />);
     expect(screen.getByText("find shortest path")).toBeInTheDocument();
-    expect(screen.getByText("skill-001")).toBeInTheDocument();
+    expect(screen.getByText("Shortest Path Solver")).toBeInTheDocument();
   });
 
   it("calls useDashboardData with correct type and 5-minute interval", () => {

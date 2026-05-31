@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { useDashboardData } from "../../hooks/useDashboardData";
 import type { SkillQualityDashboard as DashboardType } from "../../types/dashboards";
+import { displaySkillLabel } from "./skillLabels";
 
 export function SkillQualityDashboard() {
   const { data, loading, error } =
@@ -33,6 +34,11 @@ export function SkillQualityDashboard() {
     return <div className="dashboard-empty">No data available.</div>;
   }
 
+  const passRateChartData = data.test_pass_rates.map((row) => ({
+    ...row,
+    chart_label: displaySkillLabel(row),
+  }));
+
   return (
     <div className="dashboard skill-quality-dashboard">
       <h2>Skill Quality</h2>
@@ -41,9 +47,9 @@ export function SkillQualityDashboard() {
       <section>
         <h3>Test Pass Rate Per Skill</h3>
         <ResponsiveContainer width="100%" height={280}>
-          <BarChart data={data.test_pass_rates}>
+          <BarChart data={passRateChartData}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="skill_id" />
+            <XAxis dataKey="chart_label" />
             <YAxis unit="%" domain={[0, 100]} />
             <Tooltip />
             <Legend />
@@ -86,7 +92,7 @@ export function SkillQualityDashboard() {
         <table className="dashboard-table">
           <thead>
             <tr>
-              <th>Skill ID</th>
+              <th>Skill</th>
               <th>Total Executions</th>
               <th>Failures</th>
               <th>Failure Rate</th>
@@ -100,7 +106,7 @@ export function SkillQualityDashboard() {
             ) : (
               data.failure_rates.map((row, i) => (
                 <tr key={i}>
-                  <td>{row.skill_id}</td>
+                  <td>{displaySkillLabel(row)}</td>
                   <td>{row.total_executions}</td>
                   <td>{row.failures}</td>
                   <td>{row.failure_rate_pct.toFixed(1)}%</td>
@@ -148,7 +154,7 @@ export function SkillQualityDashboard() {
         <table className="dashboard-table">
           <thead>
             <tr>
-              <th>Skill ID</th>
+              <th>Skill</th>
               <th>Prior Confidence</th>
               <th>Recent Confidence</th>
               <th>Delta</th>
@@ -162,7 +168,7 @@ export function SkillQualityDashboard() {
             ) : (
               data.confidence_degradation.map((row, i) => (
                 <tr key={i}>
-                  <td>{row.skill_id}</td>
+                  <td>{displaySkillLabel(row)}</td>
                   <td>{row.prior_conf.toFixed(3)}</td>
                   <td>{row.recent_conf.toFixed(3)}</td>
                   <td style={{ color: "#EF4444" }}>

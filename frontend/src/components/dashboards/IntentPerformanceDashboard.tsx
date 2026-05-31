@@ -15,6 +15,7 @@ import {
 import { useDashboardData } from "../../hooks/useDashboardData";
 import type { ResolvePerformanceDashboard as DashboardType } from "../../types/dashboards";
 import { DashboardErrorState } from "./DashboardErrorState";
+import { displaySkillLabel } from "./skillLabels";
 
 function StatCard({
   label,
@@ -149,7 +150,7 @@ export function IntentPerformanceDashboard() {
             <tr>
               <th>Intent</th>
               <th>Confidence</th>
-              <th>Skill ID</th>
+              <th>Skill</th>
               <th>Timestamp</th>
             </tr>
           </thead>
@@ -163,7 +164,7 @@ export function IntentPerformanceDashboard() {
                 <tr key={i}>
                   <td>{row.intent}</td>
                   <td>{row.confidence.toFixed(3)}</td>
-                  <td>{row.skill_id}</td>
+                  <td>{displaySkillLabel(row)}</td>
                   <td>{new Date(row.timestamp).toLocaleString()}</td>
                 </tr>
               ))

@@ -36,6 +36,12 @@ interface SkillLabelMetadata {
   version: number;
 }
 
+interface SkillLabelFields {
+  skill_name: string;
+  problem_name: string;
+  display_name: string;
+}
+
 const ParamsSchema = z.object({
   type: DashboardTypeSchema,
   from: z.string().optional(),
@@ -271,7 +277,7 @@ function latestSkillMetadata(rows: Row[]) {
     const candidate: SkillLabelMetadata = {
       name: s(row, "name"),
       problem_id: s(row, "problem_id"),
-      version: n(row, "version"),
+      version: n(row, "version_number") || n(row, "version"),
     };
     const existing = map.get(skillId);
     if (!existing || candidate.version >= existing.version) {
@@ -279,6 +285,35 @@ function latestSkillMetadata(rows: Row[]) {
     }
   }
   return map;
+}
+
+async function loadSkillLabelMaps() {
+  const [skills, problems] = await Promise.all([
+    scanAll(SKILLS_TABLE),
+    scanAll(PROBLEMS_TABLE),
+  ]);
+  return {
+    skillMetadata: latestSkillMetadata(skills),
+    problemNames: new Map(problems.map((row) => [s(row, "problem_id"), s(row, "name")])),
+  };
+}
+
+function skillLabelFields(
+  skill_id: string,
+  skillMetadata: Map<string, SkillLabelMetadata>,
+  problemNames: Map<string, string>,
+): SkillLabelFields {
+  const metadata = skillMetadata.get(skill_id);
+  const problem_name =
+    metadata?.problem_id != null && metadata.problem_id.length > 0
+      ? problemNames.get(metadata.problem_id) ?? ""
+      : "";
+  const skill_name = metadata?.name ?? "";
+  return {
+    skill_name,
+    problem_name,
+    display_name: skill_name || problem_name || skill_id,
+  };
 }
 
 function skillResolveRepetition(rows: Row[]): RepetitionSummary[] {
@@ -306,6 +341,7 @@ function skillResolveRepetition(rows: Row[]): RepetitionSummary[] {
 
 async function intentPerformance(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets, feeds } = await loadTables(from, to);
+  const { skillMetadata, problemNames } = await loadSkillLabelMaps();
   const rows = bucketRows(buckets, "minute", "resolve", "global");
   const totals = aggregate(rows);
   return success(200, {
@@ -316,16 +352,26 @@ async function intentPerformance(event: APIGatewayProxyEvent, from: string, to: 
     high_confidence_pct: totals.confidenceCount > 0 ? (totals.high * 100) / totals.confidenceCount : 0,
     high_confidence_over_time: rows.map((r) => ({ minute: s(r, "bucket_start"), high_confidence_pct: n(r, "confidence_count") > 0 ? (n(r, "confidence_high_count") * 100) / n(r, "confidence_count") : 0 })),
     success_rate_pct: totals.total > 0 ? (totals.successCount * 100) / totals.total : 0,
-    low_confidence_resolves: feeds.filter((r) => s(r, "issue_type") === "resolve_low_confidence").sort((a, b) => s(b, "timestamp").localeCompare(s(a, "timestamp"))).slice(0, 100).map((r) => ({ intent: s(r, "intent"), confidence: n(r, "confidence"), skill_id: s(r, "skill_id"), timestamp: s(r, "timestamp") })),
+    low_confidence_resolves: feeds
+      .filter((r) => s(r, "issue_type") === "resolve_low_confidence")
+      .sort((a, b) => s(b, "timestamp").localeCompare(s(a, "timestamp")))
+      .slice(0, 100)
+      .map((r) => {
+        const skill_id = s(r, "skill_id");
+        return {
+          intent: s(r, "intent"),
+          confidence: n(r, "confidence"),
+          skill_id,
+          ...skillLabelFields(skill_id, skillMetadata, problemNames),
+          timestamp: s(r, "timestamp"),
+        };
+      }),
   }, event);
 }
 
 async function executionCaching(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets } = await loadTables(from, to);
-  const [skills, problems] = await Promise.all([
-    scanAll(SKILLS_TABLE),
-    scanAll(PROBLEMS_TABLE),
-  ]);
+  const { skillMetadata, problemNames } = await loadSkillLabelMaps();
   const executeMinutes = bucketRows(buckets, "minute", "execute", "global");
   const resolveMinutes = bucketRows(buckets, "minute", "resolve", "global");
   const skillExecHours = bucketRows(buckets, "hour", "execute", "skill");
@@ -337,38 +383,52 @@ async function executionCaching(event: APIGatewayProxyEvent, from: string, to: s
     skillMap.set(skill, existing);
   }
   const reps = skillResolveRepetition(buckets);
-  const skillMetadata = latestSkillMetadata(skills);
-  const problemNames = new Map(problems.map((row) => [s(row, "problem_id"), s(row, "name")]));
   return success(200, {
     dashboard: "execution-caching",
     time_range: { from, to },
     top_skills: [...skillMap.entries()]
       .map(([skill_id, rows]) => {
-        const metadata = skillMetadata.get(skill_id);
-        const problem_name =
-          metadata?.problem_id != null && metadata.problem_id.length > 0
-            ? problemNames.get(metadata.problem_id) ?? ""
-            : "";
         return {
           skill_id,
-          skill_name: metadata?.name ?? "",
-          problem_name,
-          display_name: metadata?.name || problem_name || skill_id,
+          ...skillLabelFields(skill_id, skillMetadata, problemNames),
           execution_count: aggregate(rows).total,
         };
       })
       .sort((a, b) => b.execution_count - a.execution_count)
       .slice(0, 20),
-    repetition_rates: reps,
+    repetition_rates: reps.map((r) => ({
+      skill_id: r.skill_id,
+      ...skillLabelFields(r.skill_id, skillMetadata, problemNames),
+      total_executions: r.total_intents,
+      unique_inputs: r.unique_inputs,
+      input_repeat_rate: r.input_repeat_rate_pct / 100,
+      total_intents: r.total_intents,
+      repeated_intents: r.repeated_intents,
+      input_repeat_rate_pct: r.input_repeat_rate_pct,
+    })),
     repetition_rate_over_time: resolveMinutes.map((r) => ({ minute: s(r, "bucket_start"), total_intents: n(r, "total_count"), repeated_intents: n(r, "repeated_input_count"), repetition_rate_pct: n(r, "total_count") > 0 ? (n(r, "repeated_input_count") * 100) / n(r, "total_count") : 0 })),
     intent_repetition_rate_pct: aggregate(resolveMinutes).total > 0 ? (aggregate(resolveMinutes).repeated * 100) / aggregate(resolveMinutes).total : 0,
     execution_latency_over_time: executeMinutes.map((r) => ({ minute: s(r, "bucket_start"), p50_ms: pct(latency(r), 0.5), p95_ms: pct(latency(r), 0.95) })),
-    cache_candidates: reps.filter((r) => r.total_intents > CACHE_CANDIDATE_MIN_INTENTS && r.input_repeat_rate_pct / 100 > CACHE_CANDIDATE_MIN_REPEAT_RATE).map((r) => ({ skill_id: r.skill_id, total_intents: r.total_intents, unique_inputs: r.unique_inputs, intent_repeat_rate: r.input_repeat_rate_pct / 100, p95_ms: skillMap.has(r.skill_id) ? pct(aggregate(skillMap.get(r.skill_id) ?? []).hist, 0.95) : null })).sort((a, b) => b.total_intents * b.intent_repeat_rate - a.total_intents * a.intent_repeat_rate).slice(0, 50),
+    cache_candidates: reps
+      .filter((r) => r.total_intents > CACHE_CANDIDATE_MIN_INTENTS && r.input_repeat_rate_pct / 100 > CACHE_CANDIDATE_MIN_REPEAT_RATE)
+      .map((r) => ({
+        skill_id: r.skill_id,
+        ...skillLabelFields(r.skill_id, skillMetadata, problemNames),
+        execution_count: r.total_intents,
+        unique_inputs: r.unique_inputs,
+        input_repeat_rate: r.input_repeat_rate_pct / 100,
+        p95_ms: skillMap.has(r.skill_id) ? pct(aggregate(skillMap.get(r.skill_id) ?? []).hist, 0.95) : 0,
+        total_intents: r.total_intents,
+        intent_repeat_rate: r.input_repeat_rate_pct / 100,
+      }))
+      .sort((a, b) => b.total_intents * b.intent_repeat_rate - a.total_intents * a.intent_repeat_rate)
+      .slice(0, 50),
   }, event);
 }
 
 async function skillQuality(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets, intents } = await loadTables(from, to);
+  const { skillMetadata, problemNames } = await loadSkillLabelMaps();
   const mergedIntents = mergeIntentRows(intents);
   const validateHours = bucketRows(buckets, "hour", "validate", "skill");
   const executeHours = bucketRows(buckets, "hour", "execute", "skill");
@@ -386,16 +446,46 @@ async function skillQuality(event: APIGatewayProxyEvent, from: string, to: strin
   return success(200, {
     dashboard: "skill-quality",
     time_range: { from, to },
-    test_pass_rates: [...vMap.entries()].map(([skill_id, rows]) => ({ skill_id, passed: aggregate(rows).successCount, failed: aggregate(rows).failureCount, pass_rate_pct: aggregate(rows).total > 0 ? (aggregate(rows).successCount * 100) / aggregate(rows).total : 0 })).sort((a, b) => a.pass_rate_pct - b.pass_rate_pct),
-    confidence_over_time: [...vMap.entries()].flatMap(([skill_id, rows]) => rows.sort((a, b) => s(a, "bucket_start").localeCompare(s(b, "bucket_start"))).map((r) => ({ skill_id, hour: s(r, "bucket_start"), avg_confidence: n(r, "confidence_count") > 0 ? n(r, "confidence_sum") / n(r, "confidence_count") : 0, min_confidence: null }))),
-    failure_rates: [...eMap.entries()].map(([skill_id, rows]) => ({ skill_id, total_executions: aggregate(rows).total, failures: aggregate(rows).failureCount, failure_rate_pct: aggregate(rows).total > 0 ? (aggregate(rows).failureCount * 100) / aggregate(rows).total : 0 })).filter((r) => r.total_executions >= 5).sort((a, b) => b.failure_rate_pct - a.failure_rate_pct),
+    test_pass_rates: [...vMap.entries()]
+      .map(([skill_id, rows]) => ({
+        skill_id,
+        ...skillLabelFields(skill_id, skillMetadata, problemNames),
+        passed: aggregate(rows).successCount,
+        failed: aggregate(rows).failureCount,
+        pass_rate_pct: aggregate(rows).total > 0 ? (aggregate(rows).successCount * 100) / aggregate(rows).total : 0,
+      }))
+      .sort((a, b) => a.pass_rate_pct - b.pass_rate_pct),
+    confidence_over_time: [...vMap.entries()].flatMap(([skill_id, rows]) =>
+      rows
+        .sort((a, b) => s(a, "bucket_start").localeCompare(s(b, "bucket_start")))
+        .map((r) => ({
+          skill_id,
+          ...skillLabelFields(skill_id, skillMetadata, problemNames),
+          hour: s(r, "bucket_start"),
+          avg_confidence: n(r, "confidence_count") > 0 ? n(r, "confidence_sum") / n(r, "confidence_count") : 0,
+          min_confidence: null,
+        }))),
+    failure_rates: [...eMap.entries()]
+      .map(([skill_id, rows]) => ({
+        skill_id,
+        ...skillLabelFields(skill_id, skillMetadata, problemNames),
+        total_executions: aggregate(rows).total,
+        failures: aggregate(rows).failureCount,
+        failure_rate_pct: aggregate(rows).total > 0 ? (aggregate(rows).failureCount * 100) / aggregate(rows).total : 0,
+      }))
+      .filter((r) => r.total_executions >= 5)
+      .sort((a, b) => b.failure_rate_pct - a.failure_rate_pct),
     competing_implementations: mergedIntents.map((r) => ({ intent: s(r, "intent"), competing_skills: setArr(r, "distinct_skill_ids"), num_competitors: setArr(r, "distinct_skill_ids").length, best_confidence: null, worst_confidence: null })).filter((r) => r.num_competitors > 1).sort((a, b) => b.num_competitors - a.num_competitors).slice(0, 50),
-    confidence_degradation: confidenceDegradation,
+    confidence_degradation: confidenceDegradation.map((r) => ({
+      ...r,
+      ...skillLabelFields(r.skill_id, skillMetadata, problemNames),
+    })),
   }, event);
 }
 
 async function evolutionGap(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets, intents } = await loadTables(from, to);
+  const { skillMetadata, problemNames } = await loadSkillLabelMaps();
   const mergedIntents = mergeIntentRows(intents);
   const resolveHours = bucketRows(buckets, "hour", "resolve", "global");
   const executeHours = bucketRows(buckets, "hour", "execute", "skill");
@@ -419,9 +509,32 @@ async function evolutionGap(event: APIGatewayProxyEvent, from: string, to: strin
     dashboard: "evolution-gap",
     time_range: { from, to },
     unresolved_intents: mergedIntents.map((r) => ({ intent: s(r, "intent"), occurrences: n(r, "resolve_failure_count"), first_seen: s(r, "first_seen_at"), last_seen: s(r, "last_seen_at") })).filter((r) => r.occurrences > 0).sort((a, b) => b.occurrences - a.occurrences).slice(0, 100),
-    low_confidence_intents: mergedIntents.map((r) => ({ intent: s(r, "intent"), skill_id: s(r, "last_skill_id"), occurrences: n(r, "low_confidence_resolve_count"), avg_confidence: n(r, "last_confidence") })).filter((r) => r.occurrences > 0).sort((a, b) => b.occurrences - a.occurrences).slice(0, 100),
+    low_confidence_intents: mergedIntents
+      .map((r) => {
+        const skill_id = s(r, "last_skill_id");
+        return {
+          intent: s(r, "intent"),
+          skill_id,
+          ...skillLabelFields(skill_id, skillMetadata, problemNames),
+          occurrences: n(r, "low_confidence_resolve_count"),
+          avg_confidence: n(r, "last_confidence"),
+        };
+      })
+      .filter((r) => r.occurrences > 0)
+      .sort((a, b) => b.occurrences - a.occurrences)
+      .slice(0, 100),
     low_confidence_volume: resolveHours.map((r) => ({ hour: s(r, "bucket_start"), low_confidence_count: n(r, "confidence_low_count"), total_resolves: n(r, "total_count"), low_confidence_pct: n(r, "total_count") > 0 ? (n(r, "confidence_low_count") * 100) / n(r, "total_count") : 0 })),
-    failed_executions: [...failures.entries()].map(([skill_id, rows]) => ({ skill_id, total_executions: aggregate(rows).total, failures: aggregate(rows).failureCount, failure_rate_pct: aggregate(rows).total > 0 ? (aggregate(rows).failureCount * 100) / aggregate(rows).total : 0 })).filter((r) => r.failures > 0).sort((a, b) => b.failures - a.failures).slice(0, 100),
+    failed_executions: [...failures.entries()]
+      .map(([skill_id, rows]) => ({
+        skill_id,
+        ...skillLabelFields(skill_id, skillMetadata, problemNames),
+        total_executions: aggregate(rows).total,
+        failures: aggregate(rows).failureCount,
+        failure_rate_pct: aggregate(rows).total > 0 ? (aggregate(rows).failureCount * 100) / aggregate(rows).total : 0,
+      }))
+      .filter((r) => r.failures > 0)
+      .sort((a, b) => b.failures - a.failures)
+      .slice(0, 100),
     domain_coverage_gaps: [...domain.entries()].map(([name, d]) => ({ domain: name, unique_intents: d.intents.size, unresolved_count: d.unresolved, low_confidence_count: d.low, execution_failures: 0 })).sort((a, b) => b.unresolved_count + b.low_confidence_count - (a.unresolved_count + a.low_confidence_count)),
     evolve_pipeline: mergedIntents.map((r) => ({ intent: s(r, "intent"), fail_count: n(r, "fail_count"), first_failure: s(r, "first_seen_at"), latest_failure: s(r, "last_seen_at") })).filter((r) => r.fail_count > 0).sort((a, b) => b.fail_count - a.fail_count).slice(0, 50),
   }, event);
@@ -429,6 +542,7 @@ async function evolutionGap(event: APIGatewayProxyEvent, from: string, to: strin
 
 async function agentBehavior(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets, intents } = await loadTables(from, to);
+  const { skillMetadata, problemNames } = await loadSkillLabelMaps();
   const mergedIntents = mergeIntentRows(intents);
   const resolves = bucketRows(buckets, "hour", "resolve", "global");
   const executes = bucketRows(buckets, "hour", "execute", "global");
@@ -446,7 +560,29 @@ async function agentBehavior(event: APIGatewayProxyEvent, from: string, to: stri
     conversion_over_time: hours.map((hour) => ({ hour, resolves: resolveMap.get(hour) ?? 0, executes: executeMap.get(hour) ?? 0, conversion_rate_pct: (resolveMap.get(hour) ?? 0) > 0 ? ((executeMap.get(hour) ?? 0) * 100) / (resolveMap.get(hour) ?? 0) : 0 })),
     repeated_resolves: mergedIntents.map((r) => ({ intent: s(r, "intent"), resolve_count: n(r, "resolve_count"), distinct_skills_returned: setArr(r, "distinct_skill_ids").length, avg_confidence: n(r, "last_confidence") })).filter((r) => r.resolve_count > 3).sort((a, b) => b.resolve_count - a.resolve_count).slice(0, 50),
     abandoned_executions: [],
-    skill_chain_patterns: mergedIntents.filter((r) => s(r, "intent").startsWith("chain:") && s(r, "last_skill_id")).map((r) => ({ from_skill: "", to_skill: s(r, "last_skill_id"), chain_count: n(r, "resolve_count") })).sort((a, b) => b.chain_count - a.chain_count).slice(0, 20),
+    skill_chain_patterns: mergedIntents
+      .filter((r) => s(r, "intent").startsWith("chain:") && s(r, "last_skill_id"))
+      .map((r) => {
+        const from_skill = "";
+        const to_skill = s(r, "last_skill_id");
+        return {
+          from_skill,
+          ...{
+            from_skill_name: "",
+            from_problem_name: "",
+            from_display_name: from_skill || "",
+          },
+          to_skill,
+          ...{
+            to_skill_name: skillLabelFields(to_skill, skillMetadata, problemNames).skill_name,
+            to_problem_name: skillLabelFields(to_skill, skillMetadata, problemNames).problem_name,
+            to_display_name: skillLabelFields(to_skill, skillMetadata, problemNames).display_name,
+          },
+          chain_count: n(r, "resolve_count"),
+        };
+      })
+      .sort((a, b) => b.chain_count - a.chain_count)
+      .slice(0, 20),
     hourly_usage: resolves.map((r) => ({ day_of_week: new Date(s(r, "bucket_start")).getUTCDay(), hour_of_day: new Date(s(r, "bucket_start")).getUTCHours(), event_count: n(r, "total_count") })),
   }, event);
 }

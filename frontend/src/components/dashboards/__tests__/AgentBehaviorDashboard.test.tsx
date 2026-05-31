@@ -39,7 +39,13 @@ const SAMPLE_DATA: DashboardData = {
     },
   ],
   skill_chain_patterns: [
-    { from_skill: "skill-001", to_skill: "skill-002", chain_count: 45 },
+    {
+      from_skill: "skill-001",
+      from_display_name: "Intent Router",
+      to_skill: "skill-002",
+      to_display_name: "Execution Reporter",
+      chain_count: 45,
+    },
   ],
   hourly_usage: [{ day_of_week: 1, hour_of_day: 9, event_count: 300 }],
 };
@@ -89,7 +95,8 @@ describe("AgentBehaviorDashboard", () => {
     mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
     render(<AgentBehaviorDashboard />);
     expect(screen.getByText(/skill chaining patterns/i)).toBeInTheDocument();
-    expect(screen.getByText("skill-001")).toBeInTheDocument();
+    expect(screen.getByText("Intent Router")).toBeInTheDocument();
+    expect(screen.getByText("Execution Reporter")).toBeInTheDocument();
   });
 
   it("renders abandoned executions table", () => {

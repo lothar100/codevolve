@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { useDashboardData } from "../../hooks/useDashboardData";
 import type { EvolutionGapDashboard as DashboardType } from "../../types/dashboards";
+import { displaySkillLabel } from "./skillLabels";
 
 export function EvolutionGapDashboard() {
   const { data, loading, error } =
@@ -102,7 +103,7 @@ export function EvolutionGapDashboard() {
         <table className="dashboard-table">
           <thead>
             <tr>
-              <th>Skill ID</th>
+              <th>Skill</th>
               <th>Total Executions</th>
               <th>Failures</th>
               <th>Failure Rate</th>
@@ -116,7 +117,7 @@ export function EvolutionGapDashboard() {
             ) : (
               data.failed_executions.map((row, i) => (
                 <tr key={i}>
-                  <td>{row.skill_id}</td>
+                  <td>{displaySkillLabel(row)}</td>
                   <td>{row.total_executions}</td>
                   <td>{row.failures}</td>
                   <td>{row.failure_rate_pct.toFixed(1)}%</td>

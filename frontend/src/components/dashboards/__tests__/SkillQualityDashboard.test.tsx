@@ -12,11 +12,22 @@ const mockUse = useDashboardData as ReturnType<typeof vi.fn>;
 
 const SAMPLE_DATA: DashboardData = {
   test_pass_rates: [
-    { skill_id: "skill-001", passed: 9, failed: 1, pass_rate_pct: 90.0 },
+    {
+      skill_id: "skill-001",
+      skill_name: "Fast Pair Sum",
+      problem_name: "Two Sum",
+      display_name: "Fast Pair Sum",
+      passed: 9,
+      failed: 1,
+      pass_rate_pct: 90.0,
+    },
   ],
   confidence_over_time: [
     {
       skill_id: "skill-001",
+      skill_name: "Fast Pair Sum",
+      problem_name: "Two Sum",
+      display_name: "Fast Pair Sum",
       hour: "2026-01-01T00:00:00Z",
       avg_confidence: 0.88,
       min_confidence: 0.82,
@@ -25,6 +36,9 @@ const SAMPLE_DATA: DashboardData = {
   failure_rates: [
     {
       skill_id: "skill-001",
+      skill_name: "Fast Pair Sum",
+      problem_name: "Two Sum",
+      display_name: "Fast Pair Sum",
       total_executions: 100,
       failures: 5,
       failure_rate_pct: 5.0,
@@ -42,6 +56,9 @@ const SAMPLE_DATA: DashboardData = {
   confidence_degradation: [
     {
       skill_id: "skill-003",
+      skill_name: "Sliding Window Max",
+      problem_name: "Sliding Window",
+      display_name: "Sliding Window Max",
       prior_conf: 0.9,
       recent_conf: 0.78,
       confidence_delta: -0.12,
@@ -81,7 +98,7 @@ describe("SkillQualityDashboard", () => {
   it("renders confidence degradation table with delta", () => {
     mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
     render(<SkillQualityDashboard />);
-    expect(screen.getByText("skill-003")).toBeInTheDocument();
+    expect(screen.getByText("Sliding Window Max")).toBeInTheDocument();
   });
 
   it("calls useDashboardData with correct type and 60-minute interval", () => {

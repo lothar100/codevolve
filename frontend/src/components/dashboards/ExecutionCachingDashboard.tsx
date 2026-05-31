@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { useDashboardData } from "../../hooks/useDashboardData";
 import type { ExecutionCachingDashboard as DashboardType } from "../../types/dashboards";
+import { displaySkillLabel } from "./skillLabels";
 
 export function ExecutionCachingDashboard() {
   const { data, loading, error } =
@@ -45,7 +46,7 @@ export function ExecutionCachingDashboard() {
   const hasCacheRateSeries = cacheRateOverTime.length > 0;
   const topSkillsChartData = data.top_skills.map((row) => ({
     ...row,
-    chart_label: row.display_name || row.skill_name || row.problem_name || row.skill_id,
+    chart_label: displaySkillLabel(row),
   }));
 
   return (
@@ -166,7 +167,7 @@ export function ExecutionCachingDashboard() {
         <table className="dashboard-table">
           <thead>
             <tr>
-              <th>Skill ID</th>
+              <th>Skill</th>
               <th>Total Reported Runs</th>
               <th>Unique Inputs</th>
               <th>Repeat Rate</th>
@@ -182,7 +183,7 @@ export function ExecutionCachingDashboard() {
             ) : (
               data.repetition_rates.map((row, i) => (
                 <tr key={i}>
-                  <td>{row.skill_id}</td>
+                  <td>{displaySkillLabel(row)}</td>
                   <td>{row.total_executions}</td>
                   <td>{row.unique_inputs}</td>
                   <td>{(row.input_repeat_rate * 100).toFixed(1)}%</td>
@@ -198,7 +199,7 @@ export function ExecutionCachingDashboard() {
         <table className="dashboard-table">
           <thead>
             <tr>
-              <th>Skill ID</th>
+              <th>Skill</th>
               <th>Reported Runs</th>
               <th>Unique Inputs</th>
               <th>Repeat Rate</th>
@@ -215,7 +216,7 @@ export function ExecutionCachingDashboard() {
             ) : (
               data.cache_candidates.map((row, i) => (
                 <tr key={i}>
-                  <td>{row.skill_id}</td>
+                  <td>{displaySkillLabel(row)}</td>
                   <td>{row.execution_count}</td>
                   <td>{row.unique_inputs}</td>
                   <td>{(row.input_repeat_rate * 100).toFixed(1)}%</td>

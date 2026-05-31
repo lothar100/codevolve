@@ -81,6 +81,20 @@ describe("GET /analytics/dashboards/:type", () => {
           skill_id: "skill-1",
         },
       ],
+      "codevolve-skills": [
+        {
+          skill_id: "skill-1",
+          problem_id: "problem-1",
+          version: 2,
+          name: "Fast Pair Sum",
+        },
+      ],
+      "codevolve-problems": [
+        {
+          problem_id: "problem-1",
+          name: "Two Sum",
+        },
+      ],
     });
 
     const result = await handler(makeEvent("resolve-performance", { from: VALID_FROM, to: VALID_TO }));
@@ -93,7 +107,13 @@ describe("GET /analytics/dashboards/:type", () => {
     ]);
     expect(body.high_confidence_pct).toBe(80);
     expect(body.success_rate_pct).toBe(90);
-    expect(body.low_confidence_resolves[0]).toMatchObject({ intent: "arrays:two-sum", skill_id: "skill-1" });
+    expect(body.low_confidence_resolves[0]).toMatchObject({
+      intent: "arrays:two-sum",
+      skill_id: "skill-1",
+      skill_name: "Fast Pair Sum",
+      problem_name: "Two Sum",
+      display_name: "Fast Pair Sum",
+    });
   });
 
   it("200: legacy intent-performance alias still works", async () => {
@@ -170,25 +190,118 @@ describe("GET /analytics/dashboards/:type", () => {
         execution_count: 120,
       },
     ]);
-    expect(body.repetition_rates).toEqual([
-      {
-        skill_id: "skill-1",
-        total_intents: 100,
-        unique_inputs: 55,
-        repeated_intents: 45,
-        input_repeat_rate_pct: 45,
-      },
-    ]);
+    expect(body.repetition_rates[0]).toMatchObject({
+      skill_id: "skill-1",
+      skill_name: "Fast Pair Sum",
+      problem_name: "Two Sum",
+      display_name: "Fast Pair Sum",
+      total_executions: 100,
+      unique_inputs: 55,
+      input_repeat_rate: 0.45,
+    });
     expect(body.intent_repetition_rate_pct).toBe(40);
-    expect(body.cache_candidates[0]).toMatchObject({ skill_id: "skill-1", total_intents: 100 });
+    expect(body.cache_candidates[0]).toMatchObject({
+      skill_id: "skill-1",
+      skill_name: "Fast Pair Sum",
+      problem_name: "Two Sum",
+      display_name: "Fast Pair Sum",
+      execution_count: 100,
+    });
   });
 
-  it("200: other dashboards return their shape", async () => {
-    for (const type of ["skill-quality", "evolution-gap", "agent-behavior"] as const) {
-      const result = await handler(makeEvent(type, { from: VALID_FROM, to: VALID_TO }));
-      expect(result.statusCode).toBe(200);
-      expect(JSON.parse(result.body).dashboard).toBe(type);
-    }
+  it("200: skill labels are included across remaining dashboards", async () => {
+    setupTables({
+      "codevolve-analytics-buckets": [
+        {
+          bucket_start: "2026-01-01T00:00:00.000Z",
+          granularity: "hour",
+          event_type: "validate",
+          scope_type: "skill",
+          scope_id: "skill-1",
+          total_count: 10,
+          success_count: 9,
+          failure_count: 1,
+          confidence_count: 10,
+          confidence_sum: 8.8,
+        },
+        {
+          bucket_start: "2026-01-01T00:00:00.000Z",
+          granularity: "hour",
+          event_type: "execute",
+          scope_type: "skill",
+          scope_id: "skill-1",
+          total_count: 12,
+          failure_count: 3,
+        },
+        {
+          bucket_start: "2026-01-01T00:00:00.000Z",
+          granularity: "hour",
+          event_type: "resolve",
+          scope_type: "global",
+          total_count: 10,
+          confidence_low_count: 3,
+        },
+      ],
+      "codevolve-analytics-intent-summaries": [
+        {
+          intent: "chain:plan pipeline",
+          domain: "general",
+          first_seen_at: "2026-01-01T00:00:00.000Z",
+          last_seen_at: "2026-01-01T00:00:00.000Z",
+          last_skill_id: "skill-1",
+          last_confidence: 0.62,
+          resolve_count: 4,
+          resolve_failure_count: 1,
+          low_confidence_resolve_count: 2,
+          fail_count: 1,
+          distinct_skill_ids: ["skill-1"],
+          window_start: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      "codevolve-skills": [
+        {
+          skill_id: "skill-1",
+          problem_id: "problem-1",
+          version: 4,
+          name: "Fast Pair Sum",
+        },
+      ],
+      "codevolve-problems": [
+        {
+          problem_id: "problem-1",
+          name: "Two Sum",
+        },
+      ],
+    });
+
+    const skillQuality = JSON.parse((await handler(makeEvent("skill-quality", { from: VALID_FROM, to: VALID_TO }))).body);
+    expect(skillQuality.dashboard).toBe("skill-quality");
+    expect(skillQuality.test_pass_rates[0]).toMatchObject({
+      skill_id: "skill-1",
+      display_name: "Fast Pair Sum",
+    });
+    expect(skillQuality.failure_rates[0]).toMatchObject({
+      skill_id: "skill-1",
+      display_name: "Fast Pair Sum",
+    });
+
+    const evolutionGap = JSON.parse((await handler(makeEvent("evolution-gap", { from: VALID_FROM, to: VALID_TO }))).body);
+    expect(evolutionGap.dashboard).toBe("evolution-gap");
+    expect(evolutionGap.low_confidence_intents[0]).toMatchObject({
+      skill_id: "skill-1",
+      display_name: "Fast Pair Sum",
+    });
+    expect(evolutionGap.failed_executions[0]).toMatchObject({
+      skill_id: "skill-1",
+      display_name: "Fast Pair Sum",
+    });
+
+    const agentBehavior = JSON.parse((await handler(makeEvent("agent-behavior", { from: VALID_FROM, to: VALID_TO }))).body);
+    expect(agentBehavior.dashboard).toBe("agent-behavior");
+    expect(agentBehavior.skill_chain_patterns[0]).toMatchObject({
+      to_skill: "skill-1",
+      to_display_name: "Fast Pair Sum",
+    });
   });
 
   it("400: invalid ranges are rejected", async () => {

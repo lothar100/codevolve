@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { useDashboardData } from "../../hooks/useDashboardData";
 import type { AgentBehaviorDashboard as DashboardType } from "../../types/dashboards";
+import { displayFromChainSkillLabel, displayToChainSkillLabel } from "./skillLabels";
 
 export function AgentBehaviorDashboard() {
   const { data, loading, error } =
@@ -180,8 +181,8 @@ export function AgentBehaviorDashboard() {
             ) : (
               data.skill_chain_patterns.map((row, i) => (
                 <tr key={i}>
-                  <td>{row.from_skill}</td>
-                  <td>{row.to_skill}</td>
+                  <td>{displayFromChainSkillLabel(row)}</td>
+                  <td>{displayToChainSkillLabel(row)}</td>
                   <td>{row.chain_count}</td>
                 </tr>
               ))

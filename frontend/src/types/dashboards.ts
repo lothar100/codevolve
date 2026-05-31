@@ -8,6 +8,12 @@ export interface DashboardMeta {
   degraded_reason?: string;
 }
 
+export interface SkillLabelFields {
+  skill_name?: string;
+  problem_name?: string;
+  display_name?: string;
+}
+
 // --- Dashboard 1: Resolve Performance ---
 
 export interface ResolveLatencyPoint {
@@ -26,7 +32,7 @@ export interface HighConfidencePoint {
   high_confidence_pct: number;
 }
 
-export interface LowConfidenceResolve {
+export interface LowConfidenceResolve extends SkillLabelFields {
   intent: string;
   confidence: number;
   skill_id: string;
@@ -44,15 +50,12 @@ export interface ResolvePerformanceDashboard extends DashboardMeta {
 
 // --- Dashboard 2: Reported Runs & Caching ---
 
-export interface TopSkill {
+export interface TopSkill extends SkillLabelFields {
   skill_id: string;
-  skill_name?: string;
-  problem_name?: string;
-  display_name?: string;
   execution_count: number;
 }
 
-export interface SkillRepetitionRate {
+export interface SkillRepetitionRate extends SkillLabelFields {
   skill_id: string;
   total_executions: number;
   unique_inputs: number;
@@ -79,7 +82,7 @@ export interface ExecutionLatencyPoint {
   p95_ms: number;
 }
 
-export interface CacheCandidate {
+export interface CacheCandidate extends SkillLabelFields {
   skill_id: string;
   execution_count: number;
   unique_inputs: number;
@@ -100,21 +103,21 @@ export interface ExecutionCachingDashboard extends DashboardMeta {
 
 // --- Dashboard 3: Skill Quality ---
 
-export interface SkillPassRate {
+export interface SkillPassRate extends SkillLabelFields {
   skill_id: string;
   passed: number;
   failed: number;
   pass_rate_pct: number;
 }
 
-export interface SkillConfidencePoint {
+export interface SkillConfidencePoint extends SkillLabelFields {
   skill_id: string;
   hour: string;
   avg_confidence: number;
   min_confidence: number;
 }
 
-export interface SkillFailureRate {
+export interface SkillFailureRate extends SkillLabelFields {
   skill_id: string;
   total_executions: number;
   failures: number;
@@ -129,7 +132,7 @@ export interface CompetingImplementation {
   worst_confidence: number;
 }
 
-export interface ConfidenceDegradation {
+export interface ConfidenceDegradation extends SkillLabelFields {
   skill_id: string;
   prior_conf: number;
   recent_conf: number;
@@ -153,7 +156,7 @@ export interface UnresolvedIntent {
   last_seen: string;
 }
 
-export interface LowConfidenceIntent {
+export interface LowConfidenceIntent extends SkillLabelFields {
   intent: string;
   skill_id: string;
   occurrences: number;
@@ -167,7 +170,7 @@ export interface LowConfidenceVolumePoint {
   low_confidence_pct: number;
 }
 
-export interface FailedExecution {
+export interface FailedExecution extends SkillLabelFields {
   skill_id: string;
   total_executions: number;
   failures: number;
@@ -224,6 +227,12 @@ export interface AbandonedExecution {
 export interface SkillChainPattern {
   from_skill: string;
   to_skill: string;
+  from_skill_name?: string;
+  from_problem_name?: string;
+  from_display_name?: string;
+  to_skill_name?: string;
+  to_problem_name?: string;
+  to_display_name?: string;
   chain_count: number;
 }
 
