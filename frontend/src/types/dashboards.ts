@@ -46,6 +46,9 @@ export interface ResolvePerformanceDashboard extends DashboardMeta {
 
 export interface TopSkill {
   skill_id: string;
+  skill_name?: string;
+  problem_name?: string;
+  display_name?: string;
   execution_count: number;
 }
 

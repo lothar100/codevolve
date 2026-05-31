@@ -142,12 +142,34 @@ describe("GET /analytics/dashboards/:type", () => {
           repeated_input_count: 45,
         },
       ],
+      "codevolve-skills": [
+        {
+          skill_id: "skill-1",
+          problem_id: "problem-1",
+          version: 3,
+          name: "Fast Pair Sum",
+        },
+      ],
+      "codevolve-problems": [
+        {
+          problem_id: "problem-1",
+          name: "Two Sum",
+        },
+      ],
     });
 
     const result = await handler(makeEvent("execution-caching", { from: VALID_FROM, to: VALID_TO }));
     const body = JSON.parse(result.body);
     expect(result.statusCode).toBe(200);
-    expect(body.top_skills).toEqual([{ skill_id: "skill-1", execution_count: 120 }]);
+    expect(body.top_skills).toEqual([
+      {
+        skill_id: "skill-1",
+        skill_name: "Fast Pair Sum",
+        problem_name: "Two Sum",
+        display_name: "Fast Pair Sum",
+        execution_count: 120,
+      },
+    ]);
     expect(body.repetition_rates).toEqual([
       {
         skill_id: "skill-1",

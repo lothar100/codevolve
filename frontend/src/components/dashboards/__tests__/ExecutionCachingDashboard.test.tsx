@@ -11,7 +11,15 @@ import { useDashboardData } from "../../../hooks/useDashboardData";
 const mockUse = useDashboardData as ReturnType<typeof vi.fn>;
 
 const SAMPLE_DATA: DashboardData = {
-  top_skills: [{ skill_id: "skill-001", execution_count: 420 }],
+  top_skills: [
+    {
+      skill_id: "skill-001",
+      skill_name: "Fast Pair Sum",
+      problem_name: "Two Sum",
+      display_name: "Fast Pair Sum",
+      execution_count: 420,
+    },
+  ],
   repetition_rates: [
     {
       skill_id: "skill-001",
@@ -87,6 +95,12 @@ describe("ExecutionCachingDashboard", () => {
     mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
     render(<ExecutionCachingDashboard />);
     expect(screen.getByText(/reported runs.*caching/i)).toBeInTheDocument();
+  });
+
+  it("accepts readable top-skill labels without crashing", () => {
+    mockUse.mockReturnValue({ data: SAMPLE_DATA, loading: false, error: null, refresh: vi.fn() });
+    render(<ExecutionCachingDashboard />);
+    expect(screen.getByText(/most reported skills/i)).toBeInTheDocument();
   });
 
   it("renders cache hit rate stat card", () => {

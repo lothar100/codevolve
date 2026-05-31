@@ -43,6 +43,10 @@ export function ExecutionCachingDashboard() {
   const cacheRateOverTime = data.cache_rate_over_time ?? [];
   const repetitionRateOverTime = data.repetition_rate_over_time ?? [];
   const hasCacheRateSeries = cacheRateOverTime.length > 0;
+  const topSkillsChartData = data.top_skills.map((row) => ({
+    ...row,
+    chart_label: row.display_name || row.skill_name || row.problem_name || row.skill_id,
+  }));
 
   return (
     <div className="dashboard execution-caching-dashboard">
@@ -66,12 +70,12 @@ export function ExecutionCachingDashboard() {
         <ResponsiveContainer width="100%" height={360}>
           <BarChart
             layout="vertical"
-            data={data.top_skills}
+            data={topSkillsChartData}
             margin={{ left: 120 }}
           >
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis type="number" />
-            <YAxis type="category" dataKey="skill_id" width={120} />
+            <YAxis type="category" dataKey="chart_label" width={220} />
             <Tooltip />
             <Bar dataKey="execution_count" name="Reported Runs" fill="#3B82F6" />
           </BarChart>

@@ -30,6 +30,12 @@ interface RepetitionSummary {
   input_repeat_rate_pct: number;
 }
 
+interface SkillLabelMetadata {
+  name: string;
+  problem_id: string;
+  version: number;
+}
+
 const ParamsSchema = z.object({
   type: DashboardTypeSchema,
   from: z.string().optional(),
@@ -257,6 +263,24 @@ function repetition(rows: Row[]): RepetitionSummary[] {
   return [...map.entries()].map(([skill_id, v]) => ({ skill_id, total_intents: v.total, unique_inputs: v.unique, repeated_intents: v.repeated, input_repeat_rate_pct: v.total > 0 ? (v.repeated * 100) / v.total : 0 })).sort((a, b) => b.input_repeat_rate_pct - a.input_repeat_rate_pct);
 }
 
+function latestSkillMetadata(rows: Row[]) {
+  const map = new Map<string, SkillLabelMetadata>();
+  for (const row of rows) {
+    const skillId = s(row, "skill_id");
+    if (!skillId) continue;
+    const candidate: SkillLabelMetadata = {
+      name: s(row, "name"),
+      problem_id: s(row, "problem_id"),
+      version: n(row, "version"),
+    };
+    const existing = map.get(skillId);
+    if (!existing || candidate.version >= existing.version) {
+      map.set(skillId, candidate);
+    }
+  }
+  return map;
+}
+
 function skillResolveRepetition(rows: Row[]): RepetitionSummary[] {
   const grouped = new Map<string, Row[]>();
   for (const row of bucketRows(rows, "day", "resolve", "skill")) {
@@ -298,6 +322,10 @@ async function intentPerformance(event: APIGatewayProxyEvent, from: string, to: 
 
 async function executionCaching(event: APIGatewayProxyEvent, from: string, to: string) {
   const { buckets } = await loadTables(from, to);
+  const [skills, problems] = await Promise.all([
+    scanAll(SKILLS_TABLE),
+    scanAll(PROBLEMS_TABLE),
+  ]);
   const executeMinutes = bucketRows(buckets, "minute", "execute", "global");
   const resolveMinutes = bucketRows(buckets, "minute", "resolve", "global");
   const skillExecHours = bucketRows(buckets, "hour", "execute", "skill");
@@ -309,10 +337,28 @@ async function executionCaching(event: APIGatewayProxyEvent, from: string, to: s
     skillMap.set(skill, existing);
   }
   const reps = skillResolveRepetition(buckets);
+  const skillMetadata = latestSkillMetadata(skills);
+  const problemNames = new Map(problems.map((row) => [s(row, "problem_id"), s(row, "name")]));
   return success(200, {
     dashboard: "execution-caching",
     time_range: { from, to },
-    top_skills: [...skillMap.entries()].map(([skill_id, rows]) => ({ skill_id, execution_count: aggregate(rows).total })).sort((a, b) => b.execution_count - a.execution_count).slice(0, 20),
+    top_skills: [...skillMap.entries()]
+      .map(([skill_id, rows]) => {
+        const metadata = skillMetadata.get(skill_id);
+        const problem_name =
+          metadata?.problem_id != null && metadata.problem_id.length > 0
+            ? problemNames.get(metadata.problem_id) ?? ""
+            : "";
+        return {
+          skill_id,
+          skill_name: metadata?.name ?? "",
+          problem_name,
+          display_name: metadata?.name || problem_name || skill_id,
+          execution_count: aggregate(rows).total,
+        };
+      })
+      .sort((a, b) => b.execution_count - a.execution_count)
+      .slice(0, 20),
     repetition_rates: reps,
     repetition_rate_over_time: resolveMinutes.map((r) => ({ minute: s(r, "bucket_start"), total_intents: n(r, "total_count"), repeated_intents: n(r, "repeated_input_count"), repetition_rate_pct: n(r, "total_count") > 0 ? (n(r, "repeated_input_count") * 100) / n(r, "total_count") : 0 })),
     intent_repetition_rate_pct: aggregate(resolveMinutes).total > 0 ? (aggregate(resolveMinutes).repeated * 100) / aggregate(resolveMinutes).total : 0,
