@@ -250,7 +250,7 @@ function buildIntentSummaryUpdate(event: AnalyticsEvent): TransactItem {
   const expressionParts = [
     "SET intent = :intent",
     "window_start = :windowStart",
-    "domain = if_not_exists(domain, :domain)",
+    "#domain = if_not_exists(#domain, :domain)",
     "first_seen_at = if_not_exists(first_seen_at, :timestamp)",
     "last_seen_at = :timestamp",
     "last_event_type = :eventType",
@@ -308,6 +308,9 @@ function buildIntentSummaryUpdate(event: AnalyticsEvent): TransactItem {
       Key: {
         pk: `day#${windowStart}`,
         sk: `intent#${event.intent}`,
+      },
+      ExpressionAttributeNames: {
+        "#domain": "domain",
       },
       UpdateExpression: `${expressionParts.join(", ")} ADD ${addParts.join(", ")}`,
       ExpressionAttributeValues: values,

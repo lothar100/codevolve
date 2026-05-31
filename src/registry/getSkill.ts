@@ -83,7 +83,7 @@ export async function handler(
     }
 
     const skill = mapSkillFromDynamo(item);
-    emitExactLookupResolve(skill, versionParam, Date.now() - startMs);
+    await emitExactLookupResolve(skill, versionParam, Date.now() - startMs);
     return success(200, { skill }, event);
   } catch (err) {
     console.error("getSkill error:", err);
@@ -120,17 +120,17 @@ function mapSkillFromDynamo(item: Record<string, unknown>): Skill {
   };
 }
 
-function emitExactLookupResolve(
+async function emitExactLookupResolve(
   skill: Skill,
   requestedVersion: string | undefined,
   latencyMs: number,
-): void {
+): Promise<void> {
   const exactIntent =
     requestedVersion === undefined
       ? `skill:${skill.skill_id}`
       : `skill:${skill.skill_id}@${requestedVersion}`;
 
-  void emitEvent({
+  await emitEvent({
     event_type: "resolve",
     skill_id: skill.skill_id,
     intent: exactIntent,
@@ -139,9 +139,7 @@ function emitExactLookupResolve(
     cache_hit: false,
     input_hash: hashLookupIntent(exactIntent),
     success: true,
-  }).catch((emitErr) =>
-    console.warn("[getSkill] emitEvent failed (swallowed):", emitErr),
-  );
+  });
 }
 
 function hashLookupIntent(intent: string): string {
