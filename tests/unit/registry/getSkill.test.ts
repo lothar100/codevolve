@@ -11,6 +11,7 @@ import type { APIGatewayProxyEvent } from "aws-lambda";
 // ---------------------------------------------------------------------------
 
 const mockSend = jest.fn();
+const mockEmitEvent = jest.fn().mockResolvedValue(undefined);
 
 jest.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: jest.fn().mockImplementation(() => ({})),
@@ -22,6 +23,10 @@ jest.mock("@aws-sdk/lib-dynamodb", () => ({
   },
   GetCommand: jest.fn().mockImplementation((input) => ({ _type: "GetCommand", input })),
   QueryCommand: jest.fn().mockImplementation((input) => ({ _type: "QueryCommand", input })),
+}));
+
+jest.mock("../../../src/shared/emitEvent.js", () => ({
+  emitEvent: (...args: unknown[]) => mockEmitEvent(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -82,6 +87,7 @@ const mockSkillItem = {
 describe("GET /skills/:id", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockEmitEvent.mockResolvedValue(undefined);
   });
 
   it("should return latest version when no version specified", async () => {
@@ -94,6 +100,15 @@ describe("GET /skills/:id", () => {
     expect(body.skill.skill_id).toBe(SKILL_ID);
     expect(body.skill.version).toBe(2);
     expect(body.skill.version_label).toBe("1.0.0");
+    expect(mockEmitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: "resolve",
+        skill_id: SKILL_ID,
+        intent: `skill:${SKILL_ID}`,
+        confidence: 1,
+        success: true,
+      }),
+    );
   });
 
   it("should return specific version when version param provided", async () => {
@@ -105,6 +120,15 @@ describe("GET /skills/:id", () => {
 
     expect(result.statusCode).toBe(200);
     expect(body.skill.version).toBe(1);
+    expect(mockEmitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: "resolve",
+        skill_id: SKILL_ID,
+        intent: `skill:${SKILL_ID}@1`,
+        confidence: 1,
+        success: true,
+      }),
+    );
   });
 
   it("should return 404 when skill does not exist", async () => {
@@ -113,6 +137,7 @@ describe("GET /skills/:id", () => {
     const result = await handler(makeEvent(SKILL_ID));
     expect(result.statusCode).toBe(404);
     expect(JSON.parse(result.body).error.code).toBe("NOT_FOUND");
+    expect(mockEmitEvent).not.toHaveBeenCalled();
   });
 
   it("should return 404 when specific version does not exist", async () => {

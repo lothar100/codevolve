@@ -25,9 +25,14 @@ const baseRequestContext = {
 } as APIGatewayProxyEvent["requestContext"];
 
 function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayProxyEvent {
+  const { headers: overrideHeaders, ...restOverrides } = overrides;
+
   return {
     body: null,
-    headers: {},
+    headers: {
+      Accept: "application/json",
+      ...(overrideHeaders ?? {}),
+    },
     httpMethod: "GET",
     isBase64Encoded: false,
     multiValueHeaders: {},
@@ -38,7 +43,7 @@ function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayPro
     resource: "/",
     stageVariables: null,
     requestContext: baseRequestContext,
-    ...overrides,
+    ...restOverrides,
   };
 }
 
@@ -130,11 +135,6 @@ describe("GET / discovery", () => {
           auth: "api_key",
         }),
         expect.objectContaining({
-          method: "POST",
-          path: "/execute",
-          auth: "none",
-        }),
-        expect.objectContaining({
           method: "PUT",
           path: "/settings/response-format",
           auth: "api_key",
@@ -187,10 +187,6 @@ describe("GET / discovery", () => {
     expect(body.mcp.first_steps.join(" ")).toContain("feedback_skill");
     expect(body.endpoints).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          path: "/execute",
-          description: expect.stringContaining("Compatibility alias"),
-        }),
         expect.objectContaining({
           path: "/skills/{id}/archive",
           description: expect.stringContaining("Soft-archive"),

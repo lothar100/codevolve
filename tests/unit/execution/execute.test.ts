@@ -1,5 +1,5 @@
 /**
- * Unit tests for POST /execute handler.
+ * Unit tests for POST /feedback handler.
  */
 
 import type { APIGatewayProxyEvent } from "aws-lambda";
@@ -34,13 +34,13 @@ function makeEvent(body: unknown): APIGatewayProxyEvent {
     multiValueHeaders: {},
     httpMethod: "POST",
     isBase64Encoded: false,
-    path: "/execute",
+    path: "/feedback",
     pathParameters: null,
     queryStringParameters: null,
     multiValueQueryStringParameters: null,
     stageVariables: null,
     requestContext: {} as never,
-    resource: "/execute",
+    resource: "/feedback",
   };
 }
 
@@ -54,7 +54,7 @@ function latestSkill(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("POST /execute", () => {
+describe("POST /feedback", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockEmitEvent.mockResolvedValue(undefined);

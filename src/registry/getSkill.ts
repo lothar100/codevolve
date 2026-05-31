@@ -4,14 +4,18 @@
  * Optional ?version= query param for specific version.
  * Without version, returns the latest version (descending sort, Limit 1).
  * Archived skills ARE returned.
+ * Successful exact lookups emit a resolve event so direct fetches contribute
+ * to resolve-side analytics even when validation/feedback are skipped.
  */
 
+import { createHash } from "node:crypto";
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { docClient, SKILLS_TABLE } from "../shared/dynamo.js";
 import { validate } from "../shared/validation.js";
 import { success, error } from "../shared/response.js";
+import { emitEvent } from "../shared/emitEvent.js";
 import type { Skill } from "../shared/types.js";
 
 const PathParamsSchema = z.object({
@@ -22,6 +26,8 @@ export async function handler(
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> {
   try {
+    const startMs = Date.now();
+
     // Validate path parameter
     const pathValidation = validate(PathParamsSchema, {
       id: event.pathParameters?.id,
@@ -77,6 +83,7 @@ export async function handler(
     }
 
     const skill = mapSkillFromDynamo(item);
+    emitExactLookupResolve(skill, versionParam, Date.now() - startMs);
     return success(200, { skill }, event);
   } catch (err) {
     console.error("getSkill error:", err);
@@ -111,4 +118,32 @@ function mapSkillFromDynamo(item: Record<string, unknown>): Skill {
     created_at: item.created_at as string,
     updated_at: item.updated_at as string,
   };
+}
+
+function emitExactLookupResolve(
+  skill: Skill,
+  requestedVersion: string | undefined,
+  latencyMs: number,
+): void {
+  const exactIntent =
+    requestedVersion === undefined
+      ? `skill:${skill.skill_id}`
+      : `skill:${skill.skill_id}@${requestedVersion}`;
+
+  void emitEvent({
+    event_type: "resolve",
+    skill_id: skill.skill_id,
+    intent: exactIntent,
+    latency_ms: latencyMs,
+    confidence: 1,
+    cache_hit: false,
+    input_hash: hashLookupIntent(exactIntent),
+    success: true,
+  }).catch((emitErr) =>
+    console.warn("[getSkill] emitEvent failed (swallowed):", emitErr),
+  );
+}
+
+function hashLookupIntent(intent: string): string {
+  return createHash("sha256").update(intent).digest("hex");
 }

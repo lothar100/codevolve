@@ -13,7 +13,6 @@ const RATE_LIMITS = {
   "POST /intent": "100 req/min",
   "POST /chains": "20 req/min",
   "POST /feedback": "50 req/min",
-  "POST /execute": "50 req/min (compatibility alias for /feedback)",
   "POST /validate/{skill_id}": "30 req/min",
   "POST /events": "10 req/min (up to 100 events per batch)",
   default: "200 req/min for other CRUD and analytics reads",
@@ -36,7 +35,6 @@ const ENDPOINTS = [
   { method: "POST", path: "/intent", auth: "none", description: "Route a natural-language intent to ranked skill matches; callers run chosen skills locally" },
   { method: "POST", path: "/chains", auth: "none", description: "Resolve an ordered local-execution chain from explicit steps or a prior intent chain suggestion" },
   { method: "POST", path: "/feedback", auth: "none", description: "Record caller-reported local run feedback; analytics from this route are optional and participation-based" },
-  { method: "POST", path: "/execute", auth: "none", description: "Compatibility alias for /feedback" },
   { method: "POST", path: "/validate/{skill_id}", auth: "api_key", description: "Record caller-reported validation feedback counts to update confidence and status" },
   // Analytics
   { method: "GET", path: "/analytics/dashboards/{type}", auth: "none", description: "Analytics dashboard data. Resolve metrics are platform-side; execute-derived metrics are caller-reported and incomplete by design. type: intent-performance | execution-caching | skill-quality | evolution-gap | agent-behavior" },

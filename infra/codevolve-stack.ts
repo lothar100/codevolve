@@ -926,13 +926,6 @@ export class CodevolveStack extends cdk.Stack {
       new apigateway.LambdaIntegration(executeFn),
     );
 
-    // Backwards-compatible alias for the older route name.
-    const executeResource = this.api.root.addResource("execute");
-    executeResource.addMethod(
-      "POST",
-      new apigateway.LambdaIntegration(executeFn),
-    );
-
     // /validate (IMPL-11-B)
     const validateResource = this.api.root.addResource("validate");
     const validateBySkillIdResource = validateResource.addResource("{skill_id}");

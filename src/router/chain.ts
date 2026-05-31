@@ -3,7 +3,6 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { z } from "zod";
 import { validate } from "../shared/validation.js";
 import { success, error } from "../shared/response.js";
-import { emitEvent } from "../shared/emitEvent.js";
 import {
   fetchSkillSummaryById,
   resolveIntentRequest,
@@ -71,8 +70,6 @@ interface ChainPlanStep {
 export async function handler(
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> {
-  const startMs = Date.now();
-
   let body: unknown;
   try {
     body = JSON.parse(event.body ?? "{}");
@@ -140,19 +137,6 @@ export async function handler(
     resolvedSteps.reduce((sum, step) => sum + step.confidence, 0) / resolvedSteps.length;
   const chainId = randomUUID();
   const unresolvedSteps = resolvedSteps.filter((step) => !step.resolved).length;
-
-  void emitEvent({
-    event_type: "resolve",
-    skill_id: resolvedSteps[resolvedSteps.length - 1]?.best_match?.skill_id ?? null,
-    intent: `chain:${resolvedSteps.map((step) => step.intent ?? step.best_match?.skill_id ?? "unknown").join(" -> ")}`,
-    latency_ms: Date.now() - startMs,
-    confidence: overallConfidence,
-    cache_hit: false,
-    input_hash: chainId,
-    success: readyForLocalExecution,
-  }).catch((emitErr) =>
-    console.warn("[chains] emitEvent failed (swallowed):", emitErr),
-  );
 
   return success(200, {
     chain_id: chainId,

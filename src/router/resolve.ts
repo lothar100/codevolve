@@ -9,7 +9,6 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { z } from "zod";
 import { validate } from "../shared/validation.js";
 import { success, error } from "../shared/response.js";
-import { emitEvent } from "../shared/emitEvent.js";
 import {
   buildChainSuggestion,
   resolveIntentRequest,
@@ -66,19 +65,6 @@ export async function handler(
     const chainSuggestion = await buildChainSuggestion(req);
     const latencyMs = Date.now() - startMs;
 
-    void emitEvent({
-      event_type: "resolve",
-      skill_id: result.bestMatch?.skill_id ?? null,
-      intent: chainSuggestion ? `chain:${req.intent}` : req.intent,
-      latency_ms: latencyMs,
-      confidence: result.intentConfidence,
-      cache_hit: false,
-      input_hash: result.inputHash,
-      success: result.matches.length > 0 || chainSuggestion !== null,
-    }).catch((emitErr) =>
-      console.warn("[resolve] emitEvent failed (swallowed):", emitErr),
-    );
-
     const responseBody: IntentResponse = {
       matches: result.matches,
       best_match: result.bestMatch,
@@ -99,18 +85,6 @@ export async function handler(
       typeof (err as { code?: unknown }).code === "string"
         ? (err as { code: string }).code
         : "DB_SCAN_ERROR";
-    void emitEvent({
-      event_type: "resolve",
-      skill_id: null,
-      intent: req.intent,
-      latency_ms: Date.now() - startMs,
-      confidence: 0,
-      cache_hit: false,
-      input_hash: null,
-      success: false,
-    }).catch((emitErr) =>
-      console.warn("[resolve] emitEvent failed (swallowed):", emitErr),
-    );
     return error(
       503,
       errCode,

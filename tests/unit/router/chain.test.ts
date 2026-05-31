@@ -3,7 +3,6 @@ import { handler } from "../../../src/router/chain.js";
 
 const mockDocSend = jest.fn();
 const mockBedrockSend = jest.fn();
-const mockEmitEvent = jest.fn().mockResolvedValue(undefined);
 
 jest.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: jest.fn().mockImplementation(() => ({})),
@@ -30,11 +29,6 @@ jest.mock("@aws-sdk/client-kinesis", () => ({
   KinesisClient: jest.fn().mockImplementation(() => ({})),
   PutRecordCommand: jest.fn(),
   PutRecordsCommand: jest.fn(),
-}));
-
-jest.mock("../../../src/shared/emitEvent.js", () => ({
-  emitEvent: (...args: unknown[]) => mockEmitEvent(...args),
-  EVENTS_STREAM: "codevolve-events",
 }));
 
 function makeEvent(body: unknown): APIGatewayProxyEvent {

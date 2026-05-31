@@ -12,7 +12,6 @@ import type { APIGatewayProxyEvent } from "aws-lambda";
 
 const mockDocSend = jest.fn();
 const mockBedrockSend = jest.fn();
-const mockEmitEvent = jest.fn().mockResolvedValue(undefined);
 
 jest.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: jest.fn().mockImplementation(() => ({})),
@@ -45,11 +44,6 @@ jest.mock("@aws-sdk/client-kinesis", () => ({
   KinesisClient: jest.fn().mockImplementation(() => ({})),
   PutRecordCommand: jest.fn(),
   PutRecordsCommand: jest.fn(),
-}));
-
-jest.mock("../../../src/shared/emitEvent.js", () => ({
-  emitEvent: (...args: unknown[]) => mockEmitEvent(...args),
-  EVENTS_STREAM: "codevolve-events",
 }));
 
 import { handler } from "../../../src/router/resolve.js";
@@ -582,73 +576,6 @@ describe("POST /intent", () => {
 
     expect(result.statusCode).toBe(200);
     expect(body.matches).toHaveLength(2);
-  });
-
-  it("emits a stable input_hash for equivalent intent requests", async () => {
-    const intentVec = makeUnitVector(1024);
-    const item = makeSkill({ embedding: encodeEmbedding(intentVec) });
-
-    mockBedrockSend
-      .mockResolvedValueOnce(bedrockResponse(intentVec))
-      .mockResolvedValueOnce(bedrockResponse(intentVec));
-    mockDocSend
-      .mockResolvedValueOnce({ Items: [item], LastEvaluatedKey: undefined })
-      .mockResolvedValueOnce({ Items: [item], LastEvaluatedKey: undefined });
-
-    await handler(makeEvent({
-      intent: "find a sorter",
-      language: "python",
-      domain: ["algorithms", "graphs"],
-      tags: ["stable", "fast"],
-    }));
-    await handler(makeEvent({
-      intent: "find a sorter",
-      language: "python",
-      domain: ["graphs", "algorithms"],
-      tags: ["fast", "stable"],
-    }));
-
-    expect(mockEmitEvent).toHaveBeenCalledTimes(2);
-    const [firstEvent] = mockEmitEvent.mock.calls[0] as [{ input_hash: string }];
-    const [secondEvent] = mockEmitEvent.mock.calls[1] as [{ input_hash: string }];
-
-    expect(firstEvent.input_hash).toMatch(/^[a-f0-9]{64}$/);
-    expect(secondEvent.input_hash).toBe(firstEvent.input_hash);
-  });
-
-  it("changes input_hash when the resolved best_match changes", async () => {
-    const intentVec = makeAxisVector(1024);
-
-    mockBedrockSend
-      .mockResolvedValueOnce(bedrockResponse(intentVec))
-      .mockResolvedValueOnce(bedrockResponse(intentVec));
-    mockDocSend
-      .mockResolvedValueOnce({
-        Items: [
-          makeSkill({
-            skill_id: "00000000-0000-0000-0000-000000000001",
-            embedding: encodeEmbedding(makeVectorWithCosine(0.95, 1024)),
-          }),
-        ],
-        LastEvaluatedKey: undefined,
-      })
-      .mockResolvedValueOnce({
-        Items: [
-          makeSkill({
-            skill_id: "00000000-0000-0000-0000-000000000002",
-            embedding: encodeEmbedding(makeVectorWithCosine(0.95, 1024)),
-          }),
-        ],
-        LastEvaluatedKey: undefined,
-      });
-
-    await handler(makeEvent({ intent: "hash by matched skill" }));
-    await handler(makeEvent({ intent: "hash by matched skill" }));
-
-    const [firstEvent] = mockEmitEvent.mock.calls[0] as [{ input_hash: string }];
-    const [secondEvent] = mockEmitEvent.mock.calls[1] as [{ input_hash: string }];
-
-    expect(secondEvent.input_hash).not.toBe(firstEvent.input_hash);
   });
 
   // =========================================================================
